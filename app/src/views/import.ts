@@ -30,6 +30,14 @@ const NODE_TYPE_OPTIONS = BLOCK_PALETTE.map(b => ({
   icon: b.icon,
 }));
 
+const DEFAULT_SECTION_LABEL = 'N/A';
+const DEFAULT_SECTION_TYPE: NodeType = 'custom';
+const DEFAULT_SECTION_ICON = 'widgets';
+const SECTION_ICON_OPTIONS = Array.from(new Set<string>([
+  DEFAULT_SECTION_ICON,
+  ...BLOCK_PALETTE.map(b => b.icon),
+]));
+
 /* ── Color palette for section highlighting ───── */
 
 const SECTION_COLORS = [
@@ -61,25 +69,19 @@ function normalizeLineEndings(str: string): string {
 
 /* ── Guess a node type from content ───────────── */
 
-function guessNodeType(text: string): { type: NodeType; label: string; icon: string } {
-  const lower = text.toLowerCase();
-  if (/persona|identity|role|you are/i.test(lower))
-    return { type: 'core-persona', label: 'Core Persona', icon: 'psychology' };
-  if (/mission|objective|goal|purpose|task/i.test(lower))
-    return { type: 'mission-objective', label: 'Mission Objective', icon: 'flag' };
-  if (/tone|voice|style|manner/i.test(lower))
-    return { type: 'tone-guidelines', label: 'Tone Guidelines', icon: 'record_voice_over' };
-  if (/language|respond in|translate/i.test(lower))
-    return { type: 'language-model', label: 'Language Model', icon: 'translate' };
-  if (/if |branch|condition|when/i.test(lower))
-    return { type: 'logic-branch', label: 'Logic Branch', icon: 'alt_route' };
-  if (/context|background|information|knowledge/i.test(lower))
-    return { type: 'static-context', label: 'Static Context', icon: 'article' };
-  if (/memory|history|conversation/i.test(lower))
-    return { type: 'memory-buffer', label: 'Memory Buffer', icon: 'history' };
-  if (/end|terminate|goodbye|closing/i.test(lower))
-    return { type: 'termination', label: 'Termination Node', icon: 'call_end' };
-  return { type: 'custom', label: 'Custom Section', icon: 'widgets' };
+function normalizeIconName(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+}
+
+function createDefaultSection(startLine: number, endLine: number): Section {
+  return {
+    id: uid(),
+    label: DEFAULT_SECTION_LABEL,
+    type: DEFAULT_SECTION_TYPE,
+    icon: DEFAULT_SECTION_ICON,
+    startLine,
+    endLine,
+  };
 }
 
 /* ── Main render ─────────────────────────────── */
@@ -260,7 +262,7 @@ export function renderImport(container: HTMLElement): void {
           <div class="px-5 py-3 bg-white dark:bg-background-dark/50 border-b border-primary/5 flex items-center justify-between">
             <div>
               <h3 class="text-sm font-bold text-slate-800 dark:text-white">Click Between Lines to Split</h3>
-              <p class="text-[11px] text-slate-400">Hover between lines and click to insert a section divider. Click a divider again to remove it.</p>
+              <p class="text-[11px] text-slate-400">Hover between lines and click to insert a section divider. New sections default to N/A; set your own node name, type, and icon on the right.</p>
             </div>
             <div class="flex gap-2">
               <button id="btn-auto-split" class="px-3 py-1.5 text-[10px] font-semibold border border-primary/30 text-primary hover:bg-primary/5 rounded-md transition-colors flex items-center gap-1.5" title="Auto-detect sections by blank lines and headings">
@@ -353,19 +355,57 @@ export function renderImport(container: HTMLElement): void {
     const color = getColor(idx);
     const lineCount = sec.endLine - sec.startLine + 1;
     const preview = lines.slice(sec.startLine, Math.min(sec.startLine + 3, sec.endLine + 1)).join('\n');
+    const hasPresetType = NODE_TYPE_OPTIONS.some(opt => opt.type === sec.type);
+    const selectedType = hasPresetType ? sec.type : '__custom__';
+    const customTypeValue = hasPresetType ? '' : sec.type;
     return `
       <div class="section-card rounded-lg border overflow-hidden transition-all hover:shadow-md" style="border-color: ${color.border}30" data-section-id="${sec.id}">
         <div class="px-3 py-2 flex items-center gap-2" style="background: ${color.bg}">
           <span class="material-icons text-sm" style="color: ${color.border}">${sec.icon}</span>
-          <input class="section-label flex-1 text-xs font-semibold bg-transparent outline-none border-none text-slate-800 dark:text-white placeholder:text-slate-400" value="${esc(sec.label)}" placeholder="Section name..." data-idx="${idx}" />
+          <input class="section-label flex-1 text-xs font-semibold bg-transparent outline-none border-none text-slate-800 dark:text-white placeholder:text-slate-400" value="${esc(sec.label)}" placeholder="Node label (N/A by default)" data-idx="${idx}" />
           <span class="text-[9px] text-slate-400 font-mono whitespace-nowrap">${lineCount} line${lineCount !== 1 ? 's' : ''}</span>
         </div>
-        <div class="px-3 py-1.5 bg-white dark:bg-slate-900">
-          <select class="section-type w-full text-[10px] bg-transparent text-slate-500 outline-none border-none cursor-pointer" data-idx="${idx}">
-            ${NODE_TYPE_OPTIONS.map(opt =>
-              `<option value="${opt.type}" ${opt.type === sec.type ? 'selected' : ''}>${opt.label}</option>`
-            ).join('')}
-          </select>
+        <div class="px-3 py-1.5 bg-white dark:bg-slate-900 space-y-2">
+          <div class="grid grid-cols-2 gap-2">
+            <div class="min-w-0">
+              <div class="text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">Type</div>
+              <select class="section-type-select w-full text-[10px] rounded border border-slate-200 dark:border-slate-700 px-2 py-1 bg-transparent text-slate-600 dark:text-slate-300 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" data-idx="${idx}">
+                ${NODE_TYPE_OPTIONS.map(opt =>
+                  `<option value="${opt.type}" ${opt.type === selectedType ? 'selected' : ''}>${opt.label}</option>`
+                ).join('')}
+                <option value="__custom__" ${selectedType === '__custom__' ? 'selected' : ''}>Custom…</option>
+              </select>
+            </div>
+            <div class="min-w-0">
+              <div class="text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">Custom Type</div>
+              <input
+                class="section-type-custom w-full text-[10px] rounded border border-slate-200 dark:border-slate-700 px-2 py-1 bg-transparent text-slate-600 dark:text-slate-300 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 ${hasPresetType ? 'opacity-50 cursor-not-allowed' : ''}"
+                value="${esc(customTypeValue)}"
+                placeholder="my-custom-type"
+                data-idx="${idx}"
+                ${hasPresetType ? 'disabled' : ''}
+              />
+            </div>
+          </div>
+          <div class="min-w-0">
+            <div class="text-[9px] uppercase tracking-wider text-slate-400 mb-1">Icon</div>
+            <div class="grid grid-cols-7 gap-1.5">
+              ${SECTION_ICON_OPTIONS.map(icon => `
+                <button
+                  type="button"
+                  class="section-icon-option w-7 h-7 rounded border flex items-center justify-center transition-colors ${icon === sec.icon
+                    ? 'bg-primary/15 border-primary/60 text-primary'
+                    : 'bg-slate-50 dark:bg-slate-800/70 border-slate-200 dark:border-slate-700 text-slate-500 hover:text-primary hover:border-primary/40'}"
+                  data-idx="${idx}"
+                  data-icon="${icon}"
+                  title="${icon}"
+                  aria-label="Set icon to ${icon}"
+                >
+                  <span class="material-icons text-[15px]">${icon}</span>
+                </button>
+              `).join('')}
+            </div>
+          </div>
         </div>
         <div class="px-3 py-1.5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50">
           <pre class="text-[10px] text-slate-400 font-mono truncate leading-relaxed max-h-12 overflow-hidden">${esc(preview)}</pre>
@@ -419,7 +459,7 @@ export function renderImport(container: HTMLElement): void {
                       <span class="text-xs font-bold text-slate-800 dark:text-white">${esc(sec.label)}</span>
                     </div>
                     <div class="flex items-center gap-3 text-[10px] text-slate-400">
-                      <span class="uppercase font-medium">${sec.type}</span>
+                      <span class="font-medium">${sec.type}</span>
                       <span class="font-mono">${tokenEst} tok</span>
                     </div>
                   </div>
@@ -494,15 +534,7 @@ export function renderImport(container: HTMLElement): void {
       lines = promptText.split('\n');
       // Initialize with a single section covering everything
       if (sections.length === 0) {
-        const guess = guessNodeType(promptText);
-        sections = [{
-          id: uid(),
-          label: guess.label,
-          type: guess.type,
-          icon: guess.icon,
-          startLine: 0,
-          endLine: lines.length - 1,
-        }];
+        sections = [createDefaultSection(0, lines.length - 1)];
       }
       step = 2;
       render();
@@ -540,18 +572,65 @@ export function renderImport(container: HTMLElement): void {
       });
     });
 
-    // Section type change
-    container.querySelectorAll<HTMLSelectElement>('.section-type').forEach(select => {
+    // Section type preset dropdown
+    container.querySelectorAll<HTMLSelectElement>('.section-type-select').forEach(select => {
       select.addEventListener('change', () => {
         const idx = parseInt(select.dataset.idx!);
-        if (sections[idx]) {
-          const opt = NODE_TYPE_OPTIONS.find(o => o.type === select.value);
-          if (opt) {
-            sections[idx].type = opt.type;
-            sections[idx].icon = opt.icon;
-          }
+        if (!sections[idx]) return;
+
+        if (select.value === '__custom__') {
+          const customInput = container.querySelector<HTMLInputElement>(`.section-type-custom[data-idx="${idx}"]`);
+          const nextType = customInput?.value.trim() || sections[idx].type.trim() || DEFAULT_SECTION_TYPE;
+          sections[idx].type = nextType as NodeType;
+          render({ preserveStep2Scroll: true });
+          requestAnimationFrame(() => {
+            const refreshedCustomInput = container.querySelector<HTMLInputElement>(`.section-type-custom[data-idx="${idx}"]`);
+            if (!refreshedCustomInput) return;
+            refreshedCustomInput.focus();
+            const caret = refreshedCustomInput.value.length;
+            refreshedCustomInput.setSelectionRange(caret, caret);
+          });
+          return;
         }
-        // Re-render to update icons
+
+        sections[idx].type = select.value as NodeType;
+        render({ preserveStep2Scroll: true });
+      });
+    });
+
+    // Section custom type text input
+    container.querySelectorAll<HTMLInputElement>('.section-type-custom').forEach(input => {
+      const applyCustomType = (): void => {
+        const idx = parseInt(input.dataset.idx!);
+        if (!sections[idx]) return;
+        const typeSelect = container.querySelector<HTMLSelectElement>(`.section-type-select[data-idx="${idx}"]`);
+        if (!typeSelect || typeSelect.value !== '__custom__') return;
+        const normalizedType = input.value.trim() || DEFAULT_SECTION_TYPE;
+        sections[idx].type = normalizedType as NodeType;
+      };
+
+      input.addEventListener('input', applyCustomType);
+      input.addEventListener('blur', () => {
+        applyCustomType();
+        if (input.value.trim().length === 0) {
+          input.value = DEFAULT_SECTION_TYPE;
+        }
+      });
+      input.addEventListener('keydown', (e: KeyboardEvent) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          input.blur();
+        }
+      });
+    });
+
+    // Section icon selection
+    container.querySelectorAll<HTMLButtonElement>('.section-icon-option').forEach(button => {
+      button.addEventListener('click', () => {
+        const idx = parseInt(button.dataset.idx!);
+        if (!sections[idx]) return;
+        const icon = normalizeIconName(button.dataset.icon ?? '') || DEFAULT_SECTION_ICON;
+        sections[idx].icon = icon;
         render({ preserveStep2Scroll: true });
       });
     });
@@ -564,15 +643,7 @@ export function renderImport(container: HTMLElement): void {
 
     // Clear all splits
     container.querySelector('#btn-clear-splits')?.addEventListener('click', () => {
-      const guess = guessNodeType(promptText);
-      sections = [{
-        id: uid(),
-        label: guess.label,
-        type: guess.type,
-        icon: guess.icon,
-        startLine: 0,
-        endLine: lines.length - 1,
-      }];
+      sections = [createDefaultSection(0, lines.length - 1)];
       render({ preserveStep2Scroll: true });
     });
 
@@ -612,30 +683,11 @@ export function renderImport(container: HTMLElement): void {
     const newStartForNext = afterLine + 1;
     const newEndForNext = sec.endLine;
 
-    // Guess types for both halves
-    const topContent = lines.slice(sec.startLine, newEndForCurrent + 1).join('\n');
-    const bottomContent = lines.slice(newStartForNext, newEndForNext + 1).join('\n');
-    const topGuess = guessNodeType(topContent);
-    const bottomGuess = guessNodeType(bottomContent);
-
-    // Update current section
+    // Keep current section metadata, only adjust line bounds.
     sec.endLine = newEndForCurrent;
-    // Keep current label if user already set it, otherwise update guess
-    if (sec.label === 'Custom Section' || sec.label === guessNodeType(promptText).label) {
-      sec.label = topGuess.label;
-      sec.type = topGuess.type;
-      sec.icon = topGuess.icon;
-    }
 
-    // Insert new section after
-    const newSec: Section = {
-      id: uid(),
-      label: bottomGuess.label,
-      type: bottomGuess.type,
-      icon: bottomGuess.icon,
-      startLine: newStartForNext,
-      endLine: newEndForNext,
-    };
+    // Insert a new default section after the split.
+    const newSec = createDefaultSection(newStartForNext, newEndForNext);
     sections.splice(secIdx + 1, 0, newSec);
     render({ preserveStep2Scroll: true });
   }
@@ -669,19 +721,7 @@ export function renderImport(container: HTMLElement): void {
         while (endLine > currentStart && lines[endLine].trim() === '') endLine--;
 
         if (endLine >= currentStart) {
-          const content = lines.slice(currentStart, endLine + 1).join('\n');
-          const guess = guessNodeType(content);
-          // Try to use the heading text as label
-          const firstLine = lines[currentStart].trim();
-          const headingMatch = firstLine.match(/^#{1,3}\s+(.+)/);
-          sections.push({
-            id: uid(),
-            label: headingMatch ? headingMatch[1] : guess.label,
-            type: guess.type,
-            icon: guess.icon,
-            startLine: currentStart,
-            endLine,
-          });
+          sections.push(createDefaultSection(currentStart, endLine));
         }
 
         // Skip blank lines for next section start
@@ -697,32 +737,13 @@ export function renderImport(container: HTMLElement): void {
       let endLine = lines.length - 1;
       while (endLine > currentStart && lines[endLine].trim() === '') endLine--;
       if (endLine >= currentStart) {
-        const content = lines.slice(currentStart, endLine + 1).join('\n');
-        const guess = guessNodeType(content);
-        const firstLine = lines[currentStart].trim();
-        const headingMatch = firstLine.match(/^#{1,3}\s+(.+)/);
-        sections.push({
-          id: uid(),
-          label: headingMatch ? headingMatch[1] : guess.label,
-          type: guess.type,
-          icon: guess.icon,
-          startLine: currentStart,
-          endLine,
-        });
+        sections.push(createDefaultSection(currentStart, endLine));
       }
     }
 
     // If auto-split produced only 1 or 0 sections, fall back to single section
     if (sections.length <= 1) {
-      const guess = guessNodeType(promptText);
-      sections = [{
-        id: uid(),
-        label: guess.label,
-        type: guess.type,
-        icon: guess.icon,
-        startLine: 0,
-        endLine: lines.length - 1,
-      }];
+      sections = [createDefaultSection(0, lines.length - 1)];
     }
   }
 
@@ -749,12 +770,15 @@ export function renderImport(container: HTMLElement): void {
       const content = lines.slice(sec.startLine, sec.endLine + 1).join('\n');
       const row = Math.floor(i / NODES_PER_ROW);
       const col = i % NODES_PER_ROW;
+      const normalizedType = (sec.type.trim() || DEFAULT_SECTION_TYPE) as NodeType;
+      const normalizedLabel = sec.label.trim() || DEFAULT_SECTION_LABEL;
+      const normalizedIcon = normalizeIconName(sec.icon) || DEFAULT_SECTION_ICON;
 
       const node: PromptNode = {
         id: uid(),
-        type: sec.type,
-        label: sec.label,
-        icon: sec.icon,
+        type: normalizedType,
+        label: normalizedLabel,
+        icon: normalizedIcon,
         x: NODE_START_X + col * NODE_SPACING_X,
         y: NODE_START_Y + row * NODE_SPACING_Y,
         content,
