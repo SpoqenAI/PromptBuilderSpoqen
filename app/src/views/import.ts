@@ -8,7 +8,7 @@
  */
 import { store } from '../store';
 import { router } from '../router';
-import { BLOCK_PALETTE, PromptNode, NodeType, uid } from '../models';
+import { BLOCK_PALETTE, PromptNode, NodeType, uid, type EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 
 /* ── Types ────────────────────────────────────── */
@@ -20,6 +20,12 @@ interface Section {
   icon: string;
   startLine: number; // inclusive, 0-based
   endLine: number;   // inclusive, 0-based
+}
+
+interface SectionSeed {
+  startLine: number;
+  endLine: number;
+  label?: string;
 }
 
 /* ── Palette options for the type picker ─────── */
@@ -73,15 +79,199 @@ function normalizeIconName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
 }
 
-function createDefaultSection(startLine: number, endLine: number): Section {
+function createDefaultSection(startLine: number, endLine: number, label = DEFAULT_SECTION_LABEL): Section {
   return {
     id: uid(),
-    label: DEFAULT_SECTION_LABEL,
+    label: label.trim() || DEFAULT_SECTION_LABEL,
     type: DEFAULT_SECTION_TYPE,
     icon: DEFAULT_SECTION_ICON,
     startLine,
     endLine,
   };
+}
+
+function isBlankLine(line: string): boolean {
+  return line.trim().length === 0;
+}
+
+function hasNonBlankContent(lines: string[], startLine: number, endLine: number): boolean {
+  for (let i = startLine; i <= endLine; i++) {
+    if (!isBlankLine(lines[i] ?? '')) return true;
+  }
+  return false;
+}
+
+function extractParagraphSectionSeeds(lines: string[]): SectionSeed[] {
+  const seeds: SectionSeed[] = [];
+  let currentStart = 0;
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    const isDoubleBreak = line === '' && i + 1 < lines.length && lines[i + 1].trim() === '';
+
+    if (i > currentStart && isDoubleBreak) {
+      let endLine = i - 1;
+      while (endLine > currentStart && isBlankLine(lines[endLine])) endLine--;
+      if (endLine >= currentStart) {
+        seeds.push({ startLine: currentStart, endLine });
+      }
+
+      let nextStart = i;
+      while (nextStart < lines.length && isBlankLine(lines[nextStart])) nextStart++;
+      currentStart = nextStart;
+      i = nextStart - 1;
+    }
+  }
+
+  if (currentStart < lines.length) {
+    let endLine = lines.length - 1;
+    while (endLine > currentStart && isBlankLine(lines[endLine])) endLine--;
+    if (endLine >= currentStart) {
+      seeds.push({ startLine: currentStart, endLine });
+    }
+  }
+
+  return seeds;
+}
+
+function extractMarkdownSectionSeeds(lines: string[]): SectionSeed[] {
+  const headingRegex = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/;
+  const headings: Array<{ line: number; label: string }> = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(headingRegex);
+    if (!match) continue;
+    const label = match[1].trim();
+    headings.push({ line: i, label });
+  }
+
+  if (headings.length === 0) {
+    return extractParagraphSectionSeeds(lines);
+  }
+
+  const seeds: SectionSeed[] = [];
+  if (headings[0].line > 0) {
+    seeds.push({ startLine: 0, endLine: headings[0].line - 1 });
+  }
+
+  for (let i = 0; i < headings.length; i++) {
+    const startLine = headings[i].line;
+    const endLine = i < headings.length - 1 ? headings[i + 1].line - 1 : lines.length - 1;
+    seeds.push({ startLine, endLine, label: headings[i].label });
+  }
+
+  return seeds;
+}
+
+function extractXmlSectionSeeds(lines: string[]): SectionSeed[] {
+  const topLevelSeeds: SectionSeed[] = [];
+  const childSeeds: SectionSeed[] = [];
+  const openTagRegex = /^<([A-Za-z_][\w.-]*)(?:\s+[^<>]*)?>\s*$/;
+  const closeTagRegex = /^<\/([A-Za-z_][\w.-]*)>\s*$/;
+  const selfClosingTagRegex = /^<([A-Za-z_][\w.-]*)(?:\s+[^<>]*)?\/>\s*$/;
+  const inlineTagRegex = /^<([A-Za-z_][\w.-]*)(?:\s+[^<>]*)?>[\s\S]*<\/\1>\s*$/;
+  const stack: Array<{ name: string; startLine: number }> = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed.length === 0) continue;
+
+    if (stack.length === 0) {
+      const inlineMatch = trimmed.match(inlineTagRegex);
+      if (inlineMatch) {
+        topLevelSeeds.push({ startLine: i, endLine: i, label: inlineMatch[1] });
+        continue;
+      }
+
+      const selfClosingMatch = trimmed.match(selfClosingTagRegex);
+      if (selfClosingMatch) {
+        topLevelSeeds.push({ startLine: i, endLine: i, label: selfClosingMatch[1] });
+        continue;
+      }
+    } else if (stack.length === 1) {
+      const inlineMatch = trimmed.match(inlineTagRegex);
+      if (inlineMatch) {
+        childSeeds.push({ startLine: i, endLine: i, label: inlineMatch[1] });
+        continue;
+      }
+
+      const selfClosingMatch = trimmed.match(selfClosingTagRegex);
+      if (selfClosingMatch) {
+        childSeeds.push({ startLine: i, endLine: i, label: selfClosingMatch[1] });
+        continue;
+      }
+    }
+
+    const openMatch = trimmed.match(openTagRegex);
+    if (openMatch && !trimmed.startsWith('</') && !trimmed.endsWith('/>')) {
+      stack.push({ name: openMatch[1], startLine: i });
+      continue;
+    }
+
+    const closeMatch = trimmed.match(closeTagRegex);
+    if (!closeMatch || stack.length === 0) continue;
+
+    const top = stack[stack.length - 1];
+    if (top.name !== closeMatch[1]) continue;
+    stack.pop();
+    if (stack.length === 0) {
+      topLevelSeeds.push({ startLine: top.startLine, endLine: i, label: top.name });
+    } else if (stack.length === 1) {
+      childSeeds.push({ startLine: top.startLine, endLine: i, label: top.name });
+    }
+  }
+
+  return childSeeds.length > 0 ? childSeeds : topLevelSeeds;
+}
+
+function buildSectionsFromSeeds(lines: string[], seeds: SectionSeed[]): Section[] {
+  if (lines.length === 0) return [];
+  const lastLine = lines.length - 1;
+  const orderedSeeds = [...seeds]
+    .map(seed => ({
+      startLine: Math.max(0, Math.min(lastLine, seed.startLine)),
+      endLine: Math.max(0, Math.min(lastLine, seed.endLine)),
+      label: seed.label,
+    }))
+    .filter(seed => seed.endLine >= seed.startLine)
+    .sort((a, b) => a.startLine - b.startLine || a.endLine - b.endLine);
+
+  const sections: Section[] = [];
+  let cursor = 0;
+
+  const pushSection = (startLine: number, endLine: number, label = DEFAULT_SECTION_LABEL): void => {
+    if (startLine > endLine) return;
+    if (!hasNonBlankContent(lines, startLine, endLine)) return;
+    sections.push(createDefaultSection(startLine, endLine, label));
+  };
+
+  for (const seed of orderedSeeds) {
+    if (seed.endLine < cursor) continue;
+    const startLine = Math.max(seed.startLine, cursor);
+    if (startLine > lastLine) break;
+
+    if (startLine > cursor) {
+      pushSection(cursor, startLine - 1);
+    }
+
+    const endLine = Math.max(startLine, seed.endLine);
+    pushSection(startLine, endLine, seed.label);
+    cursor = endLine + 1;
+  }
+
+  if (cursor <= lastLine) {
+    pushSection(cursor, lastLine);
+  }
+
+  if (sections.length === 0) {
+    return [createDefaultSection(0, lastLine)];
+  }
+
+  return sections;
+}
+
+function buildSectionSourceKey(text: string, format: EditorFormat): string {
+  return `${format}::${text}`;
 }
 
 /* ── Main render ─────────────────────────────── */
@@ -91,11 +281,20 @@ export function renderImport(container: HTMLElement): void {
   let promptText = '';
   let projectName = 'Imported Prompt';
   let projectModel = 'GPT-4o';
+  let importFormat: EditorFormat = 'markdown';
   let lines: string[] = [];
   let sections: Section[] = [];
+  let lastSectionSourceKey = '';
   let step2SplitScrollTop = 0;
   let step2SplitScrollLeft = 0;
   let step2SectionsScrollTop = 0;
+
+  function autoExtractSections(): Section[] {
+    const seeds = importFormat === 'xml'
+      ? extractXmlSectionSeeds(lines)
+      : extractMarkdownSectionSeeds(lines);
+    return buildSectionsFromSeeds(lines, seeds);
+  }
 
   function captureStep2Scroll(): void {
     const splitContent = container.querySelector<HTMLElement>('#split-content');
@@ -207,11 +406,11 @@ export function renderImport(container: HTMLElement): void {
       <div class="max-w-3xl mx-auto px-6 py-8 animate-in">
         <div class="text-center mb-8">
           <h2 class="text-xl font-bold text-slate-800 dark:text-white mb-2">Paste Your Existing Prompt</h2>
-          <p class="text-sm text-slate-500">Paste the full prompt text below. In the next step you'll split it into sections.</p>
+          <p class="text-sm text-slate-500">Choose a prompt format, then paste your prompt. We will auto-split sections from tags or headings.</p>
         </div>
 
         <div class="space-y-5">
-          <div class="grid grid-cols-2 gap-4">
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Project Name</label>
               <input id="import-name" value="${esc(projectName)}" class="w-full border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2.5 text-sm bg-white dark:bg-slate-900 focus:ring-2 focus:ring-primary/30 focus:border-primary outline-none transition-all" placeholder="My Voice Assistant Prompt" />
@@ -222,6 +421,13 @@ export function renderImport(container: HTMLElement): void {
                 ${['GPT-4o', 'Claude 3.5', 'GPT-4 Turbo', 'Llama 3'].map(m =>
                   `<option ${m === projectModel ? 'selected' : ''}>${m}</option>`
                 ).join('')}
+              </select>
+            </div>
+            <div>
+              <label class="block text-xs font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider mb-1.5">Prompt Format</label>
+              <select id="import-format" class="w-full border border-slate-200 dark:border-white/10 rounded-lg px-3 py-2.5 text-sm bg-white dark:bg-slate-900 focus:ring-2 focus:ring-primary/30 focus:border-primary outline-none transition-all">
+                <option value="markdown" ${importFormat === 'markdown' ? 'selected' : ''}>Markdown (headings)</option>
+                <option value="xml" ${importFormat === 'xml' ? 'selected' : ''}>XML (section tags)</option>
               </select>
             </div>
           </div>
@@ -255,6 +461,13 @@ export function renderImport(container: HTMLElement): void {
   /* ── Step 2: Split sections ────────────────── */
 
   function renderStep2(): string {
+    const formatHint = importFormat === 'xml'
+      ? 'XML mode: top-level tags are auto-grouped and labeled from tag names.'
+      : 'Markdown mode: heading lines are auto-grouped and labeled from heading text.';
+    const autoSplitTitle = importFormat === 'xml'
+      ? 'Auto-detect sections from XML-style tags'
+      : 'Auto-detect sections from markdown headings and spacing';
+
     return `
       <div class="flex h-full min-h-0 animate-in">
         <!-- Left: Interactive text with split markers -->
@@ -262,10 +475,10 @@ export function renderImport(container: HTMLElement): void {
           <div class="px-5 py-3 bg-white dark:bg-background-dark/50 border-b border-primary/5 flex items-center justify-between">
             <div>
               <h3 class="text-sm font-bold text-slate-800 dark:text-white">Click Between Lines to Split</h3>
-              <p class="text-[11px] text-slate-400">Hover between lines and click to insert a section divider. New sections default to N/A; set your own node name, type, and icon on the right.</p>
+              <p class="text-[11px] text-slate-400">${formatHint} Hover between lines and click to insert a section divider. New sections default to N/A; set your own node name, type, and icon on the right.</p>
             </div>
             <div class="flex gap-2">
-              <button id="btn-auto-split" class="px-3 py-1.5 text-[10px] font-semibold border border-primary/30 text-primary hover:bg-primary/5 rounded-md transition-colors flex items-center gap-1.5" title="Auto-detect sections by blank lines and headings">
+              <button id="btn-auto-split" class="px-3 py-1.5 text-[10px] font-semibold border border-primary/30 text-primary hover:bg-primary/5 rounded-md transition-colors flex items-center gap-1.5" title="${autoSplitTitle}">
                 <span class="material-icons text-xs">auto_fix_high</span> Auto-Split
               </button>
               <button id="btn-clear-splits" class="px-3 py-1.5 text-[10px] font-semibold border border-slate-200 dark:border-white/10 text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 rounded-md transition-colors flex items-center gap-1.5">
@@ -501,6 +714,7 @@ export function renderImport(container: HTMLElement): void {
     const textArea = container.querySelector<HTMLTextAreaElement>('#import-text')!;
     const nameInput = container.querySelector<HTMLInputElement>('#import-name')!;
     const modelSelect = container.querySelector<HTMLSelectElement>('#import-model')!;
+    const formatSelect = container.querySelector<HTMLSelectElement>('#import-format')!;
     const nextBtn = container.querySelector<HTMLButtonElement>('#btn-next-1')!;
     const charCount = container.querySelector('#char-count')!;
 
@@ -518,6 +732,10 @@ export function renderImport(container: HTMLElement): void {
       projectModel = modelSelect.value;
     });
 
+    formatSelect.addEventListener('change', () => {
+      importFormat = (formatSelect.value === 'xml' ? 'xml' : 'markdown') as EditorFormat;
+    });
+
     container.querySelector('#btn-paste-clipboard')?.addEventListener('click', async () => {
       try {
         const text = normalizeLineEndings(await navigator.clipboard.readText());
@@ -532,10 +750,13 @@ export function renderImport(container: HTMLElement): void {
       if (promptText.trim().length === 0) return;
       promptText = normalizeLineEndings(promptText);
       lines = promptText.split('\n');
-      // Initialize with a single section covering everything
-      if (sections.length === 0) {
-        sections = [createDefaultSection(0, lines.length - 1)];
+
+      const sourceKey = buildSectionSourceKey(promptText, importFormat);
+      if (sections.length === 0 || sourceKey !== lastSectionSourceKey) {
+        sections = autoExtractSections();
+        lastSectionSourceKey = sourceKey;
       }
+
       step = 2;
       render();
     });
@@ -638,12 +859,14 @@ export function renderImport(container: HTMLElement): void {
     // Auto-split
     container.querySelector('#btn-auto-split')?.addEventListener('click', () => {
       autoSplit();
+      lastSectionSourceKey = buildSectionSourceKey(promptText, importFormat);
       render({ preserveStep2Scroll: true });
     });
 
     // Clear all splits
     container.querySelector('#btn-clear-splits')?.addEventListener('click', () => {
       sections = [createDefaultSection(0, lines.length - 1)];
+      lastSectionSourceKey = buildSectionSourceKey(promptText, importFormat);
       render({ preserveStep2Scroll: true });
     });
 
@@ -705,46 +928,7 @@ export function renderImport(container: HTMLElement): void {
   }
 
   function autoSplit(): void {
-    // Auto-detect sections based on blank lines, markdown headings, and ## markers
-    sections = [];
-    let currentStart = 0;
-
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i].trim();
-      const isBlankLine = line === '';
-      const isHeading = /^#{1,3}\s/.test(line);
-
-      // Split before headings (if not at start) or after double blank lines
-      if (i > currentStart && (isHeading || (isBlankLine && i + 1 < lines.length && lines[i + 1].trim() === ''))) {
-        // Close previous section (trim trailing blanks)
-        let endLine = i - 1;
-        while (endLine > currentStart && lines[endLine].trim() === '') endLine--;
-
-        if (endLine >= currentStart) {
-          sections.push(createDefaultSection(currentStart, endLine));
-        }
-
-        // Skip blank lines for next section start
-        let nextStart = i;
-        while (nextStart < lines.length && lines[nextStart].trim() === '') nextStart++;
-        currentStart = nextStart;
-        i = nextStart - 1; // will be incremented by for loop
-      }
-    }
-
-    // Close final section
-    if (currentStart < lines.length) {
-      let endLine = lines.length - 1;
-      while (endLine > currentStart && lines[endLine].trim() === '') endLine--;
-      if (endLine >= currentStart) {
-        sections.push(createDefaultSection(currentStart, endLine));
-      }
-    }
-
-    // If auto-split produced only 1 or 0 sections, fall back to single section
-    if (sections.length <= 1) {
-      sections = [createDefaultSection(0, lines.length - 1)];
-    }
+    sections = autoExtractSections();
   }
 
   /* ── Create project from sections ──────────── */
