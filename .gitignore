@@ -1,0 +1,94 @@
+# ===========================================
+# Environment Variables & Secrets
+# ===========================================
+.env
+.env.local
+.env.*.local
+.env.production
+.env.development
+*.pem
+*.key
+secret/
+secrets/
+
+# ===========================================
+# Node.js / npm / Yarn / pnpm
+# ===========================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+.npm/
+.yarn/
+.pnpm-store/
+
+# ===========================================
+# Build Outputs / Dist
+# ===========================================
+dist/
+dist-ssr/
+build/
+*.tsbuildinfo
+
+# ===========================================
+# Vite / Frontend Build Tools
+# ===========================================
+.vite/
+.cache/
+.rollup.cache/
+
+# ===========================================
+# IDE & Editor Settings
+# ===========================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# ===========================================
+# OS Generated Files
+# ===========================================
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# ===========================================
+# Logs
+# ===========================================
+*.log
+logs/
+*.log.*
+
+# ===========================================
+# Supabase / Database
+# ===========================================
+.supabase/
+.temp/
+.branches/
+
+# ===========================================
+# TypeScript / Language Services
+# ===========================================
+*.tsbuildinfo
+
+# ===========================================
+# Test Coverage
+# ===========================================
+coverage/
+.nyc_output/
+
+# ===========================================
+# Temporary Files
+# ===========================================
+*.tmp
+*.temp
+*.bak
+*.orig

@@ -1,0 +1,326 @@
+@import "tailwindcss";
+
+/* ── Theme tokens ─────────────────────────────── */
+@theme {
+  --color-primary: #23956F;
+  --color-background-light: #f6f8f7;
+  --color-background-dark: #131f1b;
+  --color-neutral-gray: #6b7c75;
+  --color-card-border: #e1e8e5;
+  --font-display: "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+  --radius-DEFAULT: 0.125rem;
+  --radius-lg: 0.25rem;
+  --radius-xl: 0.5rem;
+  --radius-full: 0.75rem;
+}
+
+/* ── Tailwind v4 dark variant: class-based ────── */
+@variant dark (&:where(.dark, .dark *));
+
+/* ── Base ──────────────────────────────────────── */
+html {
+  background-color: var(--color-background-light);
+}
+html.dark {
+  background-color: var(--color-background-dark);
+}
+
+body {
+  font-family: var(--font-display);
+  background-color: var(--color-background-light);
+  background-image: radial-gradient(rgba(35, 149, 111, 0.08) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+html.dark body {
+  background-color: var(--color-background-dark);
+  background-image: radial-gradient(rgba(35, 149, 111, 0.12) 1px, transparent 1px);
+  color: #e2e8f0;
+}
+
+/* ── Tokenizer highlight classes (6 colors) ───── */
+.token-1 { background-color: rgba(35, 149, 111, 0.18); border-bottom: 2px solid rgba(35, 149, 111, 0.4); border-radius: 2px; padding: 0 1px; }
+.token-2 { background-color: rgba(59, 130, 246, 0.18); border-bottom: 2px solid rgba(59, 130, 246, 0.4); border-radius: 2px; padding: 0 1px; }
+.token-3 { background-color: rgba(139, 92, 246, 0.18); border-bottom: 2px solid rgba(139, 92, 246, 0.4); border-radius: 2px; padding: 0 1px; }
+.token-4 { background-color: rgba(245, 158, 11, 0.18); border-bottom: 2px solid rgba(245, 158, 11, 0.4); border-radius: 2px; padding: 0 1px; }
+.token-5 { background-color: rgba(236, 72, 153, 0.18); border-bottom: 2px solid rgba(236, 72, 153, 0.4); border-radius: 2px; padding: 0 1px; }
+.token-6 { background-color: rgba(20, 184, 166, 0.18); border-bottom: 2px solid rgba(20, 184, 166, 0.4); border-radius: 2px; padding: 0 1px; }
+
+/* ── Canvas grid background ───────────────────── */
+.canvas-grid {
+  background-color: var(--color-background-light);
+  background-image: radial-gradient(rgba(35, 149, 111, 0.06) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+html.dark .canvas-grid {
+  background-color: var(--color-background-dark);
+  background-image: radial-gradient(rgba(35, 149, 111, 0.1) 1px, transparent 1px);
+}
+
+.blueprint-grid {
+  background-color: var(--color-background-light);
+  background-image:
+    radial-gradient(circle, rgba(35, 149, 111, 0.08) 1px, transparent 1px),
+    linear-gradient(rgba(35, 149, 111, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(35, 149, 111, 0.03) 1px, transparent 1px);
+  background-size: 20px 20px, 100px 100px, 100px 100px;
+}
+html.dark .blueprint-grid {
+  background-color: var(--color-background-dark);
+  background-image:
+    radial-gradient(circle, rgba(35, 149, 111, 0.12) 1px, transparent 1px),
+    linear-gradient(rgba(35, 149, 111, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(35, 149, 111, 0.05) 1px, transparent 1px);
+}
+
+/* ── Project cards ────────────────────────────── */
+.project-card {
+  transition: transform 200ms ease, box-shadow 200ms ease;
+}
+.project-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgba(35, 149, 111, 0.1),
+              0 4px 6px -2px rgba(35, 149, 111, 0.05);
+}
+
+/* ── Node glow ────────────────────────────────── */
+.node-glow {
+  transition: box-shadow 200ms ease;
+}
+.node-glow:hover {
+  box-shadow: 0 0 20px rgba(35, 149, 111, 0.25);
+}
+
+/* ── Connector SVG path glow ──────────────────── */
+.connector-path {
+  filter: drop-shadow(0 0 4px rgba(35, 149, 111, 0.5));
+}
+
+/* ── Diff classes ──────────────────────────────── */
+.diff-line {
+  display: flex;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.8;
+  min-height: 22px;
+}
+.diff-num {
+  width: 40px;
+  text-align: right;
+  padding-right: 8px;
+  color: #94a3b8;
+  user-select: none;
+  flex-shrink: 0;
+}
+.diff-prefix {
+  width: 16px;
+  text-align: center;
+  flex-shrink: 0;
+  font-weight: 600;
+}
+.diff-text {
+  flex: 1;
+  padding-left: 8px;
+  white-space: pre-wrap;
+}
+.diff-equal { background: transparent; }
+.diff-add { background: rgba(35, 149, 111, 0.12); }
+.diff-add .diff-prefix { color: #23956F; }
+.diff-remove { background: rgba(239, 68, 68, 0.1); }
+.diff-remove .diff-prefix { color: #ef4444; }
+.diff-empty { background: #f8fafc; }
+html.dark .diff-empty { background: rgba(15, 23, 42, 0.3); }
+
+/* ── Custom scrollbar ─────────────────────────── */
+.custom-scrollbar::-webkit-scrollbar { width: 6px; }
+.custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+.custom-scrollbar::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 10px; }
+html.dark .custom-scrollbar::-webkit-scrollbar-thumb { background: #2d3748; }
+
+/* ── Canvas node ──────────────────────────────── */
+.canvas-node {
+  position: absolute;
+  cursor: default;
+  transition: box-shadow 150ms ease;
+}
+.canvas-node.dragging {
+  z-index: 100;
+  box-shadow: 0 20px 40px rgba(0,0,0,0.15);
+}
+
+/* ── Node connection ports ────────────────────── */
+.port {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #23956F;
+  border: 2px solid white;
+  cursor: crosshair;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+  box-shadow: 0 0 0 0 rgba(35, 149, 111, 0);
+  flex-shrink: 0;
+}
+.port:hover {
+  transform: scale(1.4);
+  box-shadow: 0 0 8px rgba(35, 149, 111, 0.6);
+}
+html.dark .port {
+  border-color: #1e293b;
+}
+
+/* ── Editor textarea overlay trick ────────────── */
+.editor-overlay {
+  position: relative;
+}
+.editor-overlay textarea {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  color: transparent;
+  caret-color: #23956F;
+  resize: none;
+  outline: none;
+  border: none;
+  padding: 2rem;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  z-index: 2;
+}
+.editor-overlay textarea::selection {
+  background: rgba(35, 149, 111, 0.2);
+  color: transparent;
+}
+.editor-overlay .highlight-layer {
+  position: absolute;
+  inset: 0;
+  padding: 2rem;
+  font-family: var(--font-mono);
+  font-size: 15px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  z-index: 1;
+  pointer-events: none;
+  overflow-y: auto;
+}
+
+/* ── Import wizard: split zones ───────────────── */
+.split-zone {
+  height: 6px;
+  transition: height 150ms ease;
+  position: relative;
+}
+.split-zone:hover {
+  height: 20px;
+}
+.split-zone .split-hover-bar {
+  position: absolute;
+  left: 42px;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 2px;
+  background: transparent;
+  border-radius: 2px;
+  transition: background 150ms ease, height 150ms ease;
+}
+.split-zone:hover .split-hover-bar {
+  background: rgba(35, 149, 111, 0.4);
+  height: 3px;
+  box-shadow: 0 0 8px rgba(35, 149, 111, 0.3);
+}
+.split-zone.split-active {
+  height: 28px;
+}
+.split-zone .split-divider {
+  position: absolute;
+  left: 42px;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 2px;
+  border-top: 2px dashed;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.split-zone .split-divider-icon {
+  font-size: 14px;
+  background: white;
+  border-radius: 50%;
+  padding: 2px;
+  position: relative;
+  top: -1px;
+}
+html.dark .split-zone .split-divider-icon {
+  background: #131f1b;
+}
+.split-zone .split-divider-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: #94a3b8;
+  font-weight: 600;
+  background: white;
+  padding: 0 6px;
+  position: relative;
+  top: -1px;
+}
+html.dark .split-zone .split-divider-label {
+  background: #131f1b;
+}
+.split-zone .split-remove {
+  cursor: pointer;
+  background: white;
+  border-radius: 50%;
+  padding: 1px;
+  position: relative;
+  top: -1px;
+}
+html.dark .split-zone .split-remove {
+  background: #131f1b;
+}
+
+/* ── Import wizard: animate-in ────────────────── */
+.animate-in {
+  animation: fadeSlideIn 300ms ease-out;
+}
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* ── Theme toggle switch ──────────────────────── */
+.theme-toggle {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  border-radius: 12px;
+  background: #e2e8f0;
+  cursor: pointer;
+  transition: background 200ms;
+  border: none;
+  padding: 0;
+}
+html.dark .theme-toggle {
+  background: #334155;
+}
+.theme-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: white;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  transition: transform 200ms;
+}
+html.dark .theme-toggle::after {
+  transform: translateX(20px);
+  background: #0f172a;
+}
