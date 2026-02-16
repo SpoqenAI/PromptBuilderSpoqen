@@ -154,10 +154,13 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         </div>
 
         <!-- Mini Map -->
-        <div class="absolute bottom-6 left-6 w-32 h-24 bg-white/50 dark:bg-slate-900/50 border border-primary/10 rounded-lg overflow-hidden backdrop-blur-sm z-10">
-          <div class="w-full h-full p-2 relative">
-            <div class="absolute bottom-1 right-1 text-[8px] text-slate-400 uppercase font-bold">MiniMap</div>
-          </div>
+        <div id="minimap" class="absolute bottom-6 left-6 w-32 h-24 bg-white/65 dark:bg-slate-900/65 border border-primary/15 rounded-lg overflow-hidden backdrop-blur-sm z-10">
+          <svg id="minimap-svg" class="w-full h-full block">
+            <rect id="minimap-bg" x="0" y="0" width="100%" height="100%" fill="transparent"></rect>
+            <g id="minimap-nodes"></g>
+            <rect id="minimap-viewport" x="0" y="0" width="0" height="0" rx="1.5" fill="rgba(14, 165, 233, 0.16)" stroke="#0ea5e9" stroke-width="1"></rect>
+          </svg>
+          <div class="pointer-events-none absolute bottom-1 right-1 text-[8px] text-slate-400 uppercase font-bold">MiniMap</div>
         </div>
       </div>
 
@@ -185,14 +188,30 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   const canvasArea = container.querySelector<HTMLElement>('#canvas-area')!;
   const nodesContainer = container.querySelector<HTMLElement>('#nodes-container')!;
   const svgEl = container.querySelector<SVGSVGElement>('#connection-svg')!;
+  const miniMapEl = container.querySelector<HTMLElement>('#minimap');
+  const miniMapSvg = container.querySelector<SVGSVGElement>('#minimap-svg');
+  const miniMapNodesLayer = container.querySelector<SVGGElement>('#minimap-nodes');
+  const miniMapViewport = container.querySelector<SVGRectElement>('#minimap-viewport');
 
   // Viewport (world -> screen): screen = world * zoom + pan
   const MIN_ZOOM = 0.4;
   const MAX_ZOOM = 2.5;
   const ZOOM_STEP = 0.12;
+  const NODE_VISUAL_WIDTH = 224;
+  const NODE_VISUAL_HEIGHT = 140;
+  const MINIMAP_PADDING = 80;
   let zoom = 1;
   let panX = 0;
   let panY = 0;
+
+  interface MiniMapTransform {
+    minX: number;
+    minY: number;
+    scale: number;
+    offsetX: number;
+    offsetY: number;
+  }
+  let miniMapTransform: MiniMapTransform | null = null;
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
@@ -384,6 +403,62 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
     if (!bestMatch) return null;
     return { id: bestMatch.id, from: bestMatch.from, to: bestMatch.to };
+  }
+
+  function updateMiniMap(): void {
+    if (!miniMapSvg || !miniMapNodesLayer || !miniMapViewport) return;
+
+    const miniRect = miniMapSvg.getBoundingClientRect();
+    const miniWidth = Math.max(1, miniRect.width);
+    const miniHeight = Math.max(1, miniRect.height);
+
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const viewportWorldX = -panX / zoom;
+    const viewportWorldY = -panY / zoom;
+    const viewportWorldWidth = canvasRect.width / zoom;
+    const viewportWorldHeight = canvasRect.height / zoom;
+
+    let minX = viewportWorldX;
+    let minY = viewportWorldY;
+    let maxX = viewportWorldX + viewportWorldWidth;
+    let maxY = viewportWorldY + viewportWorldHeight;
+
+    for (const node of project!.nodes) {
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + NODE_VISUAL_WIDTH);
+      maxY = Math.max(maxY, node.y + NODE_VISUAL_HEIGHT);
+    }
+
+    minX -= MINIMAP_PADDING;
+    minY -= MINIMAP_PADDING;
+    maxX += MINIMAP_PADDING;
+    maxY += MINIMAP_PADDING;
+
+    const worldWidth = Math.max(1, maxX - minX);
+    const worldHeight = Math.max(1, maxY - minY);
+    const scale = Math.min(miniWidth / worldWidth, miniHeight / worldHeight);
+    const offsetX = (miniWidth - worldWidth * scale) / 2;
+    const offsetY = (miniHeight - worldHeight * scale) / 2;
+
+    miniMapTransform = { minX, minY, scale, offsetX, offsetY };
+
+    const toMiniX = (worldX: number): number => (worldX - minX) * scale + offsetX;
+    const toMiniY = (worldY: number): number => (worldY - minY) * scale + offsetY;
+
+    const nodeRects = project!.nodes.map(node => {
+      const x = toMiniX(node.x);
+      const y = toMiniY(node.y);
+      const width = Math.max(3, NODE_VISUAL_WIDTH * scale);
+      const height = Math.max(2, NODE_VISUAL_HEIGHT * scale);
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="1.5" fill="rgba(35,149,111,0.45)" stroke="rgba(35,149,111,0.85)" stroke-width="0.8"></rect>`;
+    }).join('');
+    miniMapNodesLayer.innerHTML = nodeRects;
+
+    miniMapViewport.setAttribute('x', String(toMiniX(viewportWorldX)));
+    miniMapViewport.setAttribute('y', String(toMiniY(viewportWorldY)));
+    miniMapViewport.setAttribute('width', String(Math.max(6, viewportWorldWidth * scale)));
+    miniMapViewport.setAttribute('height', String(Math.max(6, viewportWorldHeight * scale)));
   }
 
   function renderNodes(): void {
@@ -715,6 +790,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     if (selectedConnectionId && !selectedConnectionStillExists) {
       selectedConnectionId = null;
     }
+    updateMiniMap();
   }
 
   applyViewportTransform();
@@ -768,6 +844,23 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   zoomInBtn?.addEventListener('click', () => zoomAroundViewportCenter(ZOOM_STEP));
   zoomOutBtn?.addEventListener('click', () => zoomAroundViewportCenter(-ZOOM_STEP));
 
+  miniMapEl?.addEventListener('mousedown', (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    if (!miniMapTransform) return;
+    const miniRect = miniMapEl.getBoundingClientRect();
+    const localX = e.clientX - miniRect.left;
+    const localY = e.clientY - miniRect.top;
+    const worldX = (localX - miniMapTransform.offsetX) / miniMapTransform.scale + miniMapTransform.minX;
+    const worldY = (localY - miniMapTransform.offsetY) / miniMapTransform.scale + miniMapTransform.minY;
+    const canvasRect = canvasArea.getBoundingClientRect();
+    panX = canvasRect.width / 2 - worldX * zoom;
+    panY = canvasRect.height / 2 - worldY * zoom;
+    applyViewportTransform();
+    drawConnections();
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
   let helpPanelOpen = false;
   const setHelpPanelOpen = (open: boolean): void => {
     helpPanelOpen = open;
@@ -809,6 +902,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     const scaleFactor = Math.exp(-e.deltaY * sensitivity);
     zoomAt(zoom * scaleFactor, focalX, focalY);
   }, { passive: false });
+
+  window.addEventListener('resize', () => {
+    drawConnections();
+  });
 
   // ── Sidebar: drag-and-drop AND click-to-add ──
   container.querySelectorAll<HTMLElement>('.sidebar-block').forEach(block => {
