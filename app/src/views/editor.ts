@@ -115,10 +115,10 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                 <span class="material-icons text-sm">arrow_back</span>
                 Canvas
               </button>
-              <div class="flex items-center gap-2">
-                <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-white cursor-pointer" id="nav-home">
-                  <span class="material-icons text-sm">account_tree</span>
-                </div>
+              <div class="flex items-center gap-3 shrink-0">
+                <button type="button" class="h-12 w-[220px] flex items-center justify-start cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
+                  <img src="/Spoqen(2).svg" alt="Spoqen" class="h-full w-full object-contain object-left" />
+                </button>
                 <div>
                   <h1 class="text-sm font-semibold leading-none">${project.name}</h1>
                   <span class="text-[10px] text-slate-400 uppercase tracking-wider">${node.label}</span>

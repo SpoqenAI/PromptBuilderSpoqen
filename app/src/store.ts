@@ -5,78 +5,88 @@
  * All mutating calls update the in-memory cache immediately (keeping
  * the UI synchronous) and fire a background Supabase call.
  */
-import { Project, PromptNode, Connection, PromptVersion, uid } from './models';
+import { Project, PromptNode, Connection, PromptVersion, NodeType, uid } from './models';
+import type { Database } from './database.types';
 import { supabase } from './supabase';
 
-/* ── Seed data ────────────────────────────────── */
-function seedProjects(): Project[] {
-  return [
-    {
-      id: uid(), name: 'Customer Support Workflow',
-      description: 'Automated ticket classification and sentiment analysis using multi-stage reasoning nodes.',
-      model: 'GPT-4o', icon: 'schema', lastEdited: '2h ago',
-      nodes: [], connections: [], versions: [],
-    },
-    {
-      id: uid(), name: 'Creative Story Generator',
-      description: 'A recursive narrative engine designed to maintain consistency across character arcs.',
-      model: 'Claude 3.5', icon: 'auto_awesome', lastEdited: '5h ago',
-      nodes: [], connections: [], versions: [],
-    },
-    {
-      id: uid(), name: 'SQL Query Optimizer',
-      description: 'Refines slow legacy SQL queries by suggesting modern indexing strategies.',
-      model: 'GPT-4 Turbo', icon: 'code', lastEdited: 'Yesterday',
-      nodes: [], connections: [], versions: [],
-    },
-    {
-      id: uid(), name: 'Market Analysis RAG',
-      description: 'A retrieval augmented generation pipeline for real-time financial news parsing.',
-      model: 'Llama 3', icon: 'hub', lastEdited: '3 days ago',
-      nodes: [], connections: [], versions: [],
-    },
-  ];
+type ProjectRow = Database['public']['Tables']['projects']['Row'];
+type PromptNodeRow = Database['public']['Tables']['prompt_nodes']['Row'];
+type PromptNodeUpdate = Database['public']['Tables']['prompt_nodes']['Update'];
+type ConnectionRow = Database['public']['Tables']['connections']['Row'];
+type PromptVersionRow = Database['public']['Tables']['prompt_versions']['Row'];
+
+export type PersistenceMode = 'database' | 'local-fallback';
+
+export interface StorePersistenceStatus {
+  mode: PersistenceMode;
+  error: string | null;
+  hint: string | null;
 }
 
+export interface StoreRemoteErrorEventDetail extends StorePersistenceStatus {
+  context: string;
+}
+
+/* Store state */
 class Store {
   private projects: Project[] = [];
-  private _ready: Promise<void>;
-
-  constructor() {
-    this._ready = this.init();
-  }
+  private _ready: Promise<void> | null = null;
+  private remoteWriteChain: Promise<void> = Promise.resolve();
+  private currentUserId: string | null = null;
+  private persistenceStatus: StorePersistenceStatus = {
+    mode: 'database',
+    error: null,
+    hint: null,
+  };
 
   /** Resolves when all Supabase data is loaded into memory. */
   get ready(): Promise<void> {
+    if (!this._ready) {
+      this._ready = this.init();
+    }
     return this._ready;
+  }
+
+  getPersistenceStatus(): StorePersistenceStatus {
+    return { ...this.persistenceStatus };
+  }
+
+  reset(): void {
+    this.projects = [];
+    this._ready = null;
+    this.remoteWriteChain = Promise.resolve();
+    this.currentUserId = null;
+    this.persistenceStatus = {
+      mode: 'database',
+      error: null,
+      hint: null,
+    };
   }
 
   /* ── Initialisation ───────────────── */
 
   private async init(): Promise<void> {
     try {
-      await this.ensureSession();
+      const userId = await this.ensureSession();
 
       // 1. Fetch projects
       const { data: rows, error } = await supabase
         .from('projects')
         .select('*')
+        .eq('owner_id', userId)
         .order('created_at', { ascending: false });
 
       if (error) throw error;
 
-      if (!rows || rows.length === 0) {
-        // Seed if empty
-        const seeds = seedProjects();
-        for (const p of seeds) {
-          await this.insertProjectRemote(p);
-        }
-        this.projects = seeds;
+      const projectRows = toTypedRows(rows, isProjectRow, 'projects');
+      if (projectRows.length === 0) {
+        // Account has no projects yet.
+        this.projects = [];
         return;
       }
 
       // 2. Fetch all child rows in parallel
-      const projectIds = rows.map(r => r.id);
+      const projectIds = projectRows.map((row) => row.id);
       const [nodesRes, connsRes, versRes] = await Promise.all([
         supabase.from('prompt_nodes').select('*').in('project_id', projectIds).order('sort_order'),
         supabase.from('connections').select('*').in('project_id', projectIds),
@@ -86,23 +96,26 @@ class Store {
       this.assertNoError(connsRes, 'fetch connections');
       this.assertNoError(versRes, 'fetch prompt_versions');
 
-      const nodesByProject = groupBy(nodesRes.data ?? [], 'project_id');
-      const connsByProject = groupBy(connsRes.data ?? [], 'project_id');
-      const versByProject  = groupBy(versRes.data ?? [], 'project_id');
+      const nodeRows = toTypedRows(nodesRes.data, isPromptNodeRow, 'prompt_nodes');
+      const connectionRows = toTypedRows(connsRes.data, isConnectionRow, 'connections');
+      const versionRows = toTypedRows(versRes.data, isPromptVersionRow, 'prompt_versions');
+      const nodesByProject = groupByProjectId(nodeRows);
+      const connsByProject = groupByProjectId(connectionRows);
+      const versByProject = groupByProjectId(versionRows);
 
-      this.projects = rows.map(r => ({
-        id: r.id,
-        name: r.name,
-        description: r.description,
-        model: r.model,
-        icon: r.icon,
-        lastEdited: r.last_edited,
-        nodes: (nodesByProject[r.id] ?? []).map(toPromptNode),
-        connections: (connsByProject[r.id] ?? []).map(toConnection),
-        versions: (versByProject[r.id] ?? []).map(toVersion),
+      this.projects = projectRows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        description: row.description,
+        model: row.model,
+        icon: row.icon,
+        lastEdited: row.last_edited,
+        nodes: (nodesByProject[row.id] ?? []).map(toPromptNode),
+        connections: (connsByProject[row.id] ?? []).map(toConnection),
+        versions: (versByProject[row.id] ?? []).map(toVersion),
       }));
     } catch (err) {
-      console.error('Supabase init failed, falling back to localStorage:', err);
+      this.setPersistenceFallback('initialization', err);
       if (this.isSchemaMismatch(err)) {
         console.error(
           'Supabase schema mismatch detected. Apply: supabase/migrations/20260216143000_reconcile_promptbuilder_schema.sql'
@@ -115,31 +128,35 @@ class Store {
   /* ── localStorage fallback ────────── */
 
   private loadLocalStorage(): void {
-    const raw = localStorage.getItem('promptblueprint_projects');
+    const raw = localStorage.getItem(this.storageKey());
     if (raw) {
-      try { this.projects = JSON.parse(raw); } catch { this.projects = seedProjects(); }
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        this.projects = isProjectArray(parsed) ? parsed : [];
+      } catch {
+        this.projects = [];
+      }
     } else {
-      this.projects = seedProjects();
+      this.projects = [];
     }
   }
 
   private saveLocalStorage(): void {
-    localStorage.setItem('promptblueprint_projects', JSON.stringify(this.projects));
+    localStorage.setItem(this.storageKey(), JSON.stringify(this.projects));
   }
 
   /* ── Remote helpers ───────────────── */
 
-  private async ensureSession(): Promise<void> {
+  private async ensureSession(): Promise<string> {
     const sessionRes = await supabase.auth.getSession();
     this.assertNoError(sessionRes, 'read auth session');
 
-    if (sessionRes.data.session) return;
-
-    const anonSignInRes = await supabase.auth.signInAnonymously();
-    this.assertNoError(
-      anonSignInRes,
-      'anonymous sign-in failed (enable Anonymous provider in Supabase Auth if this is disabled)'
-    );
+    const userId = sessionRes.data.session?.user.id;
+    if (!userId) {
+      throw new Error('No authenticated session. Sign in to use cloud sync.');
+    }
+    this.currentUserId = userId;
+    return userId;
   }
 
   private assertNoError(result: { error: { message: string } | null }, context: string): void {
@@ -148,21 +165,45 @@ class Store {
     }
   }
 
+  private storageKey(): string {
+    return this.currentUserId
+      ? `promptblueprint_projects_${this.currentUserId}`
+      : 'promptblueprint_projects_guest';
+  }
+
+  private setPersistenceFallback(context: string, err: unknown): void {
+    const error = getErrorMessage(err);
+    const hint = getPersistenceHint(error);
+    this.persistenceStatus = {
+      mode: 'local-fallback',
+      error,
+      hint,
+    };
+
+    console.error(`Supabase ${context} failed, using localStorage fallback: ${error}`);
+    if (hint) {
+      console.error(hint);
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent<StoreRemoteErrorEventDetail>('store:remote-error', {
+        detail: {
+          context,
+          ...this.persistenceStatus,
+        },
+      }));
+    }
+  }
+
   private isSchemaMismatch(err: unknown): boolean {
-    const message =
-      err instanceof Error
-        ? err.message
-        : typeof err === 'string'
-          ? err
-          : typeof err === 'object' && err !== null && 'message' in err
-            ? String((err as { message?: unknown }).message ?? '')
-          : String(err ?? '');
+    const message = getErrorMessage(err);
     return message.includes('schema cache') || message.includes("Could not find the '");
   }
 
-  private async insertProjectRemote(p: Project): Promise<void> {
+  private async insertProjectRemote(p: Project, ownerId: string): Promise<void> {
     const res = await supabase.from('projects').insert({
       id: p.id,
+      owner_id: ownerId,
       name: p.name,
       description: p.description,
       model: p.model,
@@ -173,7 +214,20 @@ class Store {
   }
 
   private bg(fn: () => Promise<void>): void {
-    fn().catch(err => console.error('Supabase bg error:', err));
+    if (this.persistenceStatus.mode !== 'database') {
+      this.saveLocalStorage();
+      return;
+    }
+
+    this.remoteWriteChain = this.remoteWriteChain
+      .then(async () => {
+        if (this.persistenceStatus.mode !== 'database') return;
+        await fn();
+      })
+      .catch((err: unknown) => {
+        this.setPersistenceFallback('background write', err);
+      });
+
     this.saveLocalStorage(); // always keep localStorage in sync as fallback
   }
 
@@ -196,7 +250,12 @@ class Store {
       nodes: [], connections: [], versions: [],
     };
     this.projects.unshift(project);
-    this.bg(async () => { await this.insertProjectRemote(project); });
+    this.bg(async () => {
+      if (!this.currentUserId) {
+        throw new Error('No active user in store session.');
+      }
+      await this.insertProjectRemote(project, this.currentUserId);
+    });
     return project;
   }
 
@@ -244,7 +303,7 @@ class Store {
     p.lastEdited = 'Just now';
     this.bg(async () => {
       // Map model field names to DB column names
-      const dbUpdates: Record<string, unknown> = {};
+      const dbUpdates: PromptNodeUpdate = {};
       if (updates.type !== undefined) dbUpdates.type = updates.type;
       if (updates.label !== undefined) dbUpdates.label = updates.label;
       if (updates.icon !== undefined) dbUpdates.icon = updates.icon;
@@ -285,13 +344,7 @@ class Store {
     const conn: Connection = { id: uid(), from, to };
     p.connections.push(conn);
     this.bg(async () => {
-      const connInsertRes = await supabase.from('connections').insert({
-        id: conn.id,
-        project_id: projectId,
-        from_node_id: from,
-        to_node_id: to,
-      });
-      this.assertNoError(connInsertRes, 'insert connection');
+      await this.insertConnectionRemote(projectId, conn);
     });
   }
 
@@ -371,48 +424,277 @@ class Store {
   persist(): void {
     this.saveLocalStorage();
   }
+
+  private async insertConnectionRemote(projectId: string, connection: Connection): Promise<void> {
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+      const connInsertRes = await supabase.from('connections').insert({
+        id: connection.id,
+        project_id: projectId,
+        from_node_id: connection.from,
+        to_node_id: connection.to,
+      });
+
+      if (!connInsertRes.error) {
+        return;
+      }
+
+      const message = connInsertRes.error.message;
+      const isForeignKeyRace = isConnectionForeignKeyViolation(message);
+      const isLastAttempt = attempt === maxAttempts;
+
+      if (!isForeignKeyRace || isLastAttempt) {
+        this.assertNoError(connInsertRes, 'insert connection');
+        return;
+      }
+
+      await delay(120 * attempt);
+    }
+  }
 }
 
 /* ── Row → model mappers ──────────────────────── */
 
-function toPromptNode(row: Record<string, unknown>): PromptNode {
+function toTypedRows<T>(
+  rows: readonly unknown[] | null,
+  isRow: (value: unknown) => value is T,
+  tableName: string,
+): T[] {
+  if (!rows) return [];
+  const typedRows: T[] = [];
+  for (const row of rows) {
+    if (!isRow(row)) {
+      throw new Error(`Invalid row returned by ${tableName}`);
+    }
+    typedRows.push(row);
+  }
+  return typedRows;
+}
+
+function toPromptNode(row: PromptNodeRow): PromptNode {
   return {
-    id: row.id as string,
-    type: row.type as PromptNode['type'],
-    label: row.label as string,
-    icon: row.icon as string,
-    x: row.x as number,
-    y: row.y as number,
-    content: row.content as string,
-    meta: (row.meta ?? {}) as Record<string, string>,
+    id: row.id,
+    type: toNodeType(row.type),
+    label: row.label,
+    icon: row.icon,
+    x: row.x,
+    y: row.y,
+    content: row.content,
+    meta: row.meta ?? {},
   };
 }
 
-function toConnection(row: Record<string, unknown>): Connection {
+function toConnection(row: ConnectionRow): Connection {
   return {
-    id: row.id as string,
-    from: row.from_node_id as string,
-    to: row.to_node_id as string,
+    id: row.id,
+    from: row.from_node_id,
+    to: row.to_node_id,
   };
 }
 
-function toVersion(row: Record<string, unknown>): PromptVersion {
+function toVersion(row: PromptVersionRow): PromptVersion {
   return {
-    id: row.id as string,
-    timestamp: row.timestamp as number,
-    content: row.content as string,
-    notes: row.notes as string,
+    id: row.id,
+    timestamp: row.timestamp,
+    content: row.content,
+    notes: row.notes,
   };
 }
 
-function groupBy<T extends Record<string, unknown>>(items: T[], key: string): Record<string, T[]> {
+function groupByProjectId<T extends { project_id: string }>(items: T[]): Record<string, T[]> {
   const map: Record<string, T[]> = {};
   for (const item of items) {
-    const k = item[key] as string;
+    const k = item.project_id;
     if (!map[k]) map[k] = [];
     map[k].push(item);
   }
   return map;
 }
 
+function toNodeType(value: string): NodeType {
+  return isNodeType(value) ? value : 'custom';
+}
+
+function isNodeType(value: string): value is NodeType {
+  switch (value) {
+    case 'core-persona':
+    case 'mission-objective':
+    case 'tone-guidelines':
+    case 'language-model':
+    case 'logic-branch':
+    case 'termination':
+    case 'vector-db':
+    case 'static-context':
+    case 'memory-buffer':
+    case 'webhook':
+    case 'transcriber':
+    case 'llm-brain':
+    case 'voice-synth':
+    case 'style-module':
+    case 'custom':
+      return true;
+    default:
+      return false;
+  }
+}
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (typeof err === 'string') return err;
+  if (typeof err === 'object' && err !== null && 'message' in err) {
+    const message = Reflect.get(err, 'message');
+    return typeof message === 'string' ? message : String(message ?? '');
+  }
+  return String(err ?? '');
+}
+
+function getPersistenceHint(errorMessage: string): string | null {
+  const message = errorMessage.toLowerCase();
+  if (message.includes('no authenticated session')) {
+    return 'Sign in to your account to enable per-user cloud sync.';
+  }
+  if (message.includes('anonymous sign-ins are disabled')) {
+    return 'Enable Anonymous auth in Supabase Dashboard -> Authentication -> Providers -> Anonymous.';
+  }
+  if (message.includes('row-level security policy')) {
+    return 'Check RLS policies and ensure you are authenticated before inserts.';
+  }
+  if (message.includes('connections_from_node_id_fkey') || message.includes('connections_to_node_id_fkey')) {
+    return 'A node was referenced before its insert completed. The app now retries and queues writes; reload and try again.';
+  }
+  return null;
+}
+
+function isConnectionForeignKeyViolation(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('connections_from_node_id_fkey') || normalized.includes('connections_to_node_id_fkey');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function isProjectRow(value: unknown): value is ProjectRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    (typeof value.owner_id === 'string' || value.owner_id === null) &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.model === 'string' &&
+    typeof value.icon === 'string' &&
+    typeof value.last_edited === 'string' &&
+    typeof value.created_at === 'string'
+  );
+}
+
+function isPromptNodeRow(value: unknown): value is PromptNodeRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.project_id === 'string' &&
+    typeof value.type === 'string' &&
+    typeof value.label === 'string' &&
+    typeof value.icon === 'string' &&
+    typeof value.x === 'number' &&
+    typeof value.y === 'number' &&
+    typeof value.content === 'string' &&
+    isStringRecord(value.meta) &&
+    typeof value.sort_order === 'number' &&
+    typeof value.created_at === 'string'
+  );
+}
+
+function isConnectionRow(value: unknown): value is ConnectionRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.project_id === 'string' &&
+    typeof value.from_node_id === 'string' &&
+    typeof value.to_node_id === 'string' &&
+    typeof value.created_at === 'string'
+  );
+}
+
+function isPromptVersionRow(value: unknown): value is PromptVersionRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.project_id === 'string' &&
+    typeof value.timestamp === 'number' &&
+    typeof value.content === 'string' &&
+    typeof value.notes === 'string' &&
+    typeof value.created_at === 'string'
+  );
+}
+
+function isProjectArray(value: unknown): value is Project[] {
+  return Array.isArray(value) && value.every(isProject);
+}
+
+function isProject(value: unknown): value is Project {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.model === 'string' &&
+    typeof value.icon === 'string' &&
+    typeof value.lastEdited === 'string' &&
+    Array.isArray(value.nodes) &&
+    value.nodes.every(isPromptNode) &&
+    Array.isArray(value.connections) &&
+    value.connections.every(isConnection) &&
+    Array.isArray(value.versions) &&
+    value.versions.every(isPromptVersion)
+  );
+}
+
+function isPromptNode(value: unknown): value is PromptNode {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.type === 'string' &&
+    isNodeType(value.type) &&
+    typeof value.label === 'string' &&
+    typeof value.icon === 'string' &&
+    typeof value.x === 'number' &&
+    typeof value.y === 'number' &&
+    typeof value.content === 'string' &&
+    isStringRecord(value.meta)
+  );
+}
+
+function isConnection(value: unknown): value is Connection {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.from === 'string' &&
+    typeof value.to === 'string'
+  );
+}
+
+function isPromptVersion(value: unknown): value is PromptVersion {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.timestamp === 'number' &&
+    typeof value.content === 'string' &&
+    typeof value.notes === 'string'
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isStringRecord(value: unknown): value is Record<string, string> {
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((entry) => typeof entry === 'string');
+}
+
 export const store = new Store();
+
+

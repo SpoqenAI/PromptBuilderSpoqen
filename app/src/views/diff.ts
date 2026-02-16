@@ -31,9 +31,9 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
       <header class="h-14 border-b border-primary/10 bg-white dark:bg-background-dark relative flex items-center px-4 z-30">
         <div class="flex items-center gap-2">
           <div class="flex items-center gap-2">
-            <div class="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-white cursor-pointer" id="nav-home">
-              <span class="material-icons text-sm">account_tree</span>
-            </div>
+            <button type="button" class="w-8 h-8 flex items-center justify-center cursor-pointer rounded" id="nav-home" aria-label="Go to dashboard">
+              <img src="/Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
+            </button>
             <div>
               <h1 class="text-sm font-semibold leading-none">${project.name}</h1>
               <span class="text-[10px] text-slate-400 uppercase tracking-wider">Version Diff</span>

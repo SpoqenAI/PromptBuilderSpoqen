@@ -23,10 +23,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     <!-- Top Navigation Bar -->
     <header class="h-14 border-b border-primary/10 relative flex items-center px-4 bg-white dark:bg-background-dark/80 z-20">
       <div class="flex items-center gap-4">
-        <div class="flex items-center gap-2">
-          <div class="w-8 h-8 bg-primary rounded flex items-center justify-center cursor-pointer" id="nav-home">
-            <span class="material-icons text-white text-xl">architecture</span>
-          </div>
+        <div class="flex items-center gap-3 shrink-0">
+          <button type="button" class="h-10 w-10 flex items-center justify-center cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
+            <img src="/Icon.svg" alt="Spoqen" class="h-10 w-10 object-contain" />
+          </button>
           <div>
             <h1 class="text-sm font-semibold leading-none">${project.name}</h1>
             <span class="text-[10px] text-slate-400 uppercase tracking-wider">Visual Prompt Editor</span>

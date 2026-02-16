@@ -132,6 +132,48 @@ export interface Database {
         };
         Relationships: [];
       };
+      user_profiles: {
+        Row: {
+          user_id: string;
+          email: string;
+          full_name: string;
+          role: string;
+          heard_about: string;
+          primary_goal: string;
+          primary_use_case: string;
+          team_size: string;
+          onboarding_completed: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          email: string;
+          full_name?: string;
+          role?: string;
+          heard_about?: string;
+          primary_goal?: string;
+          primary_use_case?: string;
+          team_size?: string;
+          onboarding_completed?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          email?: string;
+          full_name?: string;
+          role?: string;
+          heard_about?: string;
+          primary_goal?: string;
+          primary_use_case?: string;
+          team_size?: string;
+          onboarding_completed?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;

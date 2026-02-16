@@ -3,6 +3,7 @@
  */
 import { store } from '../store';
 import { router } from '../router';
+import { getCurrentUser, getOnboardingProfile, signOut } from '../auth';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas } from './project-nav';
 
@@ -19,10 +20,7 @@ export function renderDashboard(container: HTMLElement): void {
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16 items-center">
           <div class="flex items-center gap-2">
-            <div class="w-8 h-8 bg-primary rounded flex items-center justify-center">
-              <span class="material-icons-outlined text-white text-xl">account_tree</span>
-            </div>
-            <span class="text-xl font-bold tracking-tight text-slate-800 dark:text-white">Prompt<span class="text-primary">Blueprint</span></span>
+            <img src="/Spoqen(2).svg" alt="Spoqen" class="h-8 w-auto" />
           </div>
           <div class="hidden md:flex flex-1 max-w-md mx-8">
             <div class="relative w-full">
@@ -34,11 +32,14 @@ export function renderDashboard(container: HTMLElement): void {
           </div>
           <div class="flex items-center gap-4">
             ${themeToggleHTML()}
+            <button id="btn-sign-out" class="px-3 py-1.5 text-xs font-semibold rounded-lg border border-card-border dark:border-primary/20 text-slate-600 dark:text-slate-300 hover:text-primary hover:border-primary/40 transition-colors">
+              Sign out
+            </button>
             <button class="p-2 text-slate-500 hover:text-primary transition-colors">
               <span class="material-icons-outlined">notifications</span>
             </button>
-            <div class="h-8 w-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center">
-              <span class="text-primary text-xs font-bold">JD</span>
+            <div id="dashboard-user-avatar" class="h-8 w-8 rounded-full bg-primary/20 border border-primary/30 flex items-center justify-center overflow-hidden" aria-label="Signed-in user avatar">
+              <span class="text-primary text-xs font-bold">U</span>
             </div>
           </div>
         </div>
@@ -203,6 +204,18 @@ export function renderDashboard(container: HTMLElement): void {
     router.navigate(`/project/${project.id}`);
   });
 
+  container.querySelector('#btn-sign-out')?.addEventListener('click', () => {
+    void (async () => {
+      try {
+        await signOut();
+        router.navigate('/auth/sign-in');
+      } catch (err) {
+        console.error('Sign-out failed:', err);
+        alert('Sign-out failed. Please try again.');
+      }
+    })();
+  });
+
   // Dashboard layout toggle (grid/list)
   const grid = container.querySelector<HTMLElement>('#project-grid');
   const gridBtn = container.querySelector<HTMLButtonElement>('#btn-grid-view');
@@ -246,4 +259,101 @@ export function renderDashboard(container: HTMLElement): void {
 
   // Theme toggle
   wireThemeToggle(container);
+  void hydrateDashboardAvatar(container);
+}
+
+interface DashboardAvatarState {
+  avatarUrl: string | null;
+  displayName: string;
+  initials: string;
+}
+
+async function hydrateDashboardAvatar(container: HTMLElement): Promise<void> {
+  const avatarRoot = container.querySelector<HTMLElement>('#dashboard-user-avatar');
+  if (!avatarRoot) return;
+
+  try {
+    const avatar = await resolveDashboardAvatar();
+    avatarRoot.setAttribute('title', avatar.displayName);
+    avatarRoot.setAttribute('aria-label', avatar.displayName);
+
+    if (avatar.avatarUrl) {
+      const image = document.createElement('img');
+      image.src = avatar.avatarUrl;
+      image.alt = `${avatar.displayName} avatar`;
+      image.className = 'h-full w-full object-cover';
+      avatarRoot.replaceChildren(image);
+      return;
+    }
+
+    const initials = document.createElement('span');
+    initials.className = 'text-primary text-xs font-bold';
+    initials.textContent = avatar.initials;
+    avatarRoot.replaceChildren(initials);
+  } catch (err) {
+    console.error('Failed to hydrate dashboard avatar:', err);
+  }
+}
+
+async function resolveDashboardAvatar(): Promise<DashboardAvatarState> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return {
+      avatarUrl: null,
+      displayName: 'User',
+      initials: 'U',
+    };
+  }
+
+  const metadata = isRecord(user.user_metadata) ? user.user_metadata : null;
+  const metadataName = getRecordString(metadata, 'full_name');
+  const metadataAvatar = getRecordString(metadata, 'avatar_url') ?? getRecordString(metadata, 'picture');
+
+  let profileName: string | null = null;
+  try {
+    const profile = await getOnboardingProfile(user.id);
+    profileName = profile?.full_name ?? null;
+  } catch {
+    profileName = null;
+  }
+
+  const displayName = profileName || metadataName || user.email || 'User';
+  return {
+    avatarUrl: metadataAvatar,
+    displayName,
+    initials: computeInitials(displayName),
+  };
+}
+
+function computeInitials(displayName: string): string {
+  const tokens = displayName
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  if (tokens.length >= 2) {
+    return `${tokens[0][0]}${tokens[1][0]}`.toUpperCase();
+  }
+
+  if (tokens.length === 1 && tokens[0].includes('@')) {
+    const localPart = tokens[0].split('@')[0];
+    const chars = localPart.replace(/[^a-zA-Z0-9]/g, '').slice(0, 2);
+    return (chars || 'U').toUpperCase();
+  }
+
+  if (tokens.length === 1) {
+    return tokens[0].slice(0, 2).toUpperCase();
+  }
+
+  return 'U';
+}
+
+function getRecordString(record: Record<string, unknown> | null, key: string): string | null {
+  if (!record) return null;
+  const value = record[key];
+  return typeof value === 'string' && value.trim().length > 0 ? value : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

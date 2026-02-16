@@ -330,9 +330,9 @@ export function renderImport(container: HTMLElement): void {
       <!-- Top bar -->
       <header class="h-14 border-b border-primary/10 flex items-center justify-between px-6 bg-white dark:bg-background-dark/80 z-20">
         <div class="flex items-center gap-3">
-          <div class="w-8 h-8 bg-primary rounded flex items-center justify-center cursor-pointer" id="nav-home">
-            <span class="material-icons text-white text-xl">architecture</span>
-          </div>
+          <button type="button" class="w-8 h-8 flex items-center justify-center cursor-pointer rounded" id="nav-home" aria-label="Go to dashboard">
+            <img src="/Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
+          </button>
           <div>
             <h1 class="text-sm font-semibold leading-none">Import Prompt</h1>
             <span class="text-[10px] text-slate-400 uppercase tracking-wider">Step ${step} of 3</span>
