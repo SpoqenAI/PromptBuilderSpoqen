@@ -52,7 +52,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
         </div>
       </header>
 
-      <main class="flex-1 flex flex-col overflow-hidden h-[calc(100vh-3.5rem)]">
+      <main class="flex-1 min-h-0 flex flex-col overflow-hidden">
         ${!hasVersions ? `
           <!-- No versions yet -->
           <div class="flex-1 flex flex-col items-center justify-center gap-4">

@@ -8,6 +8,63 @@ import type { EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { projectViewTabsHTML, wireEscapeToCanvas, wireProjectViewTabs } from './project-nav';
 
+const NODE_ICON_SUGGESTIONS = [
+  'psychology',
+  'flag',
+  'record_voice_over',
+  'translate',
+  'alt_route',
+  'call_end',
+  'storage',
+  'article',
+  'history',
+  'integration_instructions',
+  'mic',
+  'widgets',
+  'hub',
+  'schema',
+  'bolt',
+  'smart_toy',
+  'terminal',
+  'code',
+  'memory',
+  'science',
+  'auto_awesome',
+  'construction',
+  'cloud',
+  'dns',
+  'extension',
+  'flare',
+  'functions',
+  'grid_view',
+  'insights',
+  'key',
+  'lightbulb',
+  'link',
+  'model_training',
+  'network_check',
+  'offline_bolt',
+  'pending',
+  'policy',
+  'query_stats',
+  'robot',
+  'settings',
+  'speed',
+  'star',
+  'sync',
+  'timeline',
+  'track_changes',
+  'transform',
+  'tune',
+  'visibility',
+  'warning',
+  'wifi',
+  'work',
+];
+
+// Create icon options for the dropdown
+const ICON_OPTIONS = NODE_ICON_SUGGESTIONS.map(icon => ({ value: icon, label: icon }));
+
 export function renderEditor(container: HTMLElement, projectId: string, nodeId: string): void {
   const projectOrUndef = store.getProject(projectId);
   if (!projectOrUndef) { router.navigate('/'); return; }
@@ -16,16 +73,28 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
   if (!nodeOrUndef) { router.navigate(`/project/${projectId}`); return; }
   const node = nodeOrUndef;
 
+  const normalizeLineEndings = (value: string): string => value.replace(/\r\n?/g, '\n');
+  const normalizeIconName = (value: string): string =>
+    value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
+
   let tokenizerActive = true;
   let editorFormat: EditorFormat = 'markdown';
-  let currentContent = node.content;
+  let currentContent = normalizeLineEndings(node.content);
+  let currentIcon = normalizeIconName(node.icon) || 'widgets';
 
   const persistDraft = (): void => {
     const labelInput = container.querySelector<HTMLInputElement>('#prop-label');
+    const iconInput = container.querySelector<HTMLInputElement>('#prop-icon');
     const nextLabel = labelInput?.value.trim() || node.label;
-    store.updateNode(projectId, nodeId, { content: currentContent, label: nextLabel });
+    const nextIcon = normalizeIconName(iconInput?.value ?? currentIcon) || 'widgets';
+    store.updateNode(projectId, nodeId, { content: currentContent, label: nextLabel, icon: nextIcon });
     node.content = currentContent;
     node.label = nextLabel;
+    node.icon = nextIcon;
+    currentIcon = nextIcon;
+    if (iconInput) {
+      iconInput.value = nextIcon;
+    }
   };
 
   const closeToCanvas = (): void => {
@@ -83,7 +152,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                 <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 sticky top-0 z-10">
                   <div class="flex items-center gap-3">
                     <div class="p-2 bg-primary/10 rounded-lg text-primary">
-                      <span class="material-icons">${node.icon}</span>
+                      <span id="node-icon-preview" class="material-icons">${currentIcon}</span>
                     </div>
                     <div>
                       <h2 class="font-semibold text-slate-800 dark:text-slate-100">${node.label}</h2>
@@ -107,7 +176,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                 <!-- Content Area with Tokenizer Highlights -->
                 <div class="flex-1 editor-overlay min-h-[400px]">
                   <div class="highlight-layer" id="highlight-layer">${toHighlightedHTML(currentContent, tokenizerActive)}</div>
-                  <textarea id="editor-textarea" spellcheck="false">${currentContent}</textarea>
+                  <textarea id="editor-textarea" spellcheck="false"></textarea>
                 </div>
 
                 <!-- Footer Stats -->
@@ -134,6 +203,46 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                 <div class="space-y-3">
                   <label class="block text-xs font-medium text-slate-500 mb-1.5">Node Label</label>
                   <input id="prop-label" class="w-full bg-slate-50 dark:bg-slate-800 border-none text-sm rounded px-3 py-2 text-slate-700 dark:text-slate-300 focus:ring-1 focus:ring-primary outline-none" value="${node.label}" />
+                </div>
+
+                <!-- Node Icon -->
+                <div class="space-y-3">
+                  <label class="block text-xs font-medium text-slate-500 mb-1.5">Node Icon</label>
+                  <div class="flex items-center gap-2">
+                    <div class="w-9 h-9 rounded bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                      <span id="prop-icon-preview" class="material-icons text-base">${currentIcon}</span>
+                    </div>
+                    <div class="relative flex-1">
+                      <select
+                        id="prop-icon"
+                        class="w-full bg-slate-50 dark:bg-slate-800 border-none text-sm rounded px-3 py-2 text-slate-700 dark:text-slate-300 focus:ring-1 focus:ring-primary outline-none appearance-none cursor-pointer"
+                      >
+                        ${NODE_ICON_SUGGESTIONS.map((icon) => `
+                          <option value="${icon}" ${icon === currentIcon ? 'selected' : ''}>${icon}</option>
+                        `).join('')}
+                      </select>
+                      <div class="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
+                        <span class="material-icons text-sm">expand_more</span>
+                      </div>
+                    </div>
+                  </div>
+                  <!-- Icon Grid Dropdown -->
+                  <div class="relative">
+                    <button type="button" id="icon-grid-toggle" class="w-full py-2 px-3 text-xs font-medium text-primary bg-primary/5 hover:bg-primary/10 rounded border border-primary/20 transition-colors flex items-center justify-center gap-2">
+                      <span class="material-icons text-sm">grid_view</span>
+                      Browse Icons
+                    </button>
+                    <div id="icon-grid-dropdown" class="hidden absolute z-50 left-0 right-0 mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg shadow-xl max-h-64 overflow-y-auto custom-scrollbar">
+                      <div class="p-2 grid grid-cols-6 gap-1">
+                        ${NODE_ICON_SUGGESTIONS.map((icon) => `
+                          <button type="button" class="icon-grid-option p-2 rounded hover:bg-primary/10 transition-colors flex flex-col items-center gap-0.5 ${icon === currentIcon ? 'bg-primary/20 ring-1 ring-primary' : ''}" data-icon="${icon}">
+                            <span class="material-icons text-lg">${icon}</span>
+                            <span class="text-[8px] text-slate-400 truncate w-full text-center">${icon}</span>
+                          </button>
+                        `).join('')}
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <!-- Model Override -->
@@ -206,10 +315,12 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
 
     if (!textarea || !highlightLayer || !tokenCountEl) return;
 
+    // Preserve leading newlines exactly. Avoid populating via innerHTML.
+    textarea.value = currentContent;
     textarea.focus();
 
     textarea.addEventListener('input', () => {
-      currentContent = textarea.value;
+      currentContent = normalizeLineEndings(textarea.value);
       highlightLayer.innerHTML = toHighlightedHTML(currentContent, tokenizerActive);
       tokenCountEl.textContent = String(countTokens(currentContent));
     });
@@ -262,6 +373,60 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
         node.label = value;
         store.updateNode(projectId, nodeId, { label: value });
       }
+    });
+
+    const iconInput = container.querySelector<HTMLSelectElement>('#prop-icon');
+    const nodeIconPreview = container.querySelector<HTMLElement>('#node-icon-preview');
+    const propIconPreview = container.querySelector<HTMLElement>('#prop-icon-preview');
+    const iconGridToggle = container.querySelector<HTMLButtonElement>('#icon-grid-toggle');
+    const iconGridDropdown = container.querySelector<HTMLElement>('#icon-grid-dropdown');
+    
+    const syncIconPreview = (iconName: string): void => {
+      if (nodeIconPreview) nodeIconPreview.textContent = iconName;
+      if (propIconPreview) propIconPreview.textContent = iconName;
+      // Update the select dropdown
+      if (iconInput) iconInput.value = iconName;
+      // Update grid button selection
+      container.querySelectorAll('.icon-grid-option').forEach(btn => {
+        const isSelected = btn.getAttribute('data-icon') === iconName;
+        btn.classList.toggle('bg-primary/20', isSelected);
+        btn.classList.toggle('ring-1', isSelected);
+        btn.classList.toggle('ring-primary', isSelected);
+      });
+    };
+
+    // Toggle icon grid dropdown
+    iconGridToggle?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      iconGridDropdown?.classList.toggle('hidden');
+    });
+
+    // Close dropdown when clicking outside
+    document.addEventListener('click', (e) => {
+      const target = e.target as HTMLElement;
+      if (!target.closest('#icon-grid-dropdown') && !target.closest('#icon-grid-toggle')) {
+        iconGridDropdown?.classList.add('hidden');
+      }
+    });
+
+    // Handle icon grid selection
+    container.querySelectorAll<HTMLElement>('.icon-grid-option').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const selectedIcon = btn.getAttribute('data-icon') || 'widgets';
+        currentIcon = selectedIcon;
+        node.icon = selectedIcon;
+        syncIconPreview(selectedIcon);
+        store.updateNode(projectId, nodeId, { icon: selectedIcon });
+        iconGridDropdown?.classList.add('hidden');
+      });
+    });
+
+    iconInput?.addEventListener('change', () => {
+      const nextIcon = normalizeIconName(iconInput.value) || 'widgets';
+      currentIcon = nextIcon;
+      node.icon = nextIcon;
+      syncIconPreview(nextIcon);
+      store.updateNode(projectId, nodeId, { icon: nextIcon });
     });
 
     container.querySelector('#btn-back-canvas')?.addEventListener('click', () => closeToCanvas());

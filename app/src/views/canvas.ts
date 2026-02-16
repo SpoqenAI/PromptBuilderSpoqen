@@ -49,7 +49,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       </div>
     </header>
 
-    <main class="flex-1 flex overflow-hidden h-[calc(100vh-3.5rem)]">
+    <main class="flex-1 min-h-0 flex overflow-hidden">
       <!-- Sidebar -->
       <aside class="w-64 border-r border-primary/10 bg-white dark:bg-background-dark/50 flex flex-col z-10 shrink-0">
         <div class="p-4 border-b border-primary/5">
@@ -92,10 +92,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         </div>
 
         <!-- SVG for connections -->
-        <svg id="connection-svg" class="absolute inset-0 w-full h-full pointer-events-none z-[1]"></svg>
+        <svg id="connection-svg" class="absolute inset-0 w-full h-full pointer-events-auto z-[1]"></svg>
 
         <!-- Nodes container -->
-        <div id="nodes-container" class="absolute inset-0 z-[2]">
+        <div id="nodes-container" class="absolute inset-0 z-[2] pointer-events-none">
           ${project.nodes.length === 0 ? `
             <!-- Empty Canvas Centered Content -->
             <div class="flex flex-col items-center justify-center h-full" id="empty-hint">
@@ -116,6 +116,28 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
               </p>
             </div>
           ` : ''}
+        </div>
+
+        <!-- Canvas Help Panel -->
+        <div id="canvas-help-panel" class="hidden absolute bottom-24 right-6 w-80 bg-white/95 dark:bg-slate-900/95 border border-primary/20 rounded-xl shadow-2xl backdrop-blur-sm z-20">
+          <div class="flex items-start justify-between gap-3 px-4 py-3 border-b border-primary/10">
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">Canvas Controls</h3>
+              <p class="text-[10px] text-slate-400 mt-0.5">Quick guide for editing the graph</p>
+            </div>
+            <button id="btn-canvas-help-close" class="w-6 h-6 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors" aria-label="Close help panel">
+              <span class="material-icons text-sm">close</span>
+            </button>
+          </div>
+          <div class="px-4 py-3 space-y-2 text-[11px] text-slate-600 dark:text-slate-300">
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Right-click + drag:</span> Pan around the canvas.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Scroll:</span> Zoom in and out.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Drag between ports (either direction):</span> Connect nodes.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click one port, then another:</span> Connect without dragging.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click a connection, then press Delete:</span> Remove it.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Drop a new block on a connection:</span> Insert it between nodes.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Shift + drag a node, then drop on a connection:</span> Reinsert it elsewhere.</div>
+          </div>
         </div>
 
         <!-- Floating Controls -->
@@ -151,7 +173,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           <span class="material-icons text-lg">list_alt</span>
         </button>
         <div class="mt-auto">
-          <button class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary transition-all">
+          <button id="btn-canvas-help" class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Canvas help" aria-expanded="false" aria-controls="canvas-help-panel">
             <span class="material-icons text-lg">help_outline</span>
           </button>
         </div>
@@ -160,21 +182,219 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   `;
 
   // ── Render existing nodes ───────────
+  const canvasArea = container.querySelector<HTMLElement>('#canvas-area')!;
   const nodesContainer = container.querySelector<HTMLElement>('#nodes-container')!;
   const svgEl = container.querySelector<SVGSVGElement>('#connection-svg')!;
 
+  // Viewport (world -> screen): screen = world * zoom + pan
+  const MIN_ZOOM = 0.4;
+  const MAX_ZOOM = 2.5;
+  const ZOOM_STEP = 0.12;
+  let zoom = 1;
+  let panX = 0;
+  let panY = 0;
+
+  function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function applyViewportTransform(): void {
+    nodesContainer.style.transformOrigin = '0 0';
+    nodesContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  }
+
+  function screenToWorld(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = canvasArea.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
+    return {
+      x: (localX - panX) / zoom,
+      y: (localY - panY) / zoom,
+    };
+  }
+
+  function zoomAt(nextZoom: number, focalX: number, focalY: number): void {
+    const clamped = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    if (clamped === zoom) return;
+    const worldXAtFocal = (focalX - panX) / zoom;
+    const worldYAtFocal = (focalY - panY) / zoom;
+    panX = focalX - worldXAtFocal * clamped;
+    panY = focalY - worldYAtFocal * clamped;
+    zoom = clamped;
+    applyViewportTransform();
+    drawConnections();
+  }
+
   // Track port-to-port connection drawing state
-  let connectingFromNodeId: string | null = null;
+  type PortType = 'in' | 'out';
+  interface ConnectionDraft {
+    nodeId: string;
+    portType: PortType;
+    armedByClick: boolean;
+  }
+  let connectionDraft: ConnectionDraft | null = null;
   let tempLine: SVGLineElement | null = null;
+  let connectPointerStartX = 0;
+  let connectPointerStartY = 0;
+  let connectPointerMoved = false;
+  let suppressNextPortClick = false;
+  let selectedConnectionId: string | null = null;
+
+  function suppressPortClickOnce(): void {
+    suppressNextPortClick = true;
+    setTimeout(() => { suppressNextPortClick = false; }, 0);
+  }
+
+  function getPortCenter(portEl: HTMLElement): { x: number; y: number } {
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const rect = portEl.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2 - canvasRect.left,
+      y: rect.top + rect.height / 2 - canvasRect.top,
+    };
+  }
+
+  function resolveConnection(
+    startNodeId: string,
+    startPortType: PortType,
+    endNodeId: string,
+    endPortType: PortType
+  ): { from: string; to: string } | null {
+    if (startNodeId === endNodeId) return null;
+    if (startPortType === 'out' && endPortType === 'in') return { from: startNodeId, to: endNodeId };
+    if (startPortType === 'in' && endPortType === 'out') return { from: endNodeId, to: startNodeId };
+    return null;
+  }
+
+  function clearPortHighlights(): void {
+    nodesContainer.querySelectorAll<HTMLElement>('.port').forEach(port => {
+      port.classList.remove('ring-2', 'ring-primary', 'ring-offset-1');
+      port.style.transform = 'translateY(-50%)';
+    });
+  }
+
+  function highlightConnectionTargets(draft: ConnectionDraft): void {
+    clearPortHighlights();
+
+    const startSelector = draft.portType === 'out' ? '.port-out' : '.port-in';
+    const startPort = nodesContainer.querySelector<HTMLElement>(
+      `.canvas-node[data-node-id="${draft.nodeId}"] ${startSelector}`
+    );
+    if (startPort) {
+      startPort.classList.add('ring-2', 'ring-primary', 'ring-offset-1');
+      startPort.style.transform = 'translateY(-50%) scale(1.25)';
+    }
+
+    const targetSelector = draft.portType === 'out' ? '.port-in' : '.port-out';
+    nodesContainer.querySelectorAll<HTMLElement>(targetSelector).forEach(port => {
+      if (port.dataset.nodeId === draft.nodeId) return;
+      port.classList.add('ring-2', 'ring-primary', 'ring-offset-1');
+      port.style.transform = 'translateY(-50%) scale(1.3)';
+    });
+  }
+
+  function clearConnectionDraft(): void {
+    if (tempLine) {
+      tempLine.remove();
+      tempLine = null;
+    }
+    connectionDraft = null;
+    connectPointerMoved = false;
+    clearPortHighlights();
+  }
+
+  function armConnectionFromPort(nodeId: string, portType: PortType): void {
+    clearConnectionDraft();
+    connectionDraft = { nodeId, portType, armedByClick: true };
+    highlightConnectionTargets(connectionDraft);
+  }
+
+  function beginDragConnectionFromPort(portEl: HTMLElement, nodeId: string, portType: PortType, e: MouseEvent): void {
+    clearConnectionDraft();
+    connectionDraft = { nodeId, portType, armedByClick: false };
+    connectPointerStartX = e.clientX;
+    connectPointerStartY = e.clientY;
+    connectPointerMoved = false;
+
+    const start = getPortCenter(portEl);
+    tempLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+    tempLine.setAttribute('x1', String(start.x));
+    tempLine.setAttribute('y1', String(start.y));
+    tempLine.setAttribute('x2', String(start.x));
+    tempLine.setAttribute('y2', String(start.y));
+    tempLine.setAttribute('stroke', '#23956F');
+    tempLine.setAttribute('stroke-width', '2');
+    tempLine.setAttribute('stroke-dasharray', '6,3');
+    tempLine.setAttribute('opacity', '0.6');
+    svgEl.appendChild(tempLine);
+    highlightConnectionTargets(connectionDraft);
+  }
+
+  function getPortTypeFromElement(portEl: HTMLElement): PortType {
+    return portEl.classList.contains('port-in') ? 'in' : 'out';
+  }
+
+  function tryCreateConnectionBetweenPorts(startDraft: ConnectionDraft, targetPort: HTMLElement): boolean {
+    const targetNodeId = targetPort.dataset.nodeId;
+    if (!targetNodeId) return false;
+
+    const targetPortType = getPortTypeFromElement(targetPort);
+    const resolved = resolveConnection(startDraft.nodeId, startDraft.portType, targetNodeId, targetPortType);
+    if (!resolved) return false;
+
+    const exists = project!.connections.some(c => c.from === resolved.from && c.to === resolved.to);
+    if (!exists) {
+      store.addConnection(projectId, resolved.from, resolved.to);
+      drawConnections();
+    }
+    return true;
+  }
+
+  function getDistanceToConnection(pathEl: SVGPathElement, x: number, y: number): number {
+    const totalLength = pathEl.getTotalLength();
+    if (!Number.isFinite(totalLength) || totalLength <= 0) return Infinity;
+    const samples = Math.max(24, Math.ceil(totalLength / 20));
+    let minDistance = Infinity;
+    for (let i = 0; i <= samples; i++) {
+      const point = pathEl.getPointAtLength((i / samples) * totalLength);
+      const distance = Math.hypot(point.x - x, point.y - y);
+      if (distance < minDistance) minDistance = distance;
+    }
+    return minDistance;
+  }
+
+  function findConnectionNearPoint(clientX: number, clientY: number): { id: string; from: string; to: string } | null {
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const x = clientX - canvasRect.left;
+    const y = clientY - canvasRect.top;
+    const INSERT_THRESHOLD_PX = 20;
+
+    let bestMatch: { id: string; from: string; to: string; distance: number } | null = null;
+    for (const pathEl of svgEl.querySelectorAll<SVGPathElement>('path[data-connection-id][data-role="geometry"]')) {
+      const id = pathEl.dataset.connectionId;
+      const from = pathEl.dataset.fromNodeId;
+      const to = pathEl.dataset.toNodeId;
+      if (!id || !from || !to) continue;
+      const distance = getDistanceToConnection(pathEl, x, y);
+      if (distance > INSERT_THRESHOLD_PX) continue;
+      if (!bestMatch || distance < bestMatch.distance) {
+        bestMatch = { id, from, to, distance };
+      }
+    }
+
+    if (!bestMatch) return null;
+    return { id: bestMatch.id, from: bestMatch.from, to: bestMatch.to };
+  }
 
   function renderNodes(): void {
+    clearConnectionDraft();
     nodesContainer.querySelectorAll('.canvas-node').forEach(el => el.remove());
     const hint = nodesContainer.querySelector('#empty-hint');
     if (project!.nodes.length > 0 && hint) hint.remove();
 
     for (const node of project!.nodes) {
       const el = document.createElement('div');
-      el.className = 'canvas-node bg-white dark:bg-slate-900 border border-primary/40 rounded-lg shadow-xl node-glow w-56';
+      el.className = 'canvas-node pointer-events-auto bg-white dark:bg-slate-900 border border-primary/40 rounded-lg shadow-xl node-glow w-56';
       el.dataset.nodeId = node.id;
       el.style.left = `${node.x}px`;
       el.style.top = `${node.y}px`;
@@ -190,13 +410,13 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         </div>
         <div class="relative">
           <!-- Input port (left side) -->
-          <div class="port-in port absolute -left-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Drop a connection here"></div>
+          <div class="port-in port absolute -left-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
           <!-- Content preview -->
           <div class="p-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono leading-relaxed max-h-24 overflow-hidden">
             ${escapeHTML(node.content).substring(0, 120)}${node.content.length > 120 ? '…' : ''}
           </div>
           <!-- Output port (right side) -->
-          <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Drag to connect"></div>
+          <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
         </div>
         <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-between items-center rounded-b-lg border-t border-primary/10">
           <span class="text-[9px] text-slate-400 uppercase font-medium tracking-wider">${node.type}</span>
@@ -209,6 +429,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       let isDragging = false, didDrag = false, startX = 0, startY = 0, origX = node.x, origY = node.y;
       const header = el.querySelector('.node-header') as HTMLElement;
       header.addEventListener('mousedown', (e: MouseEvent) => {
+        if (e.button !== 0) return;
         if ((e.target as HTMLElement).closest('.node-delete')) return;
         isDragging = true;
         didDrag = false;
@@ -222,13 +443,13 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) {
           didDrag = true;
         }
-        node.x = origX + (e.clientX - startX);
-        node.y = origY + (e.clientY - startY);
+        node.x = origX + (e.clientX - startX) / zoom;
+        node.y = origY + (e.clientY - startY) / zoom;
         el.style.left = `${node.x}px`;
         el.style.top = `${node.y}px`;
         drawConnections();
       };
-      const onMouseUp = () => {
+      const onMouseUp = (e: MouseEvent) => {
         if (isDragging) {
           isDragging = false;
           el.classList.remove('dragging');
@@ -238,40 +459,73 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           el.style.left = `${node.x}px`;
           el.style.top = `${node.y}px`;
           store.updateNode(projectId, node.id, { x: node.x, y: node.y });
+
+          // Shift+drop on an existing connection to reinsert this existing node elsewhere in the graph.
+          if (e.shiftKey) {
+            const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
+            if (connectionToSplit && connectionToSplit.from !== node.id && connectionToSplit.to !== node.id) {
+              const linkedConnections = project!.connections.filter(c => c.from === node.id || c.to === node.id);
+              for (const conn of linkedConnections) {
+                store.removeConnection(projectId, conn.id);
+              }
+              store.removeConnection(projectId, connectionToSplit.id);
+              store.addConnection(projectId, connectionToSplit.from, node.id);
+              store.addConnection(projectId, node.id, connectionToSplit.to);
+            }
+          }
           drawConnections();
         }
       };
       document.addEventListener('mousemove', onMouseMove);
       document.addEventListener('mouseup', onMouseUp);
 
-      // ── Port-based connection drawing ──
+      // Port-based connection drawing (drag OR click-to-click)
+      const inPort = el.querySelector('.port-in') as HTMLElement;
       const outPort = el.querySelector('.port-out') as HTMLElement;
-      outPort.addEventListener('mousedown', (e: MouseEvent) => {
-        e.stopPropagation();
-        e.preventDefault();
-        connectingFromNodeId = node.id;
-        const canvasRect = nodesContainer.getBoundingClientRect();
-        tempLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-        const portRect = outPort.getBoundingClientRect();
-        const x1 = portRect.left + portRect.width / 2 - canvasRect.left;
-        const y1 = portRect.top + portRect.height / 2 - canvasRect.top;
-        tempLine.setAttribute('x1', String(x1));
-        tempLine.setAttribute('y1', String(y1));
-        tempLine.setAttribute('x2', String(x1));
-        tempLine.setAttribute('y2', String(y1));
-        tempLine.setAttribute('stroke', '#23956F');
-        tempLine.setAttribute('stroke-width', '2');
-        tempLine.setAttribute('stroke-dasharray', '6,3');
-        tempLine.setAttribute('opacity', '0.6');
-        svgEl.appendChild(tempLine);
-        // Highlight all input ports as potential targets
-        nodesContainer.querySelectorAll('.port-in').forEach(p => {
-          if ((p as HTMLElement).dataset.nodeId !== node.id) {
-            (p as HTMLElement).classList.add('ring-2', 'ring-primary', 'ring-offset-1');
-            (p as HTMLElement).style.transform = 'translateY(-50%) scale(1.3)';
-          }
+
+      const wirePortConnection = (portEl: HTMLElement, portType: PortType): void => {
+        portEl.addEventListener('mousedown', (e: MouseEvent) => {
+          if (e.button !== 0) return;
+          e.stopPropagation();
+          e.preventDefault();
+          if (connectionDraft?.armedByClick) return;
+          beginDragConnectionFromPort(portEl, node.id, portType, e);
         });
-      });
+
+        portEl.addEventListener('click', (e: MouseEvent) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (suppressNextPortClick) return;
+
+          if (!connectionDraft) {
+            armConnectionFromPort(node.id, portType);
+            return;
+          }
+
+          if (!connectionDraft.armedByClick) return;
+
+          const clickedStartPort =
+            connectionDraft.nodeId === node.id &&
+            connectionDraft.portType === portType;
+
+          if (clickedStartPort) {
+            clearConnectionDraft();
+            return;
+          }
+
+          const created = tryCreateConnectionBetweenPorts(connectionDraft, portEl);
+          if (created) {
+            clearConnectionDraft();
+            return;
+          }
+
+          // If the second click wasn't a compatible target, restart from that port.
+          armConnectionFromPort(node.id, portType);
+        });
+      };
+
+      wirePortConnection(inPort, 'in');
+      wirePortConnection(outPort, 'out');
 
       // Single click node body -> open editor
       el.addEventListener('click', (e: MouseEvent) => {
@@ -294,40 +548,83 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     drawConnections();
   }
 
-  // ── Global mouse handlers for port connection ──
+  // Global mouse handlers for port connection
   document.addEventListener('mousemove', (e: MouseEvent) => {
-    if (!connectingFromNodeId || !tempLine) return;
-    const canvasRect = nodesContainer.getBoundingClientRect();
+    if (!connectionDraft || !tempLine) return;
+    if (Math.abs(e.clientX - connectPointerStartX) > 3 || Math.abs(e.clientY - connectPointerStartY) > 3) {
+      connectPointerMoved = true;
+    }
+    const canvasRect = canvasArea.getBoundingClientRect();
     tempLine.setAttribute('x2', String(e.clientX - canvasRect.left));
     tempLine.setAttribute('y2', String(e.clientY - canvasRect.top));
   });
 
   document.addEventListener('mouseup', (e: MouseEvent) => {
-    if (!connectingFromNodeId || !tempLine) return;
-    const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement;
-    const portIn = target?.closest('.port-in') as HTMLElement | null;
-    if (portIn) {
-      const toNodeId = portIn.dataset.nodeId;
-      if (toNodeId && toNodeId !== connectingFromNodeId) {
-        const exists = project!.connections.some(c => c.from === connectingFromNodeId && c.to === toNodeId);
-        if (!exists) {
-          store.addConnection(projectId, connectingFromNodeId, toNodeId);
-          drawConnections();
-        }
-      }
+    if (!connectionDraft || !tempLine) return;
+
+    const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const targetPort = target?.closest('.port') as HTMLElement | null;
+    const created = targetPort ? tryCreateConnectionBetweenPorts(connectionDraft, targetPort) : false;
+    const clickWithoutDrag = !connectPointerMoved;
+
+    suppressPortClickOnce();
+
+    if (created) {
+      clearConnectionDraft();
+      return;
     }
-    tempLine.remove();
-    tempLine = null;
-    connectingFromNodeId = null;
-    nodesContainer.querySelectorAll('.port-in').forEach(p => {
-      (p as HTMLElement).classList.remove('ring-2', 'ring-primary', 'ring-offset-1');
-      (p as HTMLElement).style.transform = 'translateY(-50%)';
-    });
+
+    if (clickWithoutDrag) {
+      connectionDraft.armedByClick = true;
+      if (tempLine) {
+        tempLine.remove();
+        tempLine = null;
+      }
+      highlightConnectionTargets(connectionDraft);
+      return;
+    }
+
+    clearConnectionDraft();
+  });
+
+  document.addEventListener('mousedown', (e: MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (connectionDraft?.armedByClick && !target.closest('.port')) {
+      clearConnectionDraft();
+    }
+    if (selectedConnectionId && !target.closest('.connector-hit')) {
+      selectedConnectionId = null;
+      drawConnections();
+    }
+  });
+
+  document.addEventListener('keydown', (e: KeyboardEvent) => {
+    if (!selectedConnectionId) return;
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+
+    const target = e.target as HTMLElement | null;
+    const isTypingTarget = target
+      ? target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      : false;
+    if (isTypingTarget) return;
+
+    const selectedConnection = project!.connections.find(c => c.id === selectedConnectionId);
+    if (!selectedConnection) {
+      selectedConnectionId = null;
+      drawConnections();
+      return;
+    }
+
+    store.removeConnection(projectId, selectedConnection.id);
+    selectedConnectionId = null;
+    drawConnections();
+    e.preventDefault();
   });
 
   function drawConnections(): void {
     svgEl.innerHTML = '';
-    const canvasRect = nodesContainer.getBoundingClientRect();
+    const canvasRect = canvasArea.getBoundingClientRect();
+    let selectedConnectionStillExists = false;
 
     for (const conn of project!.connections) {
       const fromEl = nodesContainer.querySelector<HTMLElement>(`[data-node-id="${conn.from}"]`);
@@ -348,22 +645,46 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       const y2 = toRect.top + toRect.height / 2 - canvasRect.top;
 
       const dx = Math.abs(x2 - x1) * 0.5;
+      const curve = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+      const isSelected = conn.id === selectedConnectionId;
+      if (isSelected) selectedConnectionStillExists = true;
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-      path.setAttribute('d', `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
+      path.setAttribute('d', curve);
       path.setAttribute('stroke', '#23956F');
       path.setAttribute('stroke-width', '2');
       path.setAttribute('fill', 'none');
+      path.dataset.connectionId = conn.id;
+      path.dataset.fromNodeId = conn.from;
+      path.dataset.toNodeId = conn.to;
+      path.dataset.role = 'geometry';
       path.classList.add('connector-path');
-      path.style.cursor = 'pointer';
-      path.style.pointerEvents = 'stroke';
+      if (isSelected) path.classList.add('connector-path-selected');
+      path.style.pointerEvents = 'none';
 
-      // Click connection to delete it
-      path.addEventListener('click', () => {
-        if (confirm(`Remove connection from "${fromEl.querySelector('h2')?.textContent?.trim()}" → "${toEl.querySelector('h2')?.textContent?.trim()}"?`)) {
-          store.removeConnection(projectId, conn.id);
-          drawConnections();
-        }
+      // Wide transparent path for reliable click targets.
+      const hitPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      hitPath.setAttribute('d', curve);
+      // Use near-transparent painted stroke so hit-testing works consistently across browsers.
+      hitPath.setAttribute('stroke', '#23956F');
+      hitPath.setAttribute('stroke-opacity', '0.001');
+      hitPath.setAttribute('stroke-width', '14');
+      hitPath.setAttribute('stroke-linecap', 'round');
+      hitPath.setAttribute('fill', 'none');
+      hitPath.classList.add('connector-hit');
+      hitPath.style.cursor = 'pointer';
+      hitPath.style.pointerEvents = 'all';
+      hitPath.addEventListener('click', (e: MouseEvent) => {
+        e.stopPropagation();
+        selectedConnectionId = selectedConnectionId === conn.id ? null : conn.id;
+        drawConnections();
       });
+      hitPath.addEventListener('contextmenu', (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        selectedConnectionId = conn.id;
+        drawConnections();
+      });
+      svgEl.appendChild(hitPath);
       svgEl.appendChild(path);
 
       // Dots at endpoints
@@ -373,6 +694,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         circle.setAttribute('cy', String(cy));
         circle.setAttribute('r', '5');
         circle.setAttribute('fill', '#23956F');
+        circle.style.pointerEvents = 'none';
         svgEl.appendChild(circle);
       }
 
@@ -381,16 +703,112 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       flowDot.setAttribute('r', '3');
       flowDot.setAttribute('fill', '#23956F');
       flowDot.setAttribute('opacity', '0.7');
+      flowDot.style.pointerEvents = 'none';
       const animateMotion = document.createElementNS('http://www.w3.org/2000/svg', 'animateMotion');
       animateMotion.setAttribute('dur', '3s');
       animateMotion.setAttribute('repeatCount', 'indefinite');
-      animateMotion.setAttribute('path', `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`);
+      animateMotion.setAttribute('path', curve);
       flowDot.appendChild(animateMotion);
       svgEl.appendChild(flowDot);
     }
+
+    if (selectedConnectionId && !selectedConnectionStillExists) {
+      selectedConnectionId = null;
+    }
   }
 
+  applyViewportTransform();
   renderNodes();
+
+  // ── Viewport controls: right-click drag pan + button zoom ──
+  let isPanning = false;
+  let panStartMouseX = 0;
+  let panStartMouseY = 0;
+  let panStartX = 0;
+  let panStartY = 0;
+
+  canvasArea.addEventListener('contextmenu', (e: MouseEvent) => {
+    e.preventDefault();
+  });
+
+  canvasArea.addEventListener('mousedown', (e: MouseEvent) => {
+    if (e.button !== 2) return;
+    isPanning = true;
+    panStartMouseX = e.clientX;
+    panStartMouseY = e.clientY;
+    panStartX = panX;
+    panStartY = panY;
+    canvasArea.classList.add('cursor-grabbing');
+    e.preventDefault();
+  });
+
+  document.addEventListener('mousemove', (e: MouseEvent) => {
+    if (!isPanning) return;
+    panX = panStartX + (e.clientX - panStartMouseX);
+    panY = panStartY + (e.clientY - panStartMouseY);
+    applyViewportTransform();
+    drawConnections();
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (!isPanning) return;
+    isPanning = false;
+    canvasArea.classList.remove('cursor-grabbing');
+  });
+
+  const zoomInBtn = container.querySelector<HTMLButtonElement>('#btn-zoom-in');
+  const zoomOutBtn = container.querySelector<HTMLButtonElement>('#btn-zoom-out');
+  const helpBtn = container.querySelector<HTMLButtonElement>('#btn-canvas-help');
+  const helpPanel = container.querySelector<HTMLElement>('#canvas-help-panel');
+  const helpCloseBtn = container.querySelector<HTMLButtonElement>('#btn-canvas-help-close');
+  const zoomAroundViewportCenter = (delta: number): void => {
+    const rect = canvasArea.getBoundingClientRect();
+    zoomAt(zoom + delta, rect.width / 2, rect.height / 2);
+  };
+  zoomInBtn?.addEventListener('click', () => zoomAroundViewportCenter(ZOOM_STEP));
+  zoomOutBtn?.addEventListener('click', () => zoomAroundViewportCenter(-ZOOM_STEP));
+
+  let helpPanelOpen = false;
+  const setHelpPanelOpen = (open: boolean): void => {
+    helpPanelOpen = open;
+    helpPanel?.classList.toggle('hidden', !open);
+    if (helpBtn) {
+      helpBtn.setAttribute('aria-expanded', String(open));
+      helpBtn.classList.toggle('text-primary', open);
+      helpBtn.classList.toggle('bg-primary/10', open);
+    }
+  };
+
+  helpBtn?.addEventListener('click', (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setHelpPanelOpen(!helpPanelOpen);
+  });
+
+  helpCloseBtn?.addEventListener('click', (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setHelpPanelOpen(false);
+  });
+
+  document.addEventListener('click', (e: MouseEvent) => {
+    if (!helpPanelOpen) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('#canvas-help-panel') || target.closest('#btn-canvas-help')) return;
+    setHelpPanelOpen(false);
+  });
+
+  // Mouse wheel / trackpad zoom around cursor
+  canvasArea.addEventListener('wheel', (e: WheelEvent) => {
+    e.preventDefault();
+    const rect = canvasArea.getBoundingClientRect();
+    const focalX = e.clientX - rect.left;
+    const focalY = e.clientY - rect.top;
+    // Exponential scaling feels smoother across mouse wheels and trackpads.
+    const sensitivity = e.ctrlKey ? 0.0025 : 0.0012;
+    const scaleFactor = Math.exp(-e.deltaY * sensitivity);
+    zoomAt(zoom * scaleFactor, focalX, focalY);
+  }, { passive: false });
 
   // ── Sidebar: drag-and-drop AND click-to-add ──
   container.querySelectorAll<HTMLElement>('.sidebar-block').forEach(block => {
@@ -428,18 +846,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         meta: {},
       };
       store.addNode(projectId, node);
-
-      // Auto-connect to last node if exists
-      const nodes = project!.nodes;
-      if (nodes.length > 1) {
-        const prevNode = nodes[nodes.length - 2];
-        store.addConnection(projectId, prevNode.id, node.id);
-      }
       renderNodes();
     });
   });
 
-  const canvasArea = container.querySelector<HTMLElement>('#canvas-area')!;
   canvasArea.addEventListener('dragover', (e: DragEvent) => {
     e.preventDefault();
     canvasArea.classList.add('ring-2', 'ring-primary/30', 'ring-inset');
@@ -454,10 +864,11 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     if (!data) return;
     try {
       const blockData = JSON.parse(data);
-      const rect = canvasArea.getBoundingClientRect();
+      const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
+      const worldPoint = screenToWorld(e.clientX, e.clientY);
       // Snap to 20px grid
-      const rawX = e.clientX - rect.left - 100;
-      const rawY = e.clientY - rect.top - 40;
+      const rawX = worldPoint.x - 100;
+      const rawY = worldPoint.y - 40;
       const node: PromptNode = {
         id: uid(),
         type: blockData.type,
@@ -470,11 +881,11 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       };
       store.addNode(projectId, node);
 
-      // Auto-connect to last node if exists
-      const nodes = project!.nodes;
-      if (nodes.length > 1) {
-        const prevNode = nodes[nodes.length - 2];
-        store.addConnection(projectId, prevNode.id, node.id);
+      // If dropped on an existing connection, split it and insert the new node between.
+      if (connectionToSplit) {
+        store.removeConnection(projectId, connectionToSplit.id);
+        store.addConnection(projectId, connectionToSplit.from, node.id);
+        store.addConnection(projectId, node.id, connectionToSplit.to);
       }
 
       renderNodes();

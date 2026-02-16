@@ -55,6 +55,8 @@ class Store {
 
   private async init(): Promise<void> {
     try {
+      await this.ensureSession();
+
       // 1. Fetch projects
       const { data: rows, error } = await supabase
         .from('projects')
@@ -80,6 +82,9 @@ class Store {
         supabase.from('connections').select('*').in('project_id', projectIds),
         supabase.from('prompt_versions').select('*').in('project_id', projectIds).order('timestamp'),
       ]);
+      this.assertNoError(nodesRes, 'fetch prompt_nodes');
+      this.assertNoError(connsRes, 'fetch connections');
+      this.assertNoError(versRes, 'fetch prompt_versions');
 
       const nodesByProject = groupBy(nodesRes.data ?? [], 'project_id');
       const connsByProject = groupBy(connsRes.data ?? [], 'project_id');
@@ -98,6 +103,11 @@ class Store {
       }));
     } catch (err) {
       console.error('Supabase init failed, falling back to localStorage:', err);
+      if (this.isSchemaMismatch(err)) {
+        console.error(
+          'Supabase schema mismatch detected. Apply: supabase/migrations/20260216143000_reconcile_promptbuilder_schema.sql'
+        );
+      }
       this.loadLocalStorage();
     }
   }
@@ -119,8 +129,39 @@ class Store {
 
   /* ── Remote helpers ───────────────── */
 
+  private async ensureSession(): Promise<void> {
+    const sessionRes = await supabase.auth.getSession();
+    this.assertNoError(sessionRes, 'read auth session');
+
+    if (sessionRes.data.session) return;
+
+    const anonSignInRes = await supabase.auth.signInAnonymously();
+    this.assertNoError(
+      anonSignInRes,
+      'anonymous sign-in failed (enable Anonymous provider in Supabase Auth if this is disabled)'
+    );
+  }
+
+  private assertNoError(result: { error: { message: string } | null }, context: string): void {
+    if (result.error) {
+      throw new Error(`${context}: ${result.error.message}`);
+    }
+  }
+
+  private isSchemaMismatch(err: unknown): boolean {
+    const message =
+      err instanceof Error
+        ? err.message
+        : typeof err === 'string'
+          ? err
+          : typeof err === 'object' && err !== null && 'message' in err
+            ? String((err as { message?: unknown }).message ?? '')
+          : String(err ?? '');
+    return message.includes('schema cache') || message.includes("Could not find the '");
+  }
+
   private async insertProjectRemote(p: Project): Promise<void> {
-    const { error } = await supabase.from('projects').insert({
+    const res = await supabase.from('projects').insert({
       id: p.id,
       name: p.name,
       description: p.description,
@@ -128,7 +169,7 @@ class Store {
       icon: p.icon,
       last_edited: p.lastEdited,
     });
-    if (error) console.error('insert project:', error.message);
+    this.assertNoError(res, 'insert project');
   }
 
   private bg(fn: () => Promise<void>): void {
@@ -163,8 +204,8 @@ class Store {
     this.projects = this.projects.filter(p => p.id !== id);
     this.bg(async () => {
       // Cascade delete handled by DB foreign keys
-      const { error } = await supabase.from('projects').delete().eq('id', id);
-      if (error) console.error('delete project:', error.message);
+      const res = await supabase.from('projects').delete().eq('id', id);
+      this.assertNoError(res, 'delete project');
     });
   }
 
@@ -176,7 +217,7 @@ class Store {
     p.nodes.push(node);
     p.lastEdited = 'Just now';
     this.bg(async () => {
-      await supabase.from('prompt_nodes').insert({
+      const nodeInsertRes = await supabase.from('prompt_nodes').insert({
         id: node.id,
         project_id: projectId,
         type: node.type,
@@ -188,7 +229,9 @@ class Store {
         meta: node.meta,
         sort_order: p.nodes.length - 1,
       });
-      await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
+      this.assertNoError(nodeInsertRes, 'insert prompt_node');
+      const projectUpdateRes = await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
+      this.assertNoError(projectUpdateRes, 'touch project last_edited');
     });
   }
 
@@ -210,9 +253,11 @@ class Store {
       if (updates.content !== undefined) dbUpdates.content = updates.content;
       if (updates.meta !== undefined) dbUpdates.meta = updates.meta;
       if (Object.keys(dbUpdates).length > 0) {
-        await supabase.from('prompt_nodes').update(dbUpdates).eq('id', nodeId);
+        const nodeUpdateRes = await supabase.from('prompt_nodes').update(dbUpdates).eq('id', nodeId);
+        this.assertNoError(nodeUpdateRes, 'update prompt_node');
       }
-      await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
+      const projectUpdateRes = await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
+      this.assertNoError(projectUpdateRes, 'touch project last_edited');
     });
   }
 
@@ -224,8 +269,10 @@ class Store {
     p.lastEdited = 'Just now';
     this.bg(async () => {
       // Connections cascade via FK on delete
-      await supabase.from('prompt_nodes').delete().eq('id', nodeId);
-      await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
+      const nodeDeleteRes = await supabase.from('prompt_nodes').delete().eq('id', nodeId);
+      this.assertNoError(nodeDeleteRes, 'delete prompt_node');
+      const projectUpdateRes = await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
+      this.assertNoError(projectUpdateRes, 'touch project last_edited');
     });
   }
 
@@ -238,12 +285,13 @@ class Store {
     const conn: Connection = { id: uid(), from, to };
     p.connections.push(conn);
     this.bg(async () => {
-      await supabase.from('connections').insert({
+      const connInsertRes = await supabase.from('connections').insert({
         id: conn.id,
         project_id: projectId,
         from_node_id: from,
         to_node_id: to,
       });
+      this.assertNoError(connInsertRes, 'insert connection');
     });
   }
 
@@ -252,7 +300,8 @@ class Store {
     if (!p) return;
     p.connections = p.connections.filter(c => c.id !== connectionId);
     this.bg(async () => {
-      await supabase.from('connections').delete().eq('id', connectionId);
+      const connDeleteRes = await supabase.from('connections').delete().eq('id', connectionId);
+      this.assertNoError(connDeleteRes, 'delete connection');
     });
   }
 
@@ -264,13 +313,14 @@ class Store {
     if (p) {
       p.versions.push(ver);
       this.bg(async () => {
-        await supabase.from('prompt_versions').insert({
+        const versionInsertRes = await supabase.from('prompt_versions').insert({
           id: ver.id,
           project_id: projectId,
           timestamp: ver.timestamp,
           content: ver.content,
           notes: ver.notes,
         });
+        this.assertNoError(versionInsertRes, 'insert prompt_version');
       });
     }
     return ver;

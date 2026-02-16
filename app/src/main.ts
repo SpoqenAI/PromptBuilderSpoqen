@@ -17,7 +17,7 @@ import { store } from './store';
 applyTheme();
 
 const app = document.getElementById('app')!;
-app.className = 'flex flex-col min-h-screen';
+app.className = 'flex flex-col h-screen overflow-hidden';
 
 // Show loading indicator while Supabase data loads
 app.innerHTML = `

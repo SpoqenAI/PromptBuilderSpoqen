@@ -55,6 +55,10 @@ function esc(str: string): string {
   return d.innerHTML;
 }
 
+function normalizeLineEndings(str: string): string {
+  return str.replace(/\r\n?/g, '\n');
+}
+
 /* ── Guess a node type from content ───────────── */
 
 function guessNodeType(text: string): { type: NodeType; label: string; icon: string } {
@@ -87,8 +91,40 @@ export function renderImport(container: HTMLElement): void {
   let projectModel = 'GPT-4o';
   let lines: string[] = [];
   let sections: Section[] = [];
+  let step2SplitScrollTop = 0;
+  let step2SplitScrollLeft = 0;
+  let step2SectionsScrollTop = 0;
 
-  function render(): void {
+  function captureStep2Scroll(): void {
+    const splitContent = container.querySelector<HTMLElement>('#split-content');
+    const sectionsList = container.querySelector<HTMLElement>('#sections-list');
+    if (splitContent) {
+      step2SplitScrollTop = splitContent.scrollTop;
+      step2SplitScrollLeft = splitContent.scrollLeft;
+    }
+    if (sectionsList) {
+      step2SectionsScrollTop = sectionsList.scrollTop;
+    }
+  }
+
+  function restoreStep2Scroll(): void {
+    const splitContent = container.querySelector<HTMLElement>('#split-content');
+    const sectionsList = container.querySelector<HTMLElement>('#sections-list');
+    if (splitContent) {
+      splitContent.scrollTop = step2SplitScrollTop;
+      splitContent.scrollLeft = step2SplitScrollLeft;
+    }
+    if (sectionsList) {
+      sectionsList.scrollTop = step2SectionsScrollTop;
+    }
+  }
+
+  function render(options?: { preserveStep2Scroll?: boolean }): void {
+    const preserveStep2Scroll = options?.preserveStep2Scroll === true && step === 2;
+    if (preserveStep2Scroll) {
+      captureStep2Scroll();
+    }
+
     container.innerHTML = `
       <!-- Top bar -->
       <header class="h-14 border-b border-primary/10 flex items-center justify-between px-6 bg-white dark:bg-background-dark/80 z-20">
@@ -124,12 +160,16 @@ export function renderImport(container: HTMLElement): void {
       </div>
 
       <!-- Step content -->
-      <main class="flex-1 overflow-hidden">
+      <main class="flex-1 min-h-0 overflow-auto custom-scrollbar">
         ${step === 1 ? renderStep1() : step === 2 ? renderStep2() : renderStep3()}
       </main>
     `;
     wireEvents();
     wireThemeToggle(container);
+
+    if (preserveStep2Scroll) {
+      requestAnimationFrame(() => restoreStep2Scroll());
+    }
   }
 
   function renderStepIndicator(num: number, icon: string, label: string): string {
@@ -214,7 +254,7 @@ export function renderImport(container: HTMLElement): void {
 
   function renderStep2(): string {
     return `
-      <div class="flex h-[calc(100vh-10rem)] animate-in">
+      <div class="flex h-full min-h-0 animate-in">
         <!-- Left: Interactive text with split markers -->
         <div class="flex-1 flex flex-col border-r border-primary/10">
           <div class="px-5 py-3 bg-white dark:bg-background-dark/50 border-b border-primary/5 flex items-center justify-between">
@@ -440,7 +480,7 @@ export function renderImport(container: HTMLElement): void {
 
     container.querySelector('#btn-paste-clipboard')?.addEventListener('click', async () => {
       try {
-        const text = await navigator.clipboard.readText();
+        const text = normalizeLineEndings(await navigator.clipboard.readText());
         textArea.value = text;
         promptText = text;
         charCount.textContent = `${text.length} chars`;
@@ -450,6 +490,7 @@ export function renderImport(container: HTMLElement): void {
 
     nextBtn.addEventListener('click', () => {
       if (promptText.trim().length === 0) return;
+      promptText = normalizeLineEndings(promptText);
       lines = promptText.split('\n');
       // Initialize with a single section covering everything
       if (sections.length === 0) {
@@ -511,14 +552,14 @@ export function renderImport(container: HTMLElement): void {
           }
         }
         // Re-render to update icons
-        render();
+        render({ preserveStep2Scroll: true });
       });
     });
 
     // Auto-split
     container.querySelector('#btn-auto-split')?.addEventListener('click', () => {
       autoSplit();
-      render();
+      render({ preserveStep2Scroll: true });
     });
 
     // Clear all splits
@@ -532,7 +573,7 @@ export function renderImport(container: HTMLElement): void {
         startLine: 0,
         endLine: lines.length - 1,
       }];
-      render();
+      render({ preserveStep2Scroll: true });
     });
 
     // Navigation
@@ -596,7 +637,7 @@ export function renderImport(container: HTMLElement): void {
       endLine: newEndForNext,
     };
     sections.splice(secIdx + 1, 0, newSec);
-    render();
+    render({ preserveStep2Scroll: true });
   }
 
   function removeSplitAfter(afterLine: number): void {
@@ -608,7 +649,7 @@ export function renderImport(container: HTMLElement): void {
     const next = sections[secIdx + 1];
     sections[secIdx].endLine = next.endLine;
     sections.splice(secIdx + 1, 1);
-    render();
+    render({ preserveStep2Scroll: true });
   }
 
   function autoSplit(): void {

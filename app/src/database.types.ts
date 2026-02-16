@@ -9,6 +9,7 @@ export interface Database {
       projects: {
         Row: {
           id: string;
+          owner_id: string | null;
           name: string;
           description: string;
           model: string;
@@ -18,6 +19,7 @@ export interface Database {
         };
         Insert: {
           id?: string;
+          owner_id?: string | null;
           name: string;
           description?: string;
           model?: string;
@@ -27,6 +29,7 @@ export interface Database {
         };
         Update: {
           id?: string;
+          owner_id?: string | null;
           name?: string;
           description?: string;
           model?: string;
@@ -34,6 +37,7 @@ export interface Database {
           last_edited?: string;
           created_at?: string;
         };
+        Relationships: [];
       };
       prompt_nodes: {
         Row: {
@@ -75,6 +79,7 @@ export interface Database {
           sort_order?: number;
           created_at?: string;
         };
+        Relationships: [];
       };
       connections: {
         Row: {
@@ -98,6 +103,7 @@ export interface Database {
           to_node_id?: string;
           created_at?: string;
         };
+        Relationships: [];
       };
       prompt_versions: {
         Row: {
@@ -124,6 +130,7 @@ export interface Database {
           notes?: string;
           created_at?: string;
         };
+        Relationships: [];
       };
     };
     Views: Record<string, never>;

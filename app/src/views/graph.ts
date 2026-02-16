@@ -41,7 +41,7 @@ export function renderGraph(container: HTMLElement, projectId: string): void {
       </div>
     </header>
 
-    <main class="flex-1 flex overflow-hidden h-[calc(100vh-3.5rem)]">
+    <main class="flex-1 min-h-0 flex overflow-hidden">
       <!-- Graph Canvas -->
       <section id="graph-canvas" class="flex-1 relative blueprint-grid overflow-auto">
         <!-- Connection Lines SVG -->

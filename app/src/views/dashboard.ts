@@ -6,6 +6,9 @@ import { router } from '../router';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas } from './project-nav';
 
+type DashboardLayout = 'grid' | 'list';
+const DASHBOARD_LAYOUT_KEY = 'promptblueprint_dashboard_layout';
+
 export function renderDashboard(container: HTMLElement): void {
   clearProjectEscapeToCanvas(container);
   const projects = store.getProjects();
@@ -42,7 +45,7 @@ export function renderDashboard(container: HTMLElement): void {
       </div>
     </nav>
 
-    <main class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+    <main class="flex-1 min-h-0 overflow-y-auto custom-scrollbar max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
       <!-- Action Header -->
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
@@ -51,11 +54,11 @@ export function renderDashboard(container: HTMLElement): void {
         </div>
         <div class="flex items-center gap-3">
           <div class="flex bg-white dark:bg-slate-800 border border-card-border dark:border-primary/20 rounded-lg p-1">
-            <button class="p-1.5 bg-primary/10 text-primary rounded-md">
+            <button id="btn-grid-view" type="button" aria-label="Grid view" aria-pressed="true" class="p-1.5 rounded-md transition-colors bg-primary/10 text-primary">
               <span class="material-icons-outlined text-sm">grid_view</span>
             </button>
-            <button class="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
-              <span class="material-icons-outlined text-sm">list</span>
+            <button id="btn-list-view" type="button" aria-label="List view" aria-pressed="false" class="p-1.5 rounded-md transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700">
+              <span class="material-icons-outlined text-sm">view_list</span>
             </button>
           </div>
           <button id="btn-import-prompt" class="flex items-center gap-2 border border-primary/30 text-primary hover:bg-primary/5 px-4 py-2 rounded-lg font-medium transition-all">
@@ -73,18 +76,18 @@ export function renderDashboard(container: HTMLElement): void {
       <div id="project-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         ${projects.map(p => `
           <div class="project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden flex flex-col" data-id="${p.id}">
-            <div class="h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
+            <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
               <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
               <span class="material-icons-outlined text-slate-300 dark:text-slate-700 text-5xl">${p.icon}</span>
             </div>
-            <div class="p-5 flex-1 flex flex-col">
+            <div class="project-card-body p-5 flex-1 flex flex-col">
               <div class="flex justify-between items-start mb-2">
                 <h3 class="font-semibold text-slate-800 dark:text-slate-100 group-hover:text-primary transition-colors">${p.name}</h3>
                 <button class="delete-project text-slate-400 hover:text-red-500 dark:hover:text-red-400" data-id="${p.id}" title="Delete project">
                   <span class="material-icons-outlined text-lg">delete_outline</span>
                 </button>
               </div>
-              <p class="text-sm text-neutral-gray dark:text-neutral-gray/80 line-clamp-2 mb-4">${p.description}</p>
+              <p class="project-description text-sm text-neutral-gray dark:text-neutral-gray/80 line-clamp-2 mb-4">${p.description}</p>
               <div class="mt-auto">
                 <div class="flex items-center gap-2 mb-3">
                   <span class="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold uppercase tracking-wider rounded border border-primary/20">${p.model}</span>
@@ -103,8 +106,10 @@ export function renderDashboard(container: HTMLElement): void {
           <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
             <span class="material-icons-outlined text-2xl">add_circle_outline</span>
           </div>
-          <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Blueprint</span>
-          <span class="text-[11px] text-slate-400 mt-1">Start from a blank canvas</span>
+          <div class="new-project-card-copy flex flex-col items-center">
+            <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Blueprint</span>
+            <span class="text-[11px] text-slate-400 mt-1">Start from a blank canvas</span>
+          </div>
         </div>
       </div>
 
@@ -197,6 +202,37 @@ export function renderDashboard(container: HTMLElement): void {
     closeModal();
     router.navigate(`/project/${project.id}`);
   });
+
+  // Dashboard layout toggle (grid/list)
+  const grid = container.querySelector<HTMLElement>('#project-grid');
+  const gridBtn = container.querySelector<HTMLButtonElement>('#btn-grid-view');
+  const listBtn = container.querySelector<HTMLButtonElement>('#btn-list-view');
+
+  const setViewButtonState = (button: HTMLButtonElement, active: boolean): void => {
+    button.classList.toggle('bg-primary/10', active);
+    button.classList.toggle('text-primary', active);
+    button.classList.toggle('text-slate-400', !active);
+    button.classList.toggle('hover:text-slate-600', !active);
+    button.classList.toggle('dark:hover:text-slate-200', !active);
+    button.setAttribute('aria-pressed', String(active));
+  };
+
+  const applyLayout = (layout: DashboardLayout): void => {
+    if (!grid || !gridBtn || !listBtn) return;
+    const listView = layout === 'list';
+    grid.classList.toggle('dashboard-list-view', listView);
+    setViewButtonState(gridBtn, !listView);
+    setViewButtonState(listBtn, listView);
+    localStorage.setItem(DASHBOARD_LAYOUT_KEY, layout);
+  };
+
+  if (grid && gridBtn && listBtn) {
+    const savedLayout = localStorage.getItem(DASHBOARD_LAYOUT_KEY);
+    const initialLayout: DashboardLayout = savedLayout === 'list' ? 'list' : 'grid';
+    gridBtn.addEventListener('click', () => applyLayout('grid'));
+    listBtn.addEventListener('click', () => applyLayout('list'));
+    applyLayout(initialLayout);
+  }
 
   // Search filter
   const searchInput = container.querySelector<HTMLInputElement>('#search-input');

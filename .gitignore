@@ -71,6 +71,7 @@ logs/
 # Supabase / Database
 # ===========================================
 .supabase/
+supabase/.temp/
 .temp/
 .branches/
 

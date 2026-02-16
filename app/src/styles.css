@@ -20,6 +20,7 @@
 
 /* ── Base ──────────────────────────────────────── */
 html {
+  height: 100%;
   background-color: var(--color-background-light);
 }
 html.dark {
@@ -27,6 +28,9 @@ html.dark {
 }
 
 body {
+  margin: 0;
+  min-height: 100%;
+  overflow: hidden;
   font-family: var(--font-display);
   background-color: var(--color-background-light);
   background-image: radial-gradient(rgba(35, 149, 111, 0.08) 1px, transparent 1px);
@@ -38,13 +42,17 @@ html.dark body {
   color: #e2e8f0;
 }
 
+#app {
+  min-height: 0;
+}
+
 /* ── Tokenizer highlight classes (6 colors) ───── */
-.token-1 { background-color: rgba(35, 149, 111, 0.18); border-bottom: 2px solid rgba(35, 149, 111, 0.4); border-radius: 2px; padding: 0 1px; }
-.token-2 { background-color: rgba(59, 130, 246, 0.18); border-bottom: 2px solid rgba(59, 130, 246, 0.4); border-radius: 2px; padding: 0 1px; }
-.token-3 { background-color: rgba(139, 92, 246, 0.18); border-bottom: 2px solid rgba(139, 92, 246, 0.4); border-radius: 2px; padding: 0 1px; }
-.token-4 { background-color: rgba(245, 158, 11, 0.18); border-bottom: 2px solid rgba(245, 158, 11, 0.4); border-radius: 2px; padding: 0 1px; }
-.token-5 { background-color: rgba(236, 72, 153, 0.18); border-bottom: 2px solid rgba(236, 72, 153, 0.4); border-radius: 2px; padding: 0 1px; }
-.token-6 { background-color: rgba(20, 184, 166, 0.18); border-bottom: 2px solid rgba(20, 184, 166, 0.4); border-radius: 2px; padding: 0 1px; }
+.token-1 { background-color: rgba(35, 149, 111, 0.18); box-shadow: inset 0 -2px 0 rgba(35, 149, 111, 0.4); border-radius: 2px; }
+.token-2 { background-color: rgba(59, 130, 246, 0.18); box-shadow: inset 0 -2px 0 rgba(59, 130, 246, 0.4); border-radius: 2px; }
+.token-3 { background-color: rgba(139, 92, 246, 0.18); box-shadow: inset 0 -2px 0 rgba(139, 92, 246, 0.4); border-radius: 2px; }
+.token-4 { background-color: rgba(245, 158, 11, 0.18); box-shadow: inset 0 -2px 0 rgba(245, 158, 11, 0.4); border-radius: 2px; }
+.token-5 { background-color: rgba(236, 72, 153, 0.18); box-shadow: inset 0 -2px 0 rgba(236, 72, 153, 0.4); border-radius: 2px; }
+.token-6 { background-color: rgba(20, 184, 166, 0.18); box-shadow: inset 0 -2px 0 rgba(20, 184, 166, 0.4); border-radius: 2px; }
 
 /* ── Canvas grid background ───────────────────── */
 .canvas-grid {
@@ -83,6 +91,76 @@ html.dark .blueprint-grid {
               0 4px 6px -2px rgba(35, 149, 111, 0.05);
 }
 
+#project-grid.dashboard-list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+#project-grid.dashboard-list-view .project-card {
+  flex-direction: row;
+  min-height: 124px;
+}
+
+#project-grid.dashboard-list-view .project-card .project-card-hero {
+  width: 176px;
+  min-width: 176px;
+  height: auto;
+  border-bottom: 0;
+  border-right: 1px solid var(--color-card-border);
+}
+
+html.dark #project-grid.dashboard-list-view .project-card .project-card-hero {
+  border-right-color: rgba(35, 149, 111, 0.15);
+}
+
+#project-grid.dashboard-list-view .project-card .project-card-body {
+  padding: 1rem 1.25rem;
+}
+
+#project-grid.dashboard-list-view .project-card .project-description {
+  margin-bottom: 0.5rem;
+}
+
+#project-grid.dashboard-list-view #new-project-card {
+  min-height: 124px;
+  align-items: center;
+  justify-content: flex-start;
+  flex-direction: row;
+  gap: 0.75rem;
+  padding: 1rem 1.25rem;
+}
+
+#project-grid.dashboard-list-view #new-project-card > div:first-child {
+  margin-bottom: 0;
+}
+
+#project-grid.dashboard-list-view #new-project-card .new-project-card-copy {
+  align-items: flex-start;
+}
+
+@media (max-width: 767px) {
+  #project-grid.dashboard-list-view .project-card {
+    flex-direction: column;
+  }
+
+  #project-grid.dashboard-list-view .project-card .project-card-hero {
+    width: 100%;
+    min-width: 0;
+    height: 7rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-card-border);
+  }
+
+  html.dark #project-grid.dashboard-list-view .project-card .project-card-hero {
+    border-bottom-color: rgba(35, 149, 111, 0.15);
+  }
+
+  #project-grid.dashboard-list-view #new-project-card {
+    align-items: flex-start;
+  }
+}
+
 /* ── Node glow ────────────────────────────────── */
 .node-glow {
   transition: box-shadow 200ms ease;
@@ -94,6 +172,12 @@ html.dark .blueprint-grid {
 /* ── Connector SVG path glow ──────────────────── */
 .connector-path {
   filter: drop-shadow(0 0 4px rgba(35, 149, 111, 0.5));
+}
+.connector-path-selected {
+  stroke: #0ea5e9;
+  stroke-width: 3px;
+  stroke-dasharray: 7 4;
+  filter: drop-shadow(0 0 8px rgba(14, 165, 233, 0.65));
 }
 
 /* ── Diff classes ──────────────────────────────── */
@@ -177,6 +261,8 @@ html.dark .port {
   inset: 0;
   width: 100%;
   height: 100%;
+  box-sizing: border-box;
+  margin: 0;
   background: transparent;
   color: transparent;
   caret-color: #23956F;
@@ -188,6 +274,9 @@ html.dark .port {
   font-size: 15px;
   line-height: 1.65;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
+  overflow: auto;
+  tab-size: 4;
   z-index: 2;
 }
 .editor-overlay textarea::selection {
@@ -197,14 +286,17 @@ html.dark .port {
 .editor-overlay .highlight-layer {
   position: absolute;
   inset: 0;
+  box-sizing: border-box;
   padding: 2rem;
   font-family: var(--font-mono);
   font-size: 15px;
   line-height: 1.65;
   white-space: pre-wrap;
+  overflow-wrap: break-word;
+  tab-size: 4;
   z-index: 1;
   pointer-events: none;
-  overflow-y: auto;
+  overflow: auto;
 }
 
 /* ── Import wizard: split zones ───────────────── */

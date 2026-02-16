@@ -109,8 +109,9 @@ function escapeHTML(str: string): string {
  */
 export function toHighlightedHTML(text: string, active: boolean): string {
   if (!text) return '';
-  if (!active) return escapeHTML(text).replace(/\n/g, '<br/>');
-  const tokens = tokenize(text);
+  const normalized = text.replace(/\r\n?/g, '\n');
+  if (!active) return escapeHTML(normalized).replace(/\n/g, '<br/>');
+  const tokens = tokenize(normalized);
   return tokens
     .map((t) => {
       const escaped = escapeHTML(t.text);
