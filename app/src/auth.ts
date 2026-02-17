@@ -15,6 +15,15 @@ export interface OnboardingInput {
   teamSize: string;
 }
 
+export interface AccountProfileInput {
+  fullName: string;
+  role: string;
+  heardAbout: string;
+  primaryGoal: string;
+  primaryUseCase: string;
+  teamSize: string;
+}
+
 export interface SignUpResult {
   duplicateAccount: boolean;
   emailVerificationRequired: boolean;
@@ -144,6 +153,87 @@ export async function saveOnboardingProfile(
   if (saveRes.error) {
     throw new Error(`save onboarding failed: ${saveRes.error.message}`);
   }
+}
+
+export async function updateCurrentUserProfile(input: AccountProfileInput): Promise<UserProfileRow> {
+  const user = await getCurrentUser();
+  if (!user) {
+    throw new Error('update profile failed: no active user session');
+  }
+
+  const payload: UserProfileInsert = {
+    user_id: user.id,
+    email: user.email ?? '',
+    full_name: input.fullName.trim(),
+    role: input.role.trim(),
+    heard_about: input.heardAbout.trim(),
+    primary_goal: input.primaryGoal.trim(),
+    primary_use_case: input.primaryUseCase.trim(),
+    team_size: input.teamSize.trim(),
+    onboarding_completed: true,
+    updated_at: new Date().toISOString(),
+  };
+
+  const profileRes = await supabase
+    .from('user_profiles')
+    .upsert(payload, { onConflict: 'user_id' })
+    .select('*')
+    .single();
+
+  if (profileRes.error) {
+    throw new Error(`update profile failed: ${profileRes.error.message}`);
+  }
+
+  if (!isUserProfileRow(profileRes.data)) {
+    throw new Error('update profile failed: invalid user_profiles row shape');
+  }
+
+  const metadataRes = await supabase.auth.updateUser({
+    data: { full_name: payload.full_name },
+  });
+  if (metadataRes.error) {
+    throw new Error(`update profile metadata failed: ${metadataRes.error.message}`);
+  }
+
+  return profileRes.data;
+}
+
+export async function updateCurrentUserPassword(newPassword: string): Promise<void> {
+  const password = newPassword.trim();
+  if (password.length < 8) {
+    throw new Error('Password must be at least 8 characters.');
+  }
+
+  const updateRes = await supabase.auth.updateUser({ password });
+  if (updateRes.error) {
+    throw new Error(`password update failed: ${updateRes.error.message}`);
+  }
+}
+
+export async function sendPasswordResetEmail(email: string): Promise<void> {
+  const normalizedEmail = email.trim();
+  if (!normalizedEmail) {
+    throw new Error('Password reset failed: missing account email.');
+  }
+
+  const resetRes = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
+    redirectTo: `${window.location.origin}/#/auth/sign-in`,
+  });
+  if (resetRes.error) {
+    throw new Error(`password reset failed: ${resetRes.error.message}`);
+  }
+}
+
+export async function deleteCurrentUserAccount(): Promise<void> {
+  const deleteRes = await supabase.rpc('delete_current_user');
+  if (deleteRes.error) {
+    throw new Error(`delete account failed: ${deleteRes.error.message}`);
+  }
+  if (!deleteRes.data) {
+    throw new Error('delete account failed: user record was not removed.');
+  }
+
+  store.reset();
 }
 
 function isUserProfileRow(value: unknown): value is UserProfileRow {
