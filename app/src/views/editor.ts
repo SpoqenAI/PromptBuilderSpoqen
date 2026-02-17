@@ -6,6 +6,7 @@ import { router } from '../router';
 import { countTokens, toHighlightedHTML } from '../tokenizer';
 import type { EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
+import { preserveScrollDuringRender } from '../view-state';
 import { projectViewTabsHTML, wireEscapeToCanvas, wireProjectViewTabs } from './project-nav';
 
 const NODE_ICON_SUGGESTIONS = [
@@ -105,7 +106,8 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
   function render(): void {
     const tokenCount = countTokens(currentContent);
 
-    container.innerHTML = `
+    preserveScrollDuringRender(container, () => {
+      container.innerHTML = `
       <div id="editor-overlay" class="fixed inset-0 z-[900] bg-slate-950/35 backdrop-blur-sm flex items-center justify-center p-4">
         <div id="editor-modal" class="w-full max-w-[1800px] h-[95vh] bg-white dark:bg-background-dark rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col">
           <!-- Top Navigation Bar -->
@@ -146,7 +148,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
           <!-- Main Workspace -->
           <main class="flex-1 flex overflow-hidden min-h-0">
             <!-- Editor Area -->
-            <div class="flex-1 relative bg-slate-50 dark:bg-slate-900/50 p-8 overflow-auto custom-scrollbar">
+            <div class="flex-1 relative bg-slate-50 dark:bg-slate-900/50 p-8 overflow-auto custom-scrollbar" data-scroll-preserve="editor-main">
               <div class="max-w-4xl mx-auto bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-[600px]">
                 <!-- Node Header -->
                 <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 sticky top-0 z-10">
@@ -198,7 +200,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
               <div class="p-4 border-b border-slate-100 dark:border-slate-800">
                 <h3 class="font-bold text-sm uppercase tracking-widest text-slate-400">Node Properties</h3>
               </div>
-              <div class="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar">
+              <div class="flex-1 overflow-y-auto p-6 space-y-8 custom-scrollbar" data-scroll-preserve="editor-properties">
                 <!-- Node Label -->
                 <div class="space-y-3">
                   <label class="block text-xs font-medium text-slate-500 mb-1.5">Node Label</label>
@@ -303,7 +305,8 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
         </div>
       </div>
       ` : ''}
-    `;
+      `;
+    });
 
     wireEvents();
   }
@@ -347,12 +350,14 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
     });
 
     container.querySelector('#btn-save-version')?.addEventListener('click', () => {
-      const notes = prompt('Version notes:') || 'No description';
+      const notes = prompt('Version notes:') || 'Manual snapshot';
       persistDraft();
-      store.saveVersion(projectId, store.assemblePrompt(projectId), notes);
+      const version = store.saveAssembledVersion(projectId, notes);
       const button = container.querySelector<HTMLButtonElement>('#btn-save-version');
       if (!button) return;
-      button.innerHTML = '<span class="material-icons text-sm">check</span> Saved!';
+      button.innerHTML = version
+        ? '<span class="material-icons text-sm">check</span> Saved!'
+        : '<span class="material-icons text-sm">info</span> No changes';
       setTimeout(() => {
         button.innerHTML = '<span class="material-icons text-sm">save</span> Save Version';
       }, 2000);

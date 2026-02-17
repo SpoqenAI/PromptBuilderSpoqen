@@ -5,7 +5,7 @@
  * All mutating calls update the in-memory cache immediately (keeping
  * the UI synchronous) and fire a background Supabase call.
  */
-import { Project, PromptNode, Connection, PromptVersion, NodeType, uid } from './models';
+import { Project, PromptNode, Connection, PromptGraphSnapshot, PromptVersion, NodeType, uid } from './models';
 import type { Database } from './database.types';
 import { supabase } from './supabase';
 
@@ -360,9 +360,24 @@ class Store {
 
   /* ── Version / diff operations ───── */
 
-  saveVersion(projectId: string, content: string, notes: string): PromptVersion {
+  saveVersion(
+    projectId: string,
+    content: string,
+    notes: string,
+    snapshot?: PromptGraphSnapshot | null,
+  ): PromptVersion {
     const p = this.getProject(projectId);
-    const ver: PromptVersion = { id: uid(), timestamp: Date.now(), content, notes };
+    const normalizedNotes = notes.trim() || 'Snapshot';
+    const snapshotToPersist = snapshot === undefined
+      ? (p ? createGraphSnapshot(p) : null)
+      : snapshot;
+    const ver: PromptVersion = {
+      id: uid(),
+      timestamp: Date.now(),
+      content,
+      notes: normalizedNotes,
+      snapshot: snapshotToPersist,
+    };
     if (p) {
       p.versions.push(ver);
       this.bg(async () => {
@@ -372,11 +387,26 @@ class Store {
           timestamp: ver.timestamp,
           content: ver.content,
           notes: ver.notes,
+          snapshot_json: ver.snapshot,
         });
         this.assertNoError(versionInsertRes, 'insert prompt_version');
       });
     }
     return ver;
+  }
+
+  saveAssembledVersion(projectId: string, notes: string): PromptVersion | null {
+    const p = this.getProject(projectId);
+    if (!p) return null;
+
+    const assembled = this.assemblePrompt(projectId);
+    const snapshot = createGraphSnapshot(p);
+    const latest = p.versions[p.versions.length - 1];
+    if (latest && latest.content === assembled && sameGraphSnapshot(latest.snapshot, snapshot)) {
+      return null;
+    }
+
+    return this.saveVersion(projectId, assembled, notes, snapshot);
   }
 
   getVersions(projectId: string): PromptVersion[] {
@@ -498,7 +528,79 @@ function toVersion(row: PromptVersionRow): PromptVersion {
     timestamp: row.timestamp,
     content: row.content,
     notes: row.notes,
+    snapshot: row.snapshot_json ? toPromptGraphSnapshot(row.snapshot_json) : null,
   };
+}
+
+function toPromptGraphSnapshot(snapshot: NonNullable<PromptVersionRow['snapshot_json']>): PromptGraphSnapshot {
+  return {
+    nodes: snapshot.nodes.map((node) => ({
+      id: node.id,
+      type: toNodeType(node.type),
+      label: node.label,
+      icon: node.icon,
+      x: node.x,
+      y: node.y,
+      content: node.content,
+      meta: node.meta,
+    })),
+    connections: snapshot.connections.map((connection) => ({
+      id: connection.id,
+      from: connection.from,
+      to: connection.to,
+    })),
+  };
+}
+
+function createGraphSnapshot(project: Pick<Project, 'nodes' | 'connections'>): PromptGraphSnapshot {
+  return {
+    nodes: project.nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      label: node.label,
+      icon: node.icon,
+      x: node.x,
+      y: node.y,
+      content: node.content,
+      meta: { ...node.meta },
+    })),
+    connections: project.connections.map((connection) => ({
+      id: connection.id,
+      from: connection.from,
+      to: connection.to,
+    })),
+  };
+}
+
+function sameGraphSnapshot(a: PromptGraphSnapshot | null, b: PromptGraphSnapshot | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  return stableSnapshotKey(a) === stableSnapshotKey(b);
+}
+
+function stableSnapshotKey(snapshot: PromptGraphSnapshot): string {
+  const normalizedNodes = snapshot.nodes
+    .map((node) => ({
+      id: node.id,
+      type: node.type,
+      label: node.label,
+      icon: node.icon,
+      x: node.x,
+      y: node.y,
+      content: node.content,
+      meta: Object.fromEntries(Object.entries(node.meta).sort(([left], [right]) => left.localeCompare(right))),
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+
+  const normalizedConnections = snapshot.connections
+    .map((connection) => ({
+      id: connection.id,
+      from: connection.from,
+      to: connection.to,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+
+  return JSON.stringify({ nodes: normalizedNodes, connections: normalizedConnections });
 }
 
 function groupByProjectId<T extends { project_id: string }>(items: T[]): Record<string, T[]> {
@@ -626,6 +728,7 @@ function isPromptVersionRow(value: unknown): value is PromptVersionRow {
     typeof value.timestamp === 'number' &&
     typeof value.content === 'string' &&
     typeof value.notes === 'string' &&
+    (value.snapshot_json === null || isPromptGraphSnapshot(value.snapshot_json)) &&
     typeof value.created_at === 'string'
   );
 }
@@ -682,7 +785,8 @@ function isPromptVersion(value: unknown): value is PromptVersion {
     typeof value.id === 'string' &&
     typeof value.timestamp === 'number' &&
     typeof value.content === 'string' &&
-    typeof value.notes === 'string'
+    typeof value.notes === 'string' &&
+    (value.snapshot === undefined || value.snapshot === null || isPromptGraphSnapshot(value.snapshot))
   );
 }
 
@@ -693,6 +797,39 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function isStringRecord(value: unknown): value is Record<string, string> {
   if (!isRecord(value)) return false;
   return Object.values(value).every((entry) => typeof entry === 'string');
+}
+
+function isPromptGraphSnapshot(value: unknown): value is PromptGraphSnapshot {
+  if (!isRecord(value)) return false;
+  return (
+    Array.isArray(value.nodes) &&
+    value.nodes.every(isPromptSnapshotNode) &&
+    Array.isArray(value.connections) &&
+    value.connections.every(isConnection)
+  );
+}
+
+function isPromptSnapshotNode(value: unknown): value is {
+  id: string;
+  type: string;
+  label: string;
+  icon: string;
+  x: number;
+  y: number;
+  content: string;
+  meta: Record<string, string>;
+} {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.type === 'string' &&
+    typeof value.label === 'string' &&
+    typeof value.icon === 'string' &&
+    typeof value.x === 'number' &&
+    typeof value.y === 'number' &&
+    typeof value.content === 'string' &&
+    isStringRecord(value.meta)
+  );
 }
 
 export const store = new Store();

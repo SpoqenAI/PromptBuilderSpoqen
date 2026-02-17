@@ -7,7 +7,42 @@ import { BLOCK_PALETTE, PromptNode, uid } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas, projectViewTabsHTML, wireProjectViewTabs } from './project-nav';
 
+interface CanvasViewportState {
+  zoom: number;
+  panX: number;
+  panY: number;
+}
+
+interface CanvasViewContainer extends HTMLElement {
+  __pbCanvasCleanup?: () => void;
+}
+
+interface NodeVisualSize {
+  width: number;
+  height: number;
+}
+
+const canvasViewportByProject = new Map<string, CanvasViewportState>();
+
+function clearCanvasViewCleanup(container: HTMLElement): void {
+  const host = container as CanvasViewContainer;
+  if (!host.__pbCanvasCleanup) return;
+  host.__pbCanvasCleanup();
+  delete host.__pbCanvasCleanup;
+}
+
+function readCanvasViewportState(projectId: string): CanvasViewportState | null {
+  const state = canvasViewportByProject.get(projectId);
+  if (!state) return null;
+  return { ...state };
+}
+
+function writeCanvasViewportState(projectId: string, state: CanvasViewportState): void {
+  canvasViewportByProject.set(projectId, { ...state });
+}
+
 export function renderCanvas(container: HTMLElement, projectId: string): void {
+  clearCanvasViewCleanup(container);
   const project = store.getProject(projectId);
   if (!project) { router.navigate('/'); return; }
   clearProjectEscapeToCanvas(container);
@@ -43,6 +78,9 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       </div>
       <div class="ml-auto flex items-center gap-3">
         ${themeToggleHTML()}
+        <button id="btn-save-snapshot" class="px-4 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors flex items-center gap-2">
+          <span class="material-icons text-sm">save</span> Save Snapshot
+        </button>
         <button id="btn-export" class="px-4 py-1.5 text-xs font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors flex items-center gap-2">
           <span class="material-icons text-sm">content_copy</span> Copy Assembled
         </button>
@@ -192,17 +230,80 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   const miniMapSvg = container.querySelector<SVGSVGElement>('#minimap-svg');
   const miniMapNodesLayer = container.querySelector<SVGGElement>('#minimap-nodes');
   const miniMapViewport = container.querySelector<SVGRectElement>('#minimap-viewport');
+  const teardownCallbacks: Array<() => void> = [];
+  const activeNodeDragDisposers = new Set<() => void>();
+
+  const registerTeardown = (callback: () => void): void => {
+    teardownCallbacks.push(callback);
+  };
+
+  function addManagedListener<K extends keyof DocumentEventMap>(
+    target: Document,
+    type: K,
+    listener: (event: DocumentEventMap[K]) => void,
+    options?: AddEventListenerOptions | boolean,
+  ): void;
+  function addManagedListener<K extends keyof WindowEventMap>(
+    target: Window,
+    type: K,
+    listener: (event: WindowEventMap[K]) => void,
+    options?: AddEventListenerOptions | boolean,
+  ): void;
+  function addManagedListener(
+    target: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: AddEventListenerOptions | boolean,
+  ): void;
+  function addManagedListener(
+    target: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: AddEventListenerOptions | boolean,
+  ): void {
+    target.addEventListener(type, listener, options);
+    registerTeardown(() => {
+      target.removeEventListener(type, listener, options);
+    });
+  }
+
+  const teardownCanvas = (): void => {
+    for (const disposeNodeDrag of Array.from(activeNodeDragDisposers)) {
+      disposeNodeDrag();
+    }
+    activeNodeDragDisposers.clear();
+    while (teardownCallbacks.length > 0) {
+      const dispose = teardownCallbacks.pop();
+      dispose?.();
+    }
+  };
+
+  (container as CanvasViewContainer).__pbCanvasCleanup = teardownCanvas;
+  const onHashChange = (): void => {
+    clearCanvasViewCleanup(container);
+  };
+  addManagedListener(window, 'hashchange', onHashChange, { once: true });
 
   // Viewport (world -> screen): screen = world * zoom + pan
   const MIN_ZOOM = 0.4;
   const MAX_ZOOM = 2.5;
   const ZOOM_STEP = 0.12;
-  const NODE_VISUAL_WIDTH = 224;
+  const NODE_MIN_WIDTH = 224;
   const NODE_VISUAL_HEIGHT = 140;
+  const NODE_DECORATION_WIDTH = 128;
   const MINIMAP_PADDING = 80;
+  const nodeLabelMeasureCanvas = document.createElement('canvas');
+  const nodeLabelMeasureCtx = nodeLabelMeasureCanvas.getContext('2d');
+  const nodeVisualSizeById = new Map<string, NodeVisualSize>();
   let zoom = 1;
   let panX = 0;
   let panY = 0;
+  const savedViewport = readCanvasViewportState(projectId);
+  if (savedViewport) {
+    zoom = clamp(savedViewport.zoom, MIN_ZOOM, MAX_ZOOM);
+    panX = savedViewport.panX;
+    panY = savedViewport.panY;
+  }
 
   interface MiniMapTransform {
     minX: number;
@@ -217,9 +318,52 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     return Math.max(min, Math.min(max, value));
   }
 
+  function normalizeWheelDelta(event: WheelEvent): number {
+    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16;
+    if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * window.innerHeight;
+    return event.deltaY;
+  }
+
+  function estimateLabelPixelWidth(label: string): number {
+    const text = label.trim().length > 0 ? label : 'Node';
+    if (!nodeLabelMeasureCtx) return text.length * 7;
+    nodeLabelMeasureCtx.font = '700 12px system-ui, -apple-system, sans-serif';
+    return Math.ceil(nodeLabelMeasureCtx.measureText(text).width);
+  }
+
+  function getNodeVisualSize(node: PromptNode): NodeVisualSize {
+    const cached = nodeVisualSizeById.get(node.id);
+    const labelWidth = estimateLabelPixelWidth(node.label);
+    const nextSize: NodeVisualSize = {
+      width: Math.max(NODE_MIN_WIDTH, labelWidth + NODE_DECORATION_WIDTH),
+      height: NODE_VISUAL_HEIGHT,
+    };
+    if (cached && cached.width === nextSize.width && cached.height === nextSize.height) {
+      return cached;
+    }
+    nodeVisualSizeById.set(node.id, nextSize);
+    return nextSize;
+  }
+
+  let drawScheduledFrame: number | null = null;
+  function scheduleDrawConnections(): void {
+    if (drawScheduledFrame !== null) return;
+    drawScheduledFrame = window.requestAnimationFrame(() => {
+      drawScheduledFrame = null;
+      drawConnections();
+    });
+  }
+
+  registerTeardown(() => {
+    if (drawScheduledFrame === null) return;
+    window.cancelAnimationFrame(drawScheduledFrame);
+    drawScheduledFrame = null;
+  });
+
   function applyViewportTransform(): void {
     nodesContainer.style.transformOrigin = '0 0';
     nodesContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    writeCanvasViewportState(projectId, { zoom, panX, panY });
   }
 
   function screenToWorld(clientX: number, clientY: number): { x: number; y: number } {
@@ -241,7 +385,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     panY = focalY - worldYAtFocal * clamped;
     zoom = clamped;
     applyViewportTransform();
-    drawConnections();
+    scheduleDrawConnections();
   }
 
   // Track port-to-port connection drawing state
@@ -424,10 +568,11 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     let maxY = viewportWorldY + viewportWorldHeight;
 
     for (const node of project!.nodes) {
+      const size = getNodeVisualSize(node);
       minX = Math.min(minX, node.x);
       minY = Math.min(minY, node.y);
-      maxX = Math.max(maxX, node.x + NODE_VISUAL_WIDTH);
-      maxY = Math.max(maxY, node.y + NODE_VISUAL_HEIGHT);
+      maxX = Math.max(maxX, node.x + size.width);
+      maxY = Math.max(maxY, node.y + size.height);
     }
 
     minX -= MINIMAP_PADDING;
@@ -447,10 +592,11 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     const toMiniY = (worldY: number): number => (worldY - minY) * scale + offsetY;
 
     const nodeRects = project!.nodes.map(node => {
+      const size = getNodeVisualSize(node);
       const x = toMiniX(node.x);
       const y = toMiniY(node.y);
-      const width = Math.max(3, NODE_VISUAL_WIDTH * scale);
-      const height = Math.max(2, NODE_VISUAL_HEIGHT * scale);
+      const width = Math.max(3, size.width * scale);
+      const height = Math.max(2, size.height * scale);
       return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="1.5" fill="rgba(35,149,111,0.45)" stroke="rgba(35,149,111,0.85)" stroke-width="0.8"></rect>`;
     }).join('');
     miniMapNodesLayer.innerHTML = nodeRects;
@@ -468,16 +614,18 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     if (project!.nodes.length > 0 && hint) hint.remove();
 
     for (const node of project!.nodes) {
+      const size = getNodeVisualSize(node);
       const el = document.createElement('div');
-      el.className = 'canvas-node pointer-events-auto bg-white dark:bg-slate-900 border border-primary/40 rounded-lg shadow-xl node-glow w-56';
+      el.className = 'canvas-node pointer-events-auto bg-white dark:bg-slate-900 border border-primary/40 rounded-lg shadow-xl node-glow';
       el.dataset.nodeId = node.id;
       el.style.left = `${node.x}px`;
       el.style.top = `${node.y}px`;
+      el.style.width = `${size.width}px`;
       el.innerHTML = `
         <div class="node-header bg-primary/10 border-b border-primary/20 p-3 flex items-center justify-between cursor-grab active:cursor-grabbing rounded-t-lg">
-          <h2 class="text-xs font-bold flex items-center gap-2 select-none">
+          <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0">
             <span class="material-icons text-sm text-primary">${node.icon}</span>
-            ${node.label}
+            <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
           </h2>
           <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
             <span class="material-icons text-xs">close</span>
@@ -502,17 +650,8 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
       // ── Dragging (by header only) ──────
       let isDragging = false, didDrag = false, startX = 0, startY = 0, origX = node.x, origY = node.y;
+      let dragListenersActive = false;
       const header = el.querySelector('.node-header') as HTMLElement;
-      header.addEventListener('mousedown', (e: MouseEvent) => {
-        if (e.button !== 0) return;
-        if ((e.target as HTMLElement).closest('.node-delete')) return;
-        isDragging = true;
-        didDrag = false;
-        startX = e.clientX; startY = e.clientY;
-        origX = node.x; origY = node.y;
-        el.classList.add('dragging');
-        e.preventDefault();
-      });
       const onMouseMove = (e: MouseEvent) => {
         if (!isDragging) return;
         if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) {
@@ -522,37 +661,64 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         node.y = origY + (e.clientY - startY) / zoom;
         el.style.left = `${node.x}px`;
         el.style.top = `${node.y}px`;
-        drawConnections();
+        scheduleDrawConnections();
+      };
+      const disposeNodeDragListeners = (): void => {
+        if (!dragListenersActive) return;
+        dragListenersActive = false;
+        isDragging = false;
+        el.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        activeNodeDragDisposers.delete(disposeNodeDragListeners);
       };
       const onMouseUp = (e: MouseEvent) => {
-        if (isDragging) {
-          isDragging = false;
-          el.classList.remove('dragging');
-          // Snap to 20px grid
-          node.x = Math.round(node.x / 20) * 20;
-          node.y = Math.round(node.y / 20) * 20;
-          el.style.left = `${node.x}px`;
-          el.style.top = `${node.y}px`;
-          store.updateNode(projectId, node.id, { x: node.x, y: node.y });
-
-          // Shift+drop on an existing connection to reinsert this existing node elsewhere in the graph.
-          if (e.shiftKey) {
-            const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
-            if (connectionToSplit && connectionToSplit.from !== node.id && connectionToSplit.to !== node.id) {
-              const linkedConnections = project!.connections.filter(c => c.from === node.id || c.to === node.id);
-              for (const conn of linkedConnections) {
-                store.removeConnection(projectId, conn.id);
-              }
-              store.removeConnection(projectId, connectionToSplit.id);
-              store.addConnection(projectId, connectionToSplit.from, node.id);
-              store.addConnection(projectId, node.id, connectionToSplit.to);
-            }
-          }
-          drawConnections();
+        if (!isDragging) {
+          disposeNodeDragListeners();
+          return;
         }
+
+        isDragging = false;
+        el.classList.remove('dragging');
+        // Snap to 20px grid
+        node.x = Math.round(node.x / 20) * 20;
+        node.y = Math.round(node.y / 20) * 20;
+        el.style.left = `${node.x}px`;
+        el.style.top = `${node.y}px`;
+        store.updateNode(projectId, node.id, { x: node.x, y: node.y });
+
+        // Shift+drop on an existing connection to reinsert this existing node elsewhere in the graph.
+        if (e.shiftKey) {
+          const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
+          if (connectionToSplit && connectionToSplit.from !== node.id && connectionToSplit.to !== node.id) {
+            const linkedConnections = project!.connections.filter(c => c.from === node.id || c.to === node.id);
+            for (const conn of linkedConnections) {
+              store.removeConnection(projectId, conn.id);
+            }
+            store.removeConnection(projectId, connectionToSplit.id);
+            store.addConnection(projectId, connectionToSplit.from, node.id);
+            store.addConnection(projectId, node.id, connectionToSplit.to);
+          }
+        }
+        drawConnections();
+        disposeNodeDragListeners();
       };
-      document.addEventListener('mousemove', onMouseMove);
-      document.addEventListener('mouseup', onMouseUp);
+      header.addEventListener('mousedown', (e: MouseEvent) => {
+        if (e.button !== 0) return;
+        if ((e.target as HTMLElement).closest('.node-delete')) return;
+        isDragging = true;
+        didDrag = false;
+        startX = e.clientX; startY = e.clientY;
+        origX = node.x; origY = node.y;
+        el.classList.add('dragging');
+        if (!dragListenersActive) {
+          dragListenersActive = true;
+          document.addEventListener('mousemove', onMouseMove);
+          document.addEventListener('mouseup', onMouseUp);
+          activeNodeDragDisposers.add(disposeNodeDragListeners);
+        }
+        e.preventDefault();
+      });
 
       // Port-based connection drawing (drag OR click-to-click)
       const inPort = el.querySelector('.port-in') as HTMLElement;
@@ -609,6 +775,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           didDrag = false;
           return;
         }
+        clearCanvasViewCleanup(container);
         router.navigate(`/project/${projectId}/editor/${node.id}`);
       });
 
@@ -624,7 +791,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   }
 
   // Global mouse handlers for port connection
-  document.addEventListener('mousemove', (e: MouseEvent) => {
+  addManagedListener(document, 'mousemove', (e: MouseEvent) => {
     if (!connectionDraft || !tempLine) return;
     if (Math.abs(e.clientX - connectPointerStartX) > 3 || Math.abs(e.clientY - connectPointerStartY) > 3) {
       connectPointerMoved = true;
@@ -634,7 +801,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     tempLine.setAttribute('y2', String(e.clientY - canvasRect.top));
   });
 
-  document.addEventListener('mouseup', (e: MouseEvent) => {
+  addManagedListener(document, 'mouseup', (e: MouseEvent) => {
     if (!connectionDraft || !tempLine) return;
 
     const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
@@ -662,7 +829,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     clearConnectionDraft();
   });
 
-  document.addEventListener('mousedown', (e: MouseEvent) => {
+  addManagedListener(document, 'mousedown', (e: MouseEvent) => {
     const target = e.target as HTMLElement;
     if (connectionDraft?.armedByClick && !target.closest('.port')) {
       clearConnectionDraft();
@@ -673,7 +840,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     }
   });
 
-  document.addEventListener('keydown', (e: KeyboardEvent) => {
+  addManagedListener(document, 'keydown', (e: KeyboardEvent) => {
     if (!selectedConnectionId) return;
     if (e.key !== 'Delete' && e.key !== 'Backspace') return;
 
@@ -818,15 +985,15 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     e.preventDefault();
   });
 
-  document.addEventListener('mousemove', (e: MouseEvent) => {
+  addManagedListener(document, 'mousemove', (e: MouseEvent) => {
     if (!isPanning) return;
     panX = panStartX + (e.clientX - panStartMouseX);
     panY = panStartY + (e.clientY - panStartMouseY);
     applyViewportTransform();
-    drawConnections();
+    scheduleDrawConnections();
   });
 
-  document.addEventListener('mouseup', () => {
+  addManagedListener(document, 'mouseup', () => {
     if (!isPanning) return;
     isPanning = false;
     canvasArea.classList.remove('cursor-grabbing');
@@ -884,7 +1051,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     setHelpPanelOpen(false);
   });
 
-  document.addEventListener('click', (e: MouseEvent) => {
+  addManagedListener(document, 'click', (e: MouseEvent) => {
     if (!helpPanelOpen) return;
     const target = e.target as HTMLElement;
     if (target.closest('#canvas-help-panel') || target.closest('#btn-canvas-help')) return;
@@ -899,12 +1066,12 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     const focalY = e.clientY - rect.top;
     // Exponential scaling feels smoother across mouse wheels and trackpads.
     const sensitivity = e.ctrlKey ? 0.0025 : 0.0012;
-    const scaleFactor = Math.exp(-e.deltaY * sensitivity);
+    const scaleFactor = Math.exp(-normalizeWheelDelta(e) * sensitivity);
     zoomAt(zoom * scaleFactor, focalX, focalY);
   }, { passive: false });
 
-  window.addEventListener('resize', () => {
-    drawConnections();
+  addManagedListener(window, 'resize', () => {
+    scheduleDrawConnections();
   });
 
   // ── Sidebar: drag-and-drop AND click-to-add ──
@@ -930,7 +1097,9 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       // Place new node to the right of the rightmost existing node
       let maxX = 60, maxY = 60;
       for (const n of project!.nodes) {
-        if (n.x + 280 > maxX) { maxX = n.x + 280; maxY = n.y; }
+        const size = getNodeVisualSize(n);
+        const nextX = n.x + size.width + 56;
+        if (nextX > maxX) { maxX = nextX; maxY = n.y; }
       }
       const node: PromptNode = {
         id: uid(),
@@ -963,9 +1132,13 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       const blockData = JSON.parse(data);
       const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
       const worldPoint = screenToWorld(e.clientX, e.clientY);
+      const newNodeSize: NodeVisualSize = {
+        width: Math.max(NODE_MIN_WIDTH, estimateLabelPixelWidth(String(blockData.label ?? '')) + NODE_DECORATION_WIDTH),
+        height: NODE_VISUAL_HEIGHT,
+      };
       // Snap to 20px grid
-      const rawX = worldPoint.x - 100;
-      const rawY = worldPoint.y - 40;
+      const rawX = worldPoint.x - newNodeSize.width / 2;
+      const rawY = worldPoint.y - newNodeSize.height / 2;
       const node: PromptNode = {
         id: uid(),
         type: blockData.type,
@@ -1000,9 +1173,29 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   });
 
   // ── Navigation ──
-  container.querySelector('#nav-home')?.addEventListener('click', () => router.navigate('/'));
-  container.querySelector('#crumb-home')?.addEventListener('click', () => router.navigate('/'));
-  wireProjectViewTabs(container, projectId);
+  container.querySelector('#nav-home')?.addEventListener('click', () => {
+    clearCanvasViewCleanup(container);
+    router.navigate('/');
+  });
+  container.querySelector('#crumb-home')?.addEventListener('click', () => {
+    clearCanvasViewCleanup(container);
+    router.navigate('/');
+  });
+  wireProjectViewTabs(container, projectId, { beforeNavigate: () => clearCanvasViewCleanup(container) });
+
+  // ── Save prompt snapshot for diff/history ──
+  container.querySelector('#btn-save-snapshot')?.addEventListener('click', () => {
+    const notes = prompt('Snapshot notes:') || 'Canvas snapshot';
+    const version = store.saveAssembledVersion(projectId, notes);
+    const btn = container.querySelector<HTMLButtonElement>('#btn-save-snapshot');
+    if (!btn) return;
+    btn.innerHTML = version
+      ? '<span class="material-icons text-sm">check</span> Snapshot saved'
+      : '<span class="material-icons text-sm">info</span> No changes';
+    setTimeout(() => {
+      btn.innerHTML = '<span class="material-icons text-sm">save</span> Save Snapshot';
+    }, 2000);
+  });
 
   // ── Export assembled prompt ──
   container.querySelector('#btn-export')?.addEventListener('click', () => {

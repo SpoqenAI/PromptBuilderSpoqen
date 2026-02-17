@@ -112,6 +112,23 @@ export interface Database {
           timestamp: number;
           content: string;
           notes: string;
+          snapshot_json: {
+            nodes: Array<{
+              id: string;
+              type: string;
+              label: string;
+              icon: string;
+              x: number;
+              y: number;
+              content: string;
+              meta: Record<string, string>;
+            }>;
+            connections: Array<{
+              id: string;
+              from: string;
+              to: string;
+            }>;
+          } | null;
           created_at: string;
         };
         Insert: {
@@ -120,6 +137,23 @@ export interface Database {
           timestamp?: number;
           content?: string;
           notes?: string;
+          snapshot_json?: {
+            nodes: Array<{
+              id: string;
+              type: string;
+              label: string;
+              icon: string;
+              x: number;
+              y: number;
+              content: string;
+              meta: Record<string, string>;
+            }>;
+            connections: Array<{
+              id: string;
+              from: string;
+              to: string;
+            }>;
+          } | null;
           created_at?: string;
         };
         Update: {
@@ -128,6 +162,23 @@ export interface Database {
           timestamp?: number;
           content?: string;
           notes?: string;
+          snapshot_json?: {
+            nodes: Array<{
+              id: string;
+              type: string;
+              label: string;
+              icon: string;
+              x: number;
+              y: number;
+              content: string;
+              meta: Record<string, string>;
+            }>;
+            connections: Array<{
+              id: string;
+              from: string;
+              to: string;
+            }>;
+          } | null;
           created_at?: string;
         };
         Relationships: [];
@@ -169,6 +220,57 @@ export interface Database {
           primary_use_case?: string;
           team_size?: string;
           onboarding_completed?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      github_app_oauth_states: {
+        Row: {
+          state: string;
+          user_id: string;
+          redirect_to: string;
+          expires_at: string;
+          created_at: string;
+        };
+        Insert: {
+          state: string;
+          user_id: string;
+          redirect_to: string;
+          expires_at: string;
+          created_at?: string;
+        };
+        Update: {
+          state?: string;
+          user_id?: string;
+          redirect_to?: string;
+          expires_at?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      github_installations: {
+        Row: {
+          user_id: string;
+          installation_id: number;
+          account_login: string;
+          account_type: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          installation_id: number;
+          account_login?: string;
+          account_type?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          installation_id?: number;
+          account_login?: string;
+          account_type?: string;
           created_at?: string;
           updated_at?: string;
         };

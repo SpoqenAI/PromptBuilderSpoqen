@@ -7,7 +7,6 @@ import { router } from './router';
 import { renderDashboard } from './views/dashboard';
 import { renderCanvas } from './views/canvas';
 import { renderEditor } from './views/editor';
-import { renderGraph } from './views/graph';
 import { renderDiff } from './views/diff';
 import { renderImport } from './views/import';
 import { renderAuthPage, renderOnboardingPage } from './views/auth';
@@ -142,9 +141,6 @@ router
   })
   .on('/project/:id/editor/:nodeId', (params) => {
     void runProtectedRoute(() => renderEditor(app, params.id, params.nodeId));
-  })
-  .on('/project/:id/graph', (params) => {
-    void runProtectedRoute(() => renderGraph(app, params.id));
   })
   .on('/project/:id/diff', (params) => {
     void runProtectedRoute(() => renderDiff(app, params.id));

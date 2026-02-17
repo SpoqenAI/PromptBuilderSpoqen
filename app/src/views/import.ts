@@ -10,6 +10,7 @@ import { store } from '../store';
 import { router } from '../router';
 import { BLOCK_PALETTE, PromptNode, NodeType, uid, type EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
+import { preserveScrollDuringRender } from '../view-state';
 
 /* ── Types ────────────────────────────────────── */
 
@@ -326,7 +327,8 @@ export function renderImport(container: HTMLElement): void {
       captureStep2Scroll();
     }
 
-    container.innerHTML = `
+    preserveScrollDuringRender(container, () => {
+      container.innerHTML = `
       <!-- Top bar -->
       <header class="h-14 border-b border-primary/10 flex items-center justify-between px-6 bg-white dark:bg-background-dark/80 z-20">
         <div class="flex items-center gap-3">
@@ -361,10 +363,11 @@ export function renderImport(container: HTMLElement): void {
       </div>
 
       <!-- Step content -->
-      <main class="flex-1 min-h-0 overflow-auto custom-scrollbar">
+      <main class="flex-1 min-h-0 overflow-auto custom-scrollbar" data-scroll-preserve="import-main">
         ${step === 1 ? renderStep1() : step === 2 ? renderStep2() : renderStep3()}
       </main>
     `;
+    });
     wireEvents();
     wireThemeToggle(container);
 

@@ -1,8 +1,8 @@
 import { router } from '../router';
 
-export type ProjectView = 'canvas' | 'editor' | 'graph' | 'diff';
+export type ProjectView = 'canvas' | 'editor' | 'diff';
 
-type ProjectSubView = 'canvas' | 'graph' | 'diff';
+type ProjectSubView = 'canvas' | 'diff';
 
 interface ProjectNavContainer extends HTMLElement {
   __pbEscCleanup?: () => void;
@@ -10,13 +10,11 @@ interface ProjectNavContainer extends HTMLElement {
 
 const SUB_VIEWS: Array<{ view: ProjectSubView; label: string; icon: string }> = [
   { view: 'canvas', label: 'Canvas', icon: 'dashboard' },
-  { view: 'graph', label: 'Graph', icon: 'hub' },
   { view: 'diff', label: 'Diff', icon: 'difference' },
 ];
 
 function pathForView(projectId: string, view: ProjectSubView): string {
   if (view === 'canvas') return `/project/${projectId}`;
-  if (view === 'graph') return `/project/${projectId}/graph`;
   return `/project/${projectId}/diff`;
 }
 
@@ -28,7 +26,7 @@ function buttonClasses(isActive: boolean): string {
 }
 
 export function projectViewTabsHTML(activeView: ProjectView): string {
-  const activeSubView: ProjectSubView = activeView === 'graph' || activeView === 'diff' ? activeView : 'canvas';
+  const activeSubView: ProjectSubView = activeView === 'diff' ? 'diff' : 'canvas';
 
   return `
     <div class="flex items-center gap-2">
