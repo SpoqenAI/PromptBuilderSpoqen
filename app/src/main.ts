@@ -9,6 +9,7 @@ import { renderCanvas } from './views/canvas';
 import { renderEditor } from './views/editor';
 import { renderDiff } from './views/diff';
 import { renderImport } from './views/import';
+import { renderTranscriptImport } from './views/transcript-import';
 import { renderAuthPage, renderOnboardingPage } from './views/auth';
 import { applyTheme } from './theme';
 import { store, type StoreRemoteErrorEventDetail } from './store';
@@ -147,6 +148,9 @@ router
   })
   .on('/import', () => {
     void runProtectedRoute(() => renderImport(app));
+  })
+  .on('/import/transcript', () => {
+    void runProtectedRoute(() => renderTranscriptImport(app));
   })
   .otherwise(() => {
     router.navigate('/');

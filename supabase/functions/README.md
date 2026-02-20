@@ -42,7 +42,40 @@ supabase secrets set APP_PUBLIC_URL=<your-frontend-origin>
 supabase functions deploy github-connect-url
 supabase functions deploy github-app-callback
 supabase functions deploy github-prompt-sync
+# IMPORTANT: use the script below for transcript-flow-map.
+# On some CLI versions, update deploys can re-enable legacy JWT verification.
+pwsh ./supabase/functions/deploy-transcript-flow-map.ps1
 ```
+
+## 3b. Transcript Flow AI Mapping
+
+The transcript-to-flow feature uses `transcript-flow-map`.
+
+Set function secrets:
+
+```bash
+supabase secrets set OPENAI_API_KEY=<your-openai-api-key>
+supabase secrets set OPENAI_TRANSCRIPT_MODEL=gpt-5-nano
+supabase secrets set OPENAI_TRANSCRIPT_TEMPERATURE=default
+```
+
+If `OPENAI_API_KEY` is not configured, the function falls back to deterministic mapping.
+
+`transcript-flow-map` is deployed with `--no-verify-jwt` because it performs explicit token verification in-function using `requireUser(...)`. This avoids gateway-side JWT rejection while preserving authenticated access control.
+
+`OPENAI_TRANSCRIPT_TEMPERATURE` is optional. Set it to `default` (or leave unset) to omit `temperature` from the request. This is recommended for models like `gpt-5-nano` that only support default temperature behavior.
+
+### transcript-flow-map deploy rule (do not skip)
+
+Always deploy `transcript-flow-map` with:
+
+- `pwsh ./supabase/functions/deploy-transcript-flow-map.ps1`
+
+What this script does:
+
+1. Deletes `transcript-flow-map` (forces config refresh)
+2. Deploys with `--no-verify-jwt`
+3. Runs a smoke test to confirm gateway JWT verification is not intercepting requests
 
 ## 4. Apply Database Migration
 
@@ -54,4 +87,3 @@ Run migrations so these tables exist:
 The migration file is:
 
 - `supabase/migrations/20260217103000_add_github_app_integrations.sql`
-

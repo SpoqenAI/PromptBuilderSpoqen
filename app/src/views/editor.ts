@@ -135,9 +135,17 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                 <span class="material-icons text-sm">save</span>
                 Save Version
               </button>
-              <button id="btn-export" class="flex items-center gap-2 px-4 py-1.5 text-sm font-medium bg-primary text-white rounded hover:bg-primary/90 transition-colors shadow-sm">
-                <span class="material-icons text-sm">ios_share</span>
-                Export
+              <button id="btn-save-custom-node" class="flex items-center gap-2 px-3 py-1.5 text-sm font-medium border border-primary/20 rounded text-primary hover:bg-primary/5 transition-colors">
+                <span class="material-icons text-sm">bookmark_add</span>
+                Save Custom Node
+              </button>
+              <button id="btn-export-runtime" class="flex items-center gap-2 px-4 py-1.5 text-sm font-medium bg-primary text-white rounded hover:bg-primary/90 transition-colors shadow-sm">
+                <span class="material-icons text-sm">content_copy</span>
+                Copy Runtime
+              </button>
+              <button id="btn-export-flow" class="flex items-center gap-2 px-3 py-1.5 text-sm font-medium border border-primary/20 text-primary rounded hover:bg-primary/5 transition-colors">
+                <span class="material-icons text-sm">account_tree</span>
+                Copy Flow
               </button>
               <button id="btn-close-editor" class="w-8 h-8 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-primary hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" aria-label="Close editor">
                 <span class="material-icons text-sm">close</span>
@@ -158,7 +166,6 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                     </div>
                     <div>
                       <h2 class="font-semibold text-slate-800 dark:text-slate-100">${node.label}</h2>
-                      <p class="text-xs text-slate-500">${node.type}</p>
                     </div>
                   </div>
                   <div class="flex items-center gap-4">
@@ -363,13 +370,37 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
       }, 2000);
     });
 
+    container.querySelector('#btn-save-custom-node')?.addEventListener('click', () => {
+      persistDraft();
+      const templateLabel = (prompt('Custom node template name:', node.label) ?? '').trim();
+      if (!templateLabel) return;
+      store.saveCustomNodeTemplate({
+        type: node.type,
+        label: templateLabel,
+        icon: node.icon,
+        content: node.content,
+        meta: { ...node.meta },
+      });
+      const button = container.querySelector<HTMLButtonElement>('#btn-save-custom-node');
+      if (!button) return;
+      button.innerHTML = '<span class="material-icons text-sm">check</span> Saved';
+      setTimeout(() => {
+        button.innerHTML = '<span class="material-icons text-sm">bookmark_add</span> Save Custom Node';
+      }, 1800);
+    });
+
     container.querySelector('#btn-update')?.addEventListener('click', () => {
       closeToCanvas();
     });
 
-    container.querySelector('#btn-export')?.addEventListener('click', () => {
+    container.querySelector('#btn-export-runtime')?.addEventListener('click', () => {
       persistDraft();
-      navigator.clipboard.writeText(store.assemblePrompt(projectId));
+      navigator.clipboard.writeText(store.assemblePrompt(projectId, 'runtime'));
+    });
+
+    container.querySelector('#btn-export-flow')?.addEventListener('click', () => {
+      persistDraft();
+      navigator.clipboard.writeText(store.assemblePrompt(projectId, 'flow-template'));
     });
 
     container.querySelector('#prop-label')?.addEventListener('change', (event) => {

@@ -38,6 +38,7 @@ create table if not exists public.connections (
   project_id text not null references public.projects(id) on delete cascade,
   from_node_id text not null references public.prompt_nodes(id) on delete cascade,
   to_node_id text not null references public.prompt_nodes(id) on delete cascade,
+  label text not null default '',
   created_at timestamptz not null default now(),
   unique(project_id, from_node_id, to_node_id)
 );
@@ -54,6 +55,20 @@ create table if not exists public.prompt_versions (
 );
 
 create index if not exists idx_prompt_versions_project on public.prompt_versions(project_id);
+
+create table if not exists public.custom_nodes (
+  id text primary key default gen_random_uuid()::text,
+  owner_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  type text not null default 'custom',
+  label text not null,
+  icon text not null default 'widgets',
+  content text not null default '',
+  meta jsonb not null default '{}',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create index if not exists idx_custom_nodes_owner_id on public.custom_nodes(owner_id);
 
 create table if not exists public.user_profiles (
   user_id uuid primary key references auth.users(id) on delete cascade,
@@ -75,12 +90,14 @@ alter table public.projects enable row level security;
 alter table public.prompt_nodes enable row level security;
 alter table public.connections enable row level security;
 alter table public.prompt_versions enable row level security;
+alter table public.custom_nodes enable row level security;
 alter table public.user_profiles enable row level security;
 
 drop policy if exists "Allow all on projects" on public.projects;
 drop policy if exists "Allow all on prompt_nodes" on public.prompt_nodes;
 drop policy if exists "Allow all on connections" on public.connections;
 drop policy if exists "Allow all on prompt_versions" on public.prompt_versions;
+drop policy if exists "Allow all on custom_nodes" on public.custom_nodes;
 drop policy if exists "Allow all on user_profiles" on public.user_profiles;
 
 drop policy if exists "projects_select_own" on public.projects;
@@ -102,6 +119,11 @@ drop policy if exists "prompt_versions_select_own" on public.prompt_versions;
 drop policy if exists "prompt_versions_insert_own" on public.prompt_versions;
 drop policy if exists "prompt_versions_update_own" on public.prompt_versions;
 drop policy if exists "prompt_versions_delete_own" on public.prompt_versions;
+
+drop policy if exists "custom_nodes_select_own" on public.custom_nodes;
+drop policy if exists "custom_nodes_insert_own" on public.custom_nodes;
+drop policy if exists "custom_nodes_update_own" on public.custom_nodes;
+drop policy if exists "custom_nodes_delete_own" on public.custom_nodes;
 
 drop policy if exists "user_profiles_select_own" on public.user_profiles;
 drop policy if exists "user_profiles_insert_own" on public.user_profiles;
@@ -204,6 +226,27 @@ create policy "prompt_versions_delete_own"
   on public.prompt_versions
   for delete
   using (public.user_owns_project(project_id));
+
+create policy "custom_nodes_select_own"
+  on public.custom_nodes
+  for select
+  using (auth.uid() = owner_id);
+
+create policy "custom_nodes_insert_own"
+  on public.custom_nodes
+  for insert
+  with check (auth.uid() = owner_id);
+
+create policy "custom_nodes_update_own"
+  on public.custom_nodes
+  for update
+  using (auth.uid() = owner_id)
+  with check (auth.uid() = owner_id);
+
+create policy "custom_nodes_delete_own"
+  on public.custom_nodes
+  for delete
+  using (auth.uid() = owner_id);
 
 create policy "user_profiles_select_own"
   on public.user_profiles

@@ -42,6 +42,7 @@ export interface Connection {
   id: string;
   from: string;
   to: string;
+  label?: string;
 }
 
 export interface PromptGraphSnapshot {
@@ -63,6 +64,17 @@ export interface BlockDefinition {
   icon: string;
   category: string;
   defaultContent: string;
+}
+
+export interface CustomNodeTemplate {
+  id: string;
+  type: NodeType;
+  label: string;
+  icon: string;
+  content: string;
+  meta: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export const BLOCK_PALETTE: BlockDefinition[] = [

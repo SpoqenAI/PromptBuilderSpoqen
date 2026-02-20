@@ -721,9 +721,9 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
           return;
         }
 
-        const assembled = store.assemblePrompt(projectId);
+        const assembled = store.assemblePrompt(projectId, 'runtime');
         if (!assembled.trim()) {
-          githubMessage = { tone: 'error', text: 'Current assembled prompt is empty.' };
+          githubMessage = { tone: 'error', text: 'Current runtime prompt is empty.' };
           render();
           return;
         }
@@ -858,8 +858,7 @@ function renderGraphPane(
         <div class="px-3 py-2 text-[11px] font-mono text-slate-600 dark:text-slate-300 line-clamp-4 min-h-[88px]">
           ${escapeHtml(trimForPreview(node.content))}
         </div>
-        <div class="px-3 py-1.5 border-t border-slate-200/70 dark:border-slate-700/70 text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wide flex items-center justify-between">
-          <span>${escapeHtml(node.type)}</span>
+        <div class="px-3 py-1.5 border-t border-slate-200/70 dark:border-slate-700/70 text-[10px] text-slate-500 dark:text-slate-400 uppercase tracking-wide flex items-center justify-end">
           <span>${Math.max(0, Math.ceil(node.content.length / 4))} tok</span>
         </div>
       </button>
@@ -1158,7 +1157,6 @@ function formatNodeForDiff(node: PromptNode | null): string {
 
   return [
     `# ${node.label}`,
-    `Type: ${node.type}`,
     `Icon: ${node.icon}`,
     metadata ? `\nMeta:\n${metadata}` : '',
     '\nContent:',

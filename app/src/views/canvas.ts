@@ -3,7 +3,7 @@
  */
 import { store } from '../store';
 import { router } from '../router';
-import { BLOCK_PALETTE, PromptNode, uid } from '../models';
+import { BLOCK_PALETTE, PromptNode, uid, CustomNodeTemplate } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas, projectViewTabsHTML, wireProjectViewTabs } from './project-nav';
 
@@ -20,6 +20,17 @@ interface CanvasViewContainer extends HTMLElement {
 interface NodeVisualSize {
   width: number;
   height: number;
+}
+
+interface SidebarBlock {
+  type: PromptNode['type'];
+  label: string;
+  icon: string;
+  category: string;
+  defaultContent: string;
+  meta: Record<string, string>;
+  templateId?: string;
+  isCustomTemplate: boolean;
 }
 
 const canvasViewportByProject = new Map<string, CanvasViewportState>();
@@ -41,18 +52,85 @@ function writeCanvasViewportState(projectId: string, state: CanvasViewportState)
   canvasViewportByProject.set(projectId, { ...state });
 }
 
+function buildSidebarCategories(customTemplates: CustomNodeTemplate[]): Map<string, SidebarBlock[]> {
+  const categories = new Map<string, SidebarBlock[]>();
+  for (const block of BLOCK_PALETTE) {
+    if (!categories.has(block.category)) categories.set(block.category, []);
+    categories.get(block.category)!.push({
+      type: block.type,
+      label: block.label,
+      icon: block.icon,
+      category: block.category,
+      defaultContent: block.defaultContent,
+      meta: {},
+      isCustomTemplate: false,
+    });
+  }
+
+  const customCategory = 'My Custom Nodes';
+  categories.set(customCategory, customTemplates.map((template) => ({
+    type: template.type,
+    label: template.label,
+    icon: template.icon,
+    category: customCategory,
+    defaultContent: template.content,
+    meta: { ...template.meta },
+    templateId: template.id,
+    isCustomTemplate: true,
+  })));
+
+  return categories;
+}
+
+function renderSidebarBlocksHTML(categories: Map<string, SidebarBlock[]>): string {
+  return [...categories.entries()].map(([category, blocks]) => {
+    const isCustomCategory = category === 'My Custom Nodes';
+    const customEmptyState = isCustomCategory && blocks.length === 0
+      ? `<p class="px-2 py-2 text-[11px] text-slate-400">Save any canvas node as a template to reuse it here.</p>`
+      : '';
+
+    return `
+      <section data-category="${escapeHTML(category)}">
+        <h3 class="px-2 mb-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">${escapeHTML(category)}</h3>
+        <div class="space-y-1">
+          ${blocks.map((block) => {
+            const encodedMeta = encodeURIComponent(JSON.stringify(block.meta));
+            return `
+              <div
+                class="sidebar-block group flex items-center gap-3 p-2 rounded cursor-grab hover:bg-slate-100 dark:hover:bg-white/5 transition-colors border border-transparent hover:border-primary/20"
+                draggable="true"
+                data-type="${block.type}"
+                data-label="${escapeHTML(block.label)}"
+                data-icon="${escapeHTML(block.icon)}"
+                data-default="${encodeURIComponent(block.defaultContent)}"
+                data-meta="${encodedMeta}"
+                data-template-id="${block.templateId ?? ''}"
+                data-is-custom="${block.isCustomTemplate ? '1' : '0'}"
+              >
+                <span class="material-icons text-sm text-primary">${escapeHTML(block.icon)}</span>
+                <span class="text-xs font-medium truncate">${escapeHTML(block.label)}</span>
+                ${block.isCustomTemplate
+                  ? `<button type="button" class="sidebar-custom-delete ml-auto p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" data-template-id="${block.templateId ?? ''}" title="Delete custom node template">
+                      <span class="material-icons text-sm">delete_outline</span>
+                    </button>`
+                  : ''}
+              </div>
+            `;
+          }).join('')}
+          ${customEmptyState}
+        </div>
+      </section>
+    `;
+  }).join('');
+}
+
 export function renderCanvas(container: HTMLElement, projectId: string): void {
   clearCanvasViewCleanup(container);
   const project = store.getProject(projectId);
   if (!project) { router.navigate('/'); return; }
   clearProjectEscapeToCanvas(container);
 
-  // Group palette blocks by category
-  const categories = new Map<string, typeof BLOCK_PALETTE>();
-  for (const b of BLOCK_PALETTE) {
-    if (!categories.has(b.category)) categories.set(b.category, []);
-    categories.get(b.category)!.push(b);
-  }
+  const categories = buildSidebarCategories(store.getCustomNodeTemplates());
 
   container.innerHTML = `
     <!-- Top Navigation Bar -->
@@ -81,8 +159,11 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         <button id="btn-save-snapshot" class="px-4 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors flex items-center gap-2">
           <span class="material-icons text-sm">save</span> Save Snapshot
         </button>
-        <button id="btn-export" class="px-4 py-1.5 text-xs font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors flex items-center gap-2">
-          <span class="material-icons text-sm">content_copy</span> Copy Assembled
+        <button id="btn-copy-runtime" class="px-4 py-1.5 text-xs font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors flex items-center gap-2">
+          <span class="material-icons text-sm">content_copy</span> Copy Runtime
+        </button>
+        <button id="btn-copy-flow" class="px-3 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors flex items-center gap-2">
+          <span class="material-icons text-sm">account_tree</span> Copy Flow Template
         </button>
       </div>
     </header>
@@ -97,20 +178,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           </div>
         </div>
         <div class="flex-1 overflow-y-auto p-2 space-y-4 custom-scrollbar" id="sidebar-blocks">
-          ${[...categories.entries()].map(([cat, blocks]) => `
-            <section data-category="${cat}">
-              <h3 class="px-2 mb-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">${cat}</h3>
-              <div class="space-y-1">
-                ${blocks.map(b => `
-                  <div class="sidebar-block group flex items-center gap-3 p-2 rounded cursor-grab hover:bg-slate-100 dark:hover:bg-white/5 transition-colors border border-transparent hover:border-primary/20"
-                       draggable="true" data-type="${b.type}" data-label="${b.label}" data-icon="${b.icon}" data-default="${encodeURIComponent(b.defaultContent)}">
-                    <span class="material-icons text-sm text-primary">${b.icon}</span>
-                    <span class="text-xs font-medium">${b.label}</span>
-                  </div>
-                `).join('')}
-              </div>
-            </section>
-          `).join('')}
+          ${renderSidebarBlocksHTML(categories)}
         </div>
         <div class="p-4 border-t border-primary/5 bg-slate-50 dark:bg-white/5">
           <div class="flex items-center gap-2">
@@ -173,6 +241,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Drag between ports (either direction):</span> Connect nodes.</div>
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click one port, then another:</span> Connect without dragging.</div>
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click a connection, then press Delete:</span> Remove it.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Double-click a connection (or press L when selected):</span> Set branch label.</div>
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Drop a new block on a connection:</span> Insert it between nodes.</div>
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Shift + drag a node, then drop on a connection:</span> Reinsert it elsewhere.</div>
           </div>
@@ -222,7 +291,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     </main>
   `;
 
-  // ── Render existing nodes ───────────
+  // -- Render existing nodes -----------
   const canvasArea = container.querySelector<HTMLElement>('#canvas-area')!;
   const nodesContainer = container.querySelector<HTMLElement>('#nodes-container')!;
   const svgEl = container.querySelector<SVGSVGElement>('#connection-svg')!;
@@ -292,6 +361,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   const NODE_VISUAL_HEIGHT = 140;
   const NODE_DECORATION_WIDTH = 128;
   const MINIMAP_PADDING = 80;
+  const MAX_CONNECTION_LABEL_LENGTH = 80;
   const nodeLabelMeasureCanvas = document.createElement('canvas');
   const nodeLabelMeasureCtx = nodeLabelMeasureCanvas.getContext('2d');
   const nodeVisualSizeById = new Map<string, NodeVisualSize>();
@@ -316,6 +386,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
   function clamp(value: number, min: number, max: number): number {
     return Math.max(min, Math.min(max, value));
+  }
+
+  function normalizeConnectionLabel(value: string): string {
+    return value.trim().replace(/\s+/g, ' ').slice(0, MAX_CONNECTION_LABEL_LENGTH);
   }
 
   function normalizeWheelDelta(event: WheelEvent): number {
@@ -526,13 +600,13 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     return minDistance;
   }
 
-  function findConnectionNearPoint(clientX: number, clientY: number): { id: string; from: string; to: string } | null {
+  function findConnectionNearPoint(clientX: number, clientY: number): { id: string; from: string; to: string; label?: string } | null {
     const canvasRect = canvasArea.getBoundingClientRect();
     const x = clientX - canvasRect.left;
     const y = clientY - canvasRect.top;
     const INSERT_THRESHOLD_PX = 20;
 
-    let bestMatch: { id: string; from: string; to: string; distance: number } | null = null;
+    let bestMatch: { id: string; from: string; to: string; label?: string; distance: number } | null = null;
     for (const pathEl of svgEl.querySelectorAll<SVGPathElement>('path[data-connection-id][data-role="geometry"]')) {
       const id = pathEl.dataset.connectionId;
       const from = pathEl.dataset.fromNodeId;
@@ -541,12 +615,13 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       const distance = getDistanceToConnection(pathEl, x, y);
       if (distance > INSERT_THRESHOLD_PX) continue;
       if (!bestMatch || distance < bestMatch.distance) {
-        bestMatch = { id, from, to, distance };
+        const connection = project!.connections.find((item) => item.id === id);
+        bestMatch = { id, from, to, label: connection?.label, distance };
       }
     }
 
     if (!bestMatch) return null;
-    return { id: bestMatch.id, from: bestMatch.from, to: bestMatch.to };
+    return { id: bestMatch.id, from: bestMatch.from, to: bestMatch.to, ...(bestMatch.label ? { label: bestMatch.label } : {}) };
   }
 
   function updateMiniMap(): void {
@@ -627,9 +702,14 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
             <span class="material-icons text-sm text-primary">${node.icon}</span>
             <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
           </h2>
-          <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
-            <span class="material-icons text-xs">close</span>
-          </button>
+          <div class="flex items-center gap-1">
+            <button class="node-save-template text-slate-400 hover:text-primary p-0.5" title="Save as custom node template">
+              <span class="material-icons text-xs">bookmark_add</span>
+            </button>
+            <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
+              <span class="material-icons text-xs">close</span>
+            </button>
+          </div>
         </div>
         <div class="relative">
           <!-- Input port (left side) -->
@@ -641,14 +721,13 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           <!-- Output port (right side) -->
           <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
         </div>
-        <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-between items-center rounded-b-lg border-t border-primary/10">
-          <span class="text-[9px] text-slate-400 uppercase font-medium tracking-wider">${node.type}</span>
+        <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center rounded-b-lg border-t border-primary/10">
           <span class="text-[9px] text-primary/60 font-mono">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
         </div>
       `;
       nodesContainer.appendChild(el);
 
-      // ── Dragging (by header only) ──────
+      // -- Dragging (by header only) ------
       let isDragging = false, didDrag = false, startX = 0, startY = 0, origX = node.x, origY = node.y;
       let dragListenersActive = false;
       const header = el.querySelector('.node-header') as HTMLElement;
@@ -696,7 +775,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
               store.removeConnection(projectId, conn.id);
             }
             store.removeConnection(projectId, connectionToSplit.id);
-            store.addConnection(projectId, connectionToSplit.from, node.id);
+            store.addConnection(projectId, connectionToSplit.from, node.id, connectionToSplit.label ?? '');
             store.addConnection(projectId, node.id, connectionToSplit.to);
           }
         }
@@ -705,7 +784,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       };
       header.addEventListener('mousedown', (e: MouseEvent) => {
         if (e.button !== 0) return;
-        if ((e.target as HTMLElement).closest('.node-delete')) return;
+        if ((e.target as HTMLElement).closest('.node-delete, .node-save-template')) return;
         isDragging = true;
         didDrag = false;
         startX = e.clientX; startY = e.clientY;
@@ -770,13 +849,28 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
       // Single click node body -> open editor
       el.addEventListener('click', (e: MouseEvent) => {
-        if ((e.target as HTMLElement).closest('.node-delete, .port')) return;
+        if ((e.target as HTMLElement).closest('.node-delete, .node-save-template, .port')) return;
         if (didDrag) {
           didDrag = false;
           return;
         }
         clearCanvasViewCleanup(container);
         router.navigate(`/project/${projectId}/editor/${node.id}`);
+      });
+
+      el.querySelector<HTMLButtonElement>('.node-save-template')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const input = prompt('Template name:', node.label) ?? '';
+        const templateLabel = input.trim();
+        if (!templateLabel) return;
+        store.saveCustomNodeTemplate({
+          type: node.type,
+          label: templateLabel,
+          icon: node.icon,
+          content: node.content,
+          meta: { ...node.meta },
+        });
+        refreshSidebarBlocks();
       });
 
       // Delete button
@@ -840,15 +934,32 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     }
   });
 
+  function editConnectionLabel(connectionId: string): void {
+    const connection = project!.connections.find((item) => item.id === connectionId);
+    if (!connection) return;
+    const nextLabel = prompt('Branch label (optional):', connection.label ?? '');
+    if (nextLabel === null) return;
+    const normalized = normalizeConnectionLabel(nextLabel);
+    store.updateConnectionLabel(projectId, connectionId, normalized);
+    drawConnections();
+  }
+
   addManagedListener(document, 'keydown', (e: KeyboardEvent) => {
     if (!selectedConnectionId) return;
-    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
 
     const target = e.target as HTMLElement | null;
     const isTypingTarget = target
       ? target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
       : false;
     if (isTypingTarget) return;
+
+    if (e.key === 'l' || e.key === 'L') {
+      editConnectionLabel(selectedConnectionId);
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
 
     const selectedConnection = project!.connections.find(c => c.id === selectedConnectionId);
     if (!selectedConnection) {
@@ -926,8 +1037,44 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         selectedConnectionId = conn.id;
         drawConnections();
       });
+      hitPath.addEventListener('dblclick', (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        selectedConnectionId = conn.id;
+        editConnectionLabel(conn.id);
+      });
       svgEl.appendChild(hitPath);
       svgEl.appendChild(path);
+
+      const connectionLabel = normalizeConnectionLabel(conn.label ?? '');
+      if (connectionLabel) {
+        const pathLength = path.getTotalLength();
+        if (Number.isFinite(pathLength) && pathLength > 0) {
+          const midpoint = path.getPointAtLength(pathLength / 2);
+          const labelText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          labelText.textContent = connectionLabel;
+          labelText.setAttribute('x', String(midpoint.x));
+          labelText.setAttribute('y', String(midpoint.y - 8));
+          labelText.setAttribute('font-size', '10');
+          labelText.setAttribute('font-weight', isSelected ? '700' : '600');
+          labelText.setAttribute('text-anchor', 'middle');
+          labelText.setAttribute('fill', isSelected ? '#0f766e' : '#1f2937');
+          labelText.style.pointerEvents = 'none';
+          svgEl.appendChild(labelText);
+
+          const labelBox = labelText.getBBox();
+          const labelBackground = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          labelBackground.setAttribute('x', String(labelBox.x - 4));
+          labelBackground.setAttribute('y', String(labelBox.y - 2));
+          labelBackground.setAttribute('width', String(labelBox.width + 8));
+          labelBackground.setAttribute('height', String(labelBox.height + 4));
+          labelBackground.setAttribute('rx', '4');
+          labelBackground.setAttribute('fill', isSelected ? 'rgba(20, 184, 166, 0.20)' : 'rgba(255,255,255,0.92)');
+          labelBackground.setAttribute('stroke', isSelected ? 'rgba(15, 118, 110, 0.45)' : 'rgba(31,41,55,0.25)');
+          labelBackground.style.pointerEvents = 'none';
+          svgEl.insertBefore(labelBackground, labelText);
+        }
+      }
 
       // Dots at endpoints
       for (const [cx, cy] of [[x1, y1], [x2, y2]]) {
@@ -963,7 +1110,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   applyViewportTransform();
   renderNodes();
 
-  // ── Viewport controls: right-click drag pan + button zoom ──
+  // -- Viewport controls: right-click drag pan + button zoom --
   let isPanning = false;
   let panStartMouseX = 0;
   let panStartMouseY = 0;
@@ -1074,47 +1221,117 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     scheduleDrawConnections();
   });
 
-  // ── Sidebar: drag-and-drop AND click-to-add ──
-  container.querySelectorAll<HTMLElement>('.sidebar-block').forEach(block => {
-    // Drag to canvas
-    block.addEventListener('dragstart', (e: DragEvent) => {
-      e.dataTransfer?.setData('text/plain', JSON.stringify({
-        type: block.dataset.type,
-        label: block.dataset.label,
-        icon: block.dataset.icon,
-        defaultContent: decodeURIComponent(block.dataset.default ?? ''),
-      }));
+  interface SidebarBlockData {
+    type: PromptNode['type'];
+    label: string;
+    icon: string;
+    defaultContent: string;
+    meta: Record<string, string>;
+  }
+
+  const sidebarBlocksHost = container.querySelector<HTMLElement>('#sidebar-blocks');
+  const sidebarSearch = container.querySelector<HTMLInputElement>('#sidebar-search');
+
+  function parseSidebarBlockData(block: HTMLElement): SidebarBlockData {
+    let parsedMeta: Record<string, string> = {};
+    try {
+      const rawMeta = decodeURIComponent(block.dataset.meta ?? '');
+      const candidate = JSON.parse(rawMeta) as unknown;
+      if (
+        candidate &&
+        typeof candidate === 'object' &&
+        !Array.isArray(candidate) &&
+        Object.values(candidate as Record<string, unknown>).every((value) => typeof value === 'string')
+      ) {
+        parsedMeta = candidate as Record<string, string>;
+      }
+    } catch {
+      parsedMeta = {};
+    }
+
+    return {
+      type: (block.dataset.type ?? 'custom') as PromptNode['type'],
+      label: block.dataset.label ?? 'Custom Node',
+      icon: block.dataset.icon ?? 'widgets',
+      defaultContent: decodeURIComponent(block.dataset.default ?? ''),
+      meta: parsedMeta,
+    };
+  }
+
+  function createNodeFromBlockData(blockData: SidebarBlockData, location?: { x: number; y: number }): void {
+    let nodeX = 60;
+    let nodeY = 60;
+
+    if (location) {
+      nodeX = location.x;
+      nodeY = location.y;
+    } else {
+      for (const existingNode of project!.nodes) {
+        const size = getNodeVisualSize(existingNode);
+        const nextX = existingNode.x + size.width + 56;
+        if (nextX > nodeX) {
+          nodeX = nextX;
+          nodeY = existingNode.y;
+        }
+      }
+    }
+
+    const node: PromptNode = {
+      id: uid(),
+      type: blockData.type,
+      label: blockData.label,
+      icon: blockData.icon,
+      x: nodeX,
+      y: nodeY,
+      content: blockData.defaultContent,
+      meta: { ...blockData.meta },
+    };
+    store.addNode(projectId, node);
+    renderNodes();
+  }
+
+  function applySidebarFilter(): void {
+    const query = sidebarSearch?.value.toLowerCase().trim() ?? '';
+    container.querySelectorAll<HTMLElement>('.sidebar-block').forEach((block) => {
+      const label = block.dataset.label?.toLowerCase() ?? '';
+      block.style.display = label.includes(query) ? '' : 'none';
+    });
+  }
+
+  function wireSidebarBlocks(): void {
+    container.querySelectorAll<HTMLElement>('.sidebar-block').forEach((block) => {
+      block.addEventListener('dragstart', (e: DragEvent) => {
+        e.dataTransfer?.setData('text/plain', JSON.stringify(parseSidebarBlockData(block)));
+      });
+
+      block.addEventListener('click', (event: MouseEvent) => {
+        if ((event.target as HTMLElement).closest('.sidebar-custom-delete')) return;
+        createNodeFromBlockData(parseSidebarBlockData(block));
+      });
     });
 
-    // Click to add at a smart position
-    block.addEventListener('click', () => {
-      const blockData = {
-        type: block.dataset.type!,
-        label: block.dataset.label!,
-        icon: block.dataset.icon!,
-        defaultContent: decodeURIComponent(block.dataset.default ?? ''),
-      };
-      // Place new node to the right of the rightmost existing node
-      let maxX = 60, maxY = 60;
-      for (const n of project!.nodes) {
-        const size = getNodeVisualSize(n);
-        const nextX = n.x + size.width + 56;
-        if (nextX > maxX) { maxX = nextX; maxY = n.y; }
-      }
-      const node: PromptNode = {
-        id: uid(),
-        type: blockData.type as PromptNode['type'],
-        label: blockData.label,
-        icon: blockData.icon,
-        x: maxX,
-        y: maxY,
-        content: blockData.defaultContent,
-        meta: {},
-      };
-      store.addNode(projectId, node);
-      renderNodes();
+    container.querySelectorAll<HTMLButtonElement>('.sidebar-custom-delete').forEach((button) => {
+      button.addEventListener('click', (event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const templateId = button.dataset.templateId;
+        if (!templateId) return;
+        if (!confirm('Delete this custom node template?')) return;
+        store.removeCustomNodeTemplate(templateId);
+        refreshSidebarBlocks();
+      });
     });
-  });
+  }
+
+  function refreshSidebarBlocks(): void {
+    if (!sidebarBlocksHost) return;
+    const nextCategories = buildSidebarCategories(store.getCustomNodeTemplates());
+    sidebarBlocksHost.innerHTML = renderSidebarBlocksHTML(nextCategories);
+    wireSidebarBlocks();
+    applySidebarFilter();
+  }
+
+  wireSidebarBlocks();
 
   canvasArea.addEventListener('dragover', (e: DragEvent) => {
     e.preventDefault();
@@ -1129,7 +1346,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     const data = e.dataTransfer?.getData('text/plain');
     if (!data) return;
     try {
-      const blockData = JSON.parse(data);
+      const blockData = JSON.parse(data) as SidebarBlockData;
       const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
       const worldPoint = screenToWorld(e.clientX, e.clientY);
       const newNodeSize: NodeVisualSize = {
@@ -1139,22 +1356,26 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       // Snap to 20px grid
       const rawX = worldPoint.x - newNodeSize.width / 2;
       const rawY = worldPoint.y - newNodeSize.height / 2;
+      const location = {
+        x: Math.round(rawX / 20) * 20,
+        y: Math.round(rawY / 20) * 20,
+      };
       const node: PromptNode = {
         id: uid(),
         type: blockData.type,
         label: blockData.label,
         icon: blockData.icon,
-        x: Math.round(rawX / 20) * 20,
-        y: Math.round(rawY / 20) * 20,
+        x: location.x,
+        y: location.y,
         content: blockData.defaultContent,
-        meta: {},
+        meta: { ...blockData.meta },
       };
       store.addNode(projectId, node);
 
       // If dropped on an existing connection, split it and insert the new node between.
       if (connectionToSplit) {
         store.removeConnection(projectId, connectionToSplit.id);
-        store.addConnection(projectId, connectionToSplit.from, node.id);
+        store.addConnection(projectId, connectionToSplit.from, node.id, connectionToSplit.label ?? '');
         store.addConnection(projectId, node.id, connectionToSplit.to);
       }
 
@@ -1162,17 +1383,12 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     } catch { /* ignore bad data */ }
   });
 
-  // ── Sidebar search ──
-  const sidebarSearch = container.querySelector<HTMLInputElement>('#sidebar-search');
+  // -- Sidebar search --
   sidebarSearch?.addEventListener('input', () => {
-    const q = sidebarSearch.value.toLowerCase();
-    container.querySelectorAll<HTMLElement>('.sidebar-block').forEach(block => {
-      const label = block.dataset.label?.toLowerCase() ?? '';
-      block.style.display = label.includes(q) ? '' : 'none';
-    });
+    applySidebarFilter();
   });
 
-  // ── Navigation ──
+  // -- Navigation --
   container.querySelector('#nav-home')?.addEventListener('click', () => {
     clearCanvasViewCleanup(container);
     router.navigate('/');
@@ -1183,7 +1399,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   });
   wireProjectViewTabs(container, projectId, { beforeNavigate: () => clearCanvasViewCleanup(container) });
 
-  // ── Save prompt snapshot for diff/history ──
+  // -- Save prompt snapshot for diff/history --
   container.querySelector('#btn-save-snapshot')?.addEventListener('click', () => {
     const notes = prompt('Snapshot notes:') || 'Canvas snapshot';
     const version = store.saveAssembledVersion(projectId, notes);
@@ -1197,17 +1413,35 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     }, 2000);
   });
 
-  // ── Export assembled prompt ──
-  container.querySelector('#btn-export')?.addEventListener('click', () => {
-    const assembled = store.assemblePrompt(projectId);
-    navigator.clipboard.writeText(assembled).then(() => {
-      const btn = container.querySelector('#btn-export')!;
-      btn.innerHTML = '<span class="material-icons text-sm">check</span> Copied!';
-      setTimeout(() => {
-        btn.innerHTML = '<span class="material-icons text-sm">content_copy</span> Copy Assembled';
-      }, 2000);
+  // -- Copy prompt output (runtime and flow template) --
+  const wireCopyButton = (
+    selector: string,
+    mode: 'runtime' | 'flow-template',
+    idleHTML: string,
+  ): void => {
+    container.querySelector(selector)?.addEventListener('click', () => {
+      const assembled = store.assemblePrompt(projectId, mode);
+      navigator.clipboard.writeText(assembled).then(() => {
+        const btn = container.querySelector<HTMLElement>(selector);
+        if (!btn) return;
+        btn.innerHTML = '<span class="material-icons text-sm">check</span> Copied!';
+        setTimeout(() => {
+          btn.innerHTML = idleHTML;
+        }, 2000);
+      });
     });
-  });
+  };
+
+  wireCopyButton(
+    '#btn-copy-runtime',
+    'runtime',
+    '<span class="material-icons text-sm">content_copy</span> Copy Runtime',
+  );
+  wireCopyButton(
+    '#btn-copy-flow',
+    'flow-template',
+    '<span class="material-icons text-sm">account_tree</span> Copy Flow Template',
+  );
 
   // Theme toggle
   wireThemeToggle(container);
@@ -1218,3 +1452,4 @@ function escapeHTML(str: string): string {
   div.textContent = str;
   return div.innerHTML;
 }
+

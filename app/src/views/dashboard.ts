@@ -126,6 +126,10 @@ export function renderDashboard(container: HTMLElement): void {
             <span class="material-icons-outlined text-sm">file_upload</span>
             <span>Import Prompt</span>
           </button>
+          <button id="btn-import-transcript" class="flex items-center gap-2 border border-primary/30 text-primary hover:bg-primary/5 px-4 py-2 rounded-lg font-medium transition-all">
+            <span class="material-icons-outlined text-sm">smart_toy</span>
+            <span>Import Transcript</span>
+          </button>
           <button id="btn-new-project" class="flex items-center gap-2 bg-primary hover:bg-primary/90 text-white px-4 py-2 rounded-lg font-medium transition-all shadow-sm">
             <span class="material-icons-outlined text-sm">add</span>
             <span>New Project</span>
@@ -338,6 +342,7 @@ export function renderDashboard(container: HTMLElement): void {
   const closeModal = () => { modal.classList.add('hidden'); modal.classList.remove('flex'); };
 
   container.querySelector('#btn-import-prompt')?.addEventListener('click', () => router.navigate('/import'));
+  container.querySelector('#btn-import-transcript')?.addEventListener('click', () => router.navigate('/import/transcript'));
   container.querySelector('#btn-new-project')?.addEventListener('click', openModal);
   container.querySelector('#new-project-card')?.addEventListener('click', openModal);
   container.querySelector('#modal-cancel')?.addEventListener('click', closeModal);

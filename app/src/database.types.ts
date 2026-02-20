@@ -87,6 +87,7 @@ export interface Database {
           project_id: string;
           from_node_id: string;
           to_node_id: string;
+          label?: string;
           created_at: string;
         };
         Insert: {
@@ -94,6 +95,7 @@ export interface Database {
           project_id: string;
           from_node_id: string;
           to_node_id: string;
+          label?: string;
           created_at?: string;
         };
         Update: {
@@ -101,6 +103,7 @@ export interface Database {
           project_id?: string;
           from_node_id?: string;
           to_node_id?: string;
+          label?: string;
           created_at?: string;
         };
         Relationships: [];
@@ -127,6 +130,7 @@ export interface Database {
               id: string;
               from: string;
               to: string;
+              label?: string;
             }>;
           } | null;
           created_at: string;
@@ -152,6 +156,7 @@ export interface Database {
               id: string;
               from: string;
               to: string;
+              label?: string;
             }>;
           } | null;
           created_at?: string;
@@ -177,9 +182,46 @@ export interface Database {
               id: string;
               from: string;
               to: string;
+              label?: string;
             }>;
           } | null;
           created_at?: string;
+        };
+        Relationships: [];
+      };
+      custom_nodes: {
+        Row: {
+          id: string;
+          owner_id: string;
+          type: string;
+          label: string;
+          icon: string;
+          content: string;
+          meta: Record<string, string>;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          owner_id?: string;
+          type?: string;
+          label: string;
+          icon?: string;
+          content?: string;
+          meta?: Record<string, string>;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          owner_id?: string;
+          type?: string;
+          label?: string;
+          icon?: string;
+          content?: string;
+          meta?: Record<string, string>;
+          created_at?: string;
+          updated_at?: string;
         };
         Relationships: [];
       };

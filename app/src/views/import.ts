@@ -8,7 +8,7 @@
  */
 import { store } from '../store';
 import { router } from '../router';
-import { BLOCK_PALETTE, PromptNode, NodeType, uid, type EditorFormat } from '../models';
+import { BLOCK_PALETTE, PromptNode, uid, type EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { preserveScrollDuringRender } from '../view-state';
 
@@ -17,7 +17,6 @@ import { preserveScrollDuringRender } from '../view-state';
 interface Section {
   id: string;
   label: string;
-  type: NodeType;
   icon: string;
   startLine: number; // inclusive, 0-based
   endLine: number;   // inclusive, 0-based
@@ -29,16 +28,7 @@ interface SectionSeed {
   label?: string;
 }
 
-/* ── Palette options for the type picker ─────── */
-
-const NODE_TYPE_OPTIONS = BLOCK_PALETTE.map(b => ({
-  type: b.type,
-  label: b.label,
-  icon: b.icon,
-}));
-
 const DEFAULT_SECTION_LABEL = 'N/A';
-const DEFAULT_SECTION_TYPE: NodeType = 'custom';
 const DEFAULT_SECTION_ICON = 'widgets';
 const SECTION_ICON_OPTIONS = Array.from(new Set<string>([
   DEFAULT_SECTION_ICON,
@@ -74,7 +64,7 @@ function normalizeLineEndings(str: string): string {
   return str.replace(/\r\n?/g, '\n');
 }
 
-/* ── Guess a node type from content ───────────── */
+/* ── Section helpers ──────────────────────────── */
 
 function normalizeIconName(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
@@ -84,7 +74,6 @@ function createDefaultSection(startLine: number, endLine: number, label = DEFAUL
   return {
     id: uid(),
     label: label.trim() || DEFAULT_SECTION_LABEL,
-    type: DEFAULT_SECTION_TYPE,
     icon: DEFAULT_SECTION_ICON,
     startLine,
     endLine,
@@ -478,7 +467,7 @@ export function renderImport(container: HTMLElement): void {
           <div class="px-5 py-3 bg-white dark:bg-background-dark/50 border-b border-primary/5 flex items-center justify-between">
             <div>
               <h3 class="text-sm font-bold text-slate-800 dark:text-white">Click Between Lines to Split</h3>
-              <p class="text-[11px] text-slate-400">${formatHint} Hover between lines and click to insert a section divider. New sections default to N/A; set your own node name, type, and icon on the right.</p>
+              <p class="text-[11px] text-slate-400">${formatHint} Hover between lines and click to insert a section divider. New sections default to N/A; set your own node name and icon on the right.</p>
             </div>
             <div class="flex gap-2">
               <button id="btn-auto-split" class="px-3 py-1.5 text-[10px] font-semibold border border-primary/30 text-primary hover:bg-primary/5 rounded-md transition-colors flex items-center gap-1.5" title="${autoSplitTitle}">
@@ -571,9 +560,6 @@ export function renderImport(container: HTMLElement): void {
     const color = getColor(idx);
     const lineCount = sec.endLine - sec.startLine + 1;
     const preview = lines.slice(sec.startLine, Math.min(sec.startLine + 3, sec.endLine + 1)).join('\n');
-    const hasPresetType = NODE_TYPE_OPTIONS.some(opt => opt.type === sec.type);
-    const selectedType = hasPresetType ? sec.type : '__custom__';
-    const customTypeValue = hasPresetType ? '' : sec.type;
     return `
       <div class="section-card rounded-lg border overflow-hidden transition-all hover:shadow-md" style="border-color: ${color.border}30" data-section-id="${sec.id}">
         <div class="px-3 py-2 flex items-center gap-2" style="background: ${color.bg}">
@@ -582,27 +568,6 @@ export function renderImport(container: HTMLElement): void {
           <span class="text-[9px] text-slate-400 font-mono whitespace-nowrap">${lineCount} line${lineCount !== 1 ? 's' : ''}</span>
         </div>
         <div class="px-3 py-1.5 bg-white dark:bg-slate-900 space-y-2">
-          <div class="grid grid-cols-2 gap-2">
-            <div class="min-w-0">
-              <div class="text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">Type</div>
-              <select class="section-type-select w-full text-[10px] rounded border border-slate-200 dark:border-slate-700 px-2 py-1 bg-transparent text-slate-600 dark:text-slate-300 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20" data-idx="${idx}">
-                ${NODE_TYPE_OPTIONS.map(opt =>
-                  `<option value="${opt.type}" ${opt.type === selectedType ? 'selected' : ''}>${opt.label}</option>`
-                ).join('')}
-                <option value="__custom__" ${selectedType === '__custom__' ? 'selected' : ''}>Custom…</option>
-              </select>
-            </div>
-            <div class="min-w-0">
-              <div class="text-[9px] uppercase tracking-wider text-slate-400 mb-0.5">Custom Type</div>
-              <input
-                class="section-type-custom w-full text-[10px] rounded border border-slate-200 dark:border-slate-700 px-2 py-1 bg-transparent text-slate-600 dark:text-slate-300 outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 ${hasPresetType ? 'opacity-50 cursor-not-allowed' : ''}"
-                value="${esc(customTypeValue)}"
-                placeholder="my-custom-type"
-                data-idx="${idx}"
-                ${hasPresetType ? 'disabled' : ''}
-              />
-            </div>
-          </div>
           <div class="min-w-0">
             <div class="text-[9px] uppercase tracking-wider text-slate-400 mb-1">Icon</div>
             <div class="grid grid-cols-7 gap-1.5">
@@ -675,7 +640,6 @@ export function renderImport(container: HTMLElement): void {
                       <span class="text-xs font-bold text-slate-800 dark:text-white">${esc(sec.label)}</span>
                     </div>
                     <div class="flex items-center gap-3 text-[10px] text-slate-400">
-                      <span class="font-medium">${sec.type}</span>
                       <span class="font-mono">${tokenEst} tok</span>
                     </div>
                   </div>
@@ -796,58 +760,6 @@ export function renderImport(container: HTMLElement): void {
       });
     });
 
-    // Section type preset dropdown
-    container.querySelectorAll<HTMLSelectElement>('.section-type-select').forEach(select => {
-      select.addEventListener('change', () => {
-        const idx = parseInt(select.dataset.idx!);
-        if (!sections[idx]) return;
-
-        if (select.value === '__custom__') {
-          const customInput = container.querySelector<HTMLInputElement>(`.section-type-custom[data-idx="${idx}"]`);
-          const nextType = customInput?.value.trim() || sections[idx].type.trim() || DEFAULT_SECTION_TYPE;
-          sections[idx].type = nextType as NodeType;
-          render({ preserveStep2Scroll: true });
-          requestAnimationFrame(() => {
-            const refreshedCustomInput = container.querySelector<HTMLInputElement>(`.section-type-custom[data-idx="${idx}"]`);
-            if (!refreshedCustomInput) return;
-            refreshedCustomInput.focus();
-            const caret = refreshedCustomInput.value.length;
-            refreshedCustomInput.setSelectionRange(caret, caret);
-          });
-          return;
-        }
-
-        sections[idx].type = select.value as NodeType;
-        render({ preserveStep2Scroll: true });
-      });
-    });
-
-    // Section custom type text input
-    container.querySelectorAll<HTMLInputElement>('.section-type-custom').forEach(input => {
-      const applyCustomType = (): void => {
-        const idx = parseInt(input.dataset.idx!);
-        if (!sections[idx]) return;
-        const typeSelect = container.querySelector<HTMLSelectElement>(`.section-type-select[data-idx="${idx}"]`);
-        if (!typeSelect || typeSelect.value !== '__custom__') return;
-        const normalizedType = input.value.trim() || DEFAULT_SECTION_TYPE;
-        sections[idx].type = normalizedType as NodeType;
-      };
-
-      input.addEventListener('input', applyCustomType);
-      input.addEventListener('blur', () => {
-        applyCustomType();
-        if (input.value.trim().length === 0) {
-          input.value = DEFAULT_SECTION_TYPE;
-        }
-      });
-      input.addEventListener('keydown', (e: KeyboardEvent) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          input.blur();
-        }
-      });
-    });
-
     // Section icon selection
     container.querySelectorAll<HTMLButtonElement>('.section-icon-option').forEach(button => {
       button.addEventListener('click', () => {
@@ -957,13 +869,12 @@ export function renderImport(container: HTMLElement): void {
       const content = lines.slice(sec.startLine, sec.endLine + 1).join('\n');
       const row = Math.floor(i / NODES_PER_ROW);
       const col = i % NODES_PER_ROW;
-      const normalizedType = (sec.type.trim() || DEFAULT_SECTION_TYPE) as NodeType;
       const normalizedLabel = sec.label.trim() || DEFAULT_SECTION_LABEL;
       const normalizedIcon = normalizeIconName(sec.icon) || DEFAULT_SECTION_ICON;
 
       const node: PromptNode = {
         id: uid(),
-        type: normalizedType,
+        type: normalizedLabel as PromptNode['type'],
         label: normalizedLabel,
         icon: normalizedIcon,
         x: NODE_START_X + col * NODE_SPACING_X,
