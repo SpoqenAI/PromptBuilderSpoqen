@@ -352,9 +352,10 @@ class Store {
   addNode(projectId: string, node: PromptNode): void {
     const p = this.getProject(projectId);
     if (!p) return;
-    const normalizedLabel = normalizeNodeIdentityLabel(node.label, node.type);
+    const normalizedType = toNodeType(node.type);
+    const normalizedLabel = normalizeNodeIdentityLabel(node.label, normalizedType);
     node.label = normalizedLabel;
-    node.type = normalizedLabel as NodeType;
+    node.type = normalizedType;
     p.nodes.push(node);
     p.lastEdited = 'Just now';
     this.bg(async () => {
@@ -383,9 +384,11 @@ class Store {
     if (!n) return;
     const mergedUpdates: Partial<PromptNode> = { ...updates };
     if (mergedUpdates.label !== undefined || mergedUpdates.type !== undefined) {
-      const unifiedLabel = normalizeNodeIdentityLabel(mergedUpdates.label, mergedUpdates.type);
+      const nextType = mergedUpdates.type !== undefined ? toNodeType(mergedUpdates.type) : n.type;
+      const nextLabel = mergedUpdates.label !== undefined ? mergedUpdates.label : n.label;
+      const unifiedLabel = normalizeNodeIdentityLabel(nextLabel, nextType);
       mergedUpdates.label = unifiedLabel;
-      mergedUpdates.type = unifiedLabel as NodeType;
+      mergedUpdates.type = nextType;
     }
     Object.assign(n, mergedUpdates);
     p.lastEdited = 'Just now';

@@ -94,6 +94,65 @@ const DEFAULT_ICON_BY_TYPE: Readonly<Record<FlowNodeType, string>> = {
   custom: 'widgets',
 };
 
+const CURATED_MATERIAL_ICONS = [
+  'psychology',
+  'flag',
+  'record_voice_over',
+  'translate',
+  'alt_route',
+  'call_end',
+  'storage',
+  'article',
+  'history',
+  'integration_instructions',
+  'mic',
+  'widgets',
+  'hub',
+  'schema',
+  'bolt',
+  'smart_toy',
+  'terminal',
+  'code',
+  'memory',
+  'science',
+  'auto_awesome',
+  'construction',
+  'cloud',
+  'dns',
+  'extension',
+  'flare',
+  'functions',
+  'grid_view',
+  'insights',
+  'key',
+  'lightbulb',
+  'link',
+  'model_training',
+  'network_check',
+  'offline_bolt',
+  'pending',
+  'policy',
+  'query_stats',
+  'robot',
+  'settings',
+  'speed',
+  'star',
+  'sync',
+  'timeline',
+  'track_changes',
+  'transform',
+  'tune',
+  'visibility',
+  'warning',
+  'wifi',
+  'work',
+] as const;
+
+const ALLOWED_NODE_ICONS = new Set<string>([
+  ...CURATED_MATERIAL_ICONS,
+  ...Object.values(DEFAULT_ICON_BY_TYPE),
+]);
+
 const FLOW_JSON_SCHEMA: Record<string, unknown> = {
   type: 'object',
   additionalProperties: false,
@@ -154,10 +213,12 @@ serve(async (req: Request) => {
     await requireUser(req, adminClient);
 
     const openAiKey = (Deno.env.get('OPENAI_API_KEY') ?? '').trim();
+    const configuredModel = resolveTranscriptModel();
 
     let flow: FlowResult;
     let usedFallback = false;
     let warning: string | null = null;
+    let model = configuredModel;
 
     if (openAiKey) {
       try {
@@ -167,10 +228,12 @@ serve(async (req: Request) => {
           assistantName,
           userName,
           openAiKey,
+          model: configuredModel,
         });
         flow = normalizeFlowResult(aiResponse, transcript, maxNodes, assistantName, userName);
       } catch (err) {
         usedFallback = true;
+        model = 'deterministic-fallback';
         warning = `AI generation failed. Using deterministic fallback. ${sanitizeText(
           err instanceof Error ? err.message : String(err),
           'Unknown AI error.',
@@ -179,12 +242,14 @@ serve(async (req: Request) => {
       }
     } else {
       usedFallback = true;
+      model = 'deterministic-fallback';
       warning = 'OPENAI_API_KEY is not configured. Using deterministic fallback mapping.';
       flow = buildFallbackFlow(transcript, maxNodes ?? MAX_ALLOWED_NODES, assistantName, userName);
     }
 
     return jsonResponse(200, {
       ...flow,
+      model,
       usedFallback,
       warning,
     });
@@ -246,14 +311,14 @@ async function generateFlowWithOpenAI(args: {
   assistantName: string;
   userName: string;
   openAiKey: string;
+  model: string;
 }): Promise<unknown> {
-  const model = (Deno.env.get('OPENAI_TRANSCRIPT_MODEL') ?? 'gpt-5-nano').trim() || 'gpt-5-nano';
   const temperature = resolveOptionalTemperature();
   const maxNodeLine = args.maxNodes !== undefined
     ? `Maximum node count: ${args.maxNodes}`
     : 'Use as many nodes as needed to accurately represent the conversation flow.';
   const requestBody: Record<string, unknown> = {
-    model,
+    model: args.model,
     messages: [
       {
         role: 'system',
@@ -334,6 +399,10 @@ function resolveOptionalTemperature(): number | null {
   }
 
   return parsed;
+}
+
+function resolveTranscriptModel(): string {
+  return (Deno.env.get('OPENAI_TRANSCRIPT_MODEL') ?? 'gpt-5-nano').trim() || 'gpt-5-nano';
 }
 
 function extractOpenAIError(payload: unknown): string | null {
@@ -511,7 +580,7 @@ function normalizeFlowNodeType(value: unknown): FlowNodeType {
 function normalizeIcon(value: unknown, type: FlowNodeType): string {
   if (typeof value === 'string') {
     const normalized = value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
-    if (normalized.length > 0) {
+    if (normalized.length > 0 && normalized.length <= 32 && ALLOWED_NODE_ICONS.has(normalized)) {
       return normalized;
     }
   }

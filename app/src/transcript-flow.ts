@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import type { NodeType } from './models';
+import { resolveNodeIcon } from './node-icons';
 
 export interface TranscriptFlowRequest {
   transcript: string;
@@ -26,6 +27,7 @@ export interface TranscriptFlowConnection {
 export interface TranscriptFlowResult {
   title: string;
   summary: string;
+  model: string;
   nodes: TranscriptFlowNode[];
   connections: TranscriptFlowConnection[];
   usedFallback: boolean;
@@ -35,6 +37,7 @@ export interface TranscriptFlowResult {
 interface TranscriptFlowApiResponse {
   title?: unknown;
   summary?: unknown;
+  model?: unknown;
   nodes?: unknown;
   connections?: unknown;
   usedFallback?: unknown;
@@ -64,24 +67,6 @@ const NODE_TYPES: readonly NodeType[] = [
   'style-module',
   'custom',
 ] as const;
-
-const DEFAULT_ICON_BY_TYPE: Readonly<Record<NodeType, string>> = {
-  'core-persona': 'psychology',
-  'mission-objective': 'flag',
-  'tone-guidelines': 'record_voice_over',
-  'language-model': 'translate',
-  'logic-branch': 'alt_route',
-  'termination': 'call_end',
-  'vector-db': 'storage',
-  'static-context': 'article',
-  'memory-buffer': 'history',
-  'webhook': 'integration_instructions',
-  'transcriber': 'mic',
-  'llm-brain': 'psychology',
-  'voice-synth': 'record_voice_over',
-  'style-module': 'palette',
-  custom: 'widgets',
-};
 
 export async function generateTranscriptFlow(request: TranscriptFlowRequest): Promise<TranscriptFlowResult> {
   const transcript = request.transcript.trim();
@@ -129,6 +114,7 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
 function toTranscriptFlowResult(value: TranscriptFlowApiResponse): TranscriptFlowResult {
   const title = sanitizeText(value.title, 'Transcript Flow');
   const summary = sanitizeText(value.summary, 'Generated flow from transcript.');
+  const model = sanitizeText(value.model, 'unknown');
 
   const rawNodes = Array.isArray(value.nodes) ? value.nodes : [];
   const nodes: TranscriptFlowNode[] = [];
@@ -160,6 +146,7 @@ function toTranscriptFlowResult(value: TranscriptFlowApiResponse): TranscriptFlo
   return {
     title,
     summary,
+    model,
     nodes,
     connections,
     usedFallback: value.usedFallback === true,
@@ -258,13 +245,7 @@ function normalizeNodeType(value: unknown): NodeType {
 }
 
 function normalizeIcon(value: unknown, type: NodeType): string {
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
-    if (normalized.length > 0) {
-      return normalized;
-    }
-  }
-  return DEFAULT_ICON_BY_TYPE[type];
+  return resolveNodeIcon(value, type);
 }
 
 function normalizeMeta(value: unknown): Record<string, string> {
@@ -394,3 +375,9 @@ function decodeJwtPayload(segment: string): Record<string, unknown> | null {
     return null;
   }
 }
+
+export const transcriptFlowTestUtils = {
+  normalizeMaxNodes,
+  normalizeNodeType,
+  toTranscriptConnections,
+};

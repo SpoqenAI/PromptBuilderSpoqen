@@ -8,6 +8,8 @@ import {
   type TranscriptFlowNode,
   type TranscriptFlowResult,
 } from '../transcript-flow';
+import { persistTranscriptFlowArtifacts } from '../transcript-artifacts';
+import { resolveNodeIcon } from '../node-icons';
 
 type LayoutPosition = {
   x: number;
@@ -15,11 +17,11 @@ type LayoutPosition = {
 };
 
 type LayoutMap = Record<string, LayoutPosition>;
+type MessageTone = 'info' | 'success' | 'error';
 
 const DEFAULT_PROJECT_NAME = 'Transcript Flow';
 const DEFAULT_PROJECT_MODEL = 'GPT-4o';
 const MIN_TRANSCRIPT_LENGTH = 20;
-const DEFAULT_MAX_NODES = 18;
 
 export function renderTranscriptImport(container: HTMLElement): void {
   let projectName = DEFAULT_PROJECT_NAME;
@@ -28,13 +30,16 @@ export function renderTranscriptImport(container: HTMLElement): void {
   let transcriptFileName = '';
   let assistantName = 'Assistant';
   let userName = 'User';
-  let maxNodes: number | undefined = DEFAULT_MAX_NODES;
-  let autoNodeCount = false;
 
   let generatedFlow: TranscriptFlowResult | null = null;
   let generationError = '';
   let isGenerating = false;
   let selectedNodeId: string | null = null;
+  let flowRevision = 0;
+  let approvedRevision = -1;
+  let approvedAt: string | null = null;
+  let transcriptSetId: string | null = null;
+  let persistenceMessage: { tone: MessageTone; text: string } | null = null;
 
   // Persist viewport state across renders
   let savedZoom: number | null = null;
@@ -43,6 +48,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
 
   function render(): void {
     const canGenerate = transcriptText.trim().length >= MIN_TRANSCRIPT_LENGTH && !isGenerating;
+    const flowApproved = isCurrentFlowApproved();
     const selectedNode = selectedNodeId && generatedFlow
       ? generatedFlow.nodes.find((n) => n.id === selectedNodeId) ?? null
       : null;
@@ -64,7 +70,10 @@ export function renderTranscriptImport(container: HTMLElement): void {
               <button id="btn-regenerate-flow" type="button" class="px-3 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors flex items-center gap-2">
                 <span class="material-icons text-sm">refresh</span> Regenerate
               </button>
-              <button id="btn-create-flow-project" type="button" class="px-4 py-1.5 text-xs font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors flex items-center gap-2">
+              <button id="btn-approve-flow" type="button" class="px-3 py-1.5 text-xs font-medium border ${flowApproved ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-700 dark:text-emerald-200 dark:bg-emerald-950/30' : 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-700 dark:text-amber-200 dark:bg-amber-950/30'} rounded transition-colors flex items-center gap-2">
+                <span class="material-icons text-sm">${flowApproved ? 'task_alt' : 'rule'}</span> ${flowApproved ? 'Approved' : 'Approve Flow'}
+              </button>
+              <button id="btn-create-flow-project" type="button" class="px-4 py-1.5 text-xs font-medium rounded transition-colors flex items-center gap-2 ${flowApproved ? 'bg-primary text-white hover:bg-primary/90' : 'bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-300 cursor-not-allowed'}" ${flowApproved ? '' : 'disabled'} title="${flowApproved ? 'Create project from reviewed flow' : 'Approve flow before creating project'}">
                 <span class="material-icons text-sm">add_circle</span> Create Project from Flow
               </button>
             ` : ''}
@@ -103,17 +112,6 @@ export function renderTranscriptImport(container: HTMLElement): void {
                 </div>
               </div>
               <div>
-                <label class="block text-xs font-medium text-slate-500 mb-1">Maximum generated nodes</label>
-                <div class="flex items-center gap-2">
-                  <input id="transcript-max-nodes" type="number" min="6" max="40" value="${autoNodeCount ? '' : (maxNodes ?? DEFAULT_MAX_NODES)}" class="flex-1 rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary ${autoNodeCount ? 'opacity-40 pointer-events-none' : ''}" ${autoNodeCount ? 'disabled' : ''} />
-                </div>
-                <label class="flex items-center gap-2 mt-1.5 cursor-pointer">
-                  <input id="transcript-auto-nodes" type="checkbox" class="rounded border-slate-300 text-primary focus:ring-primary" ${autoNodeCount ? 'checked' : ''} />
-                  <span class="text-xs text-slate-500">Auto (let AI decide)</span>
-                </label>
-              </div>
-
-              <div>
                 <div class="flex items-center justify-between gap-2 mb-1">
                   <label for="transcript-text" class="text-xs font-medium text-slate-500">Transcript</label>
                   <span id="transcript-char-count" class="text-[11px] text-slate-400">${transcriptText.length} chars</span>
@@ -129,6 +127,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
               </div>
 
               ${generationError ? `<p id="transcript-generate-error" class="rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs text-red-700 dark:text-red-200">${esc(generationError)}</p>` : ''}
+              ${persistenceMessage ? `<p class="rounded-lg border px-3 py-2 text-xs ${messageClass(persistenceMessage.tone)}">${esc(persistenceMessage.text)}</p>` : ''}
 
               <div class="flex flex-wrap gap-2 pt-1">
                 <button id="btn-generate-flow" class="flex-1 rounded-lg bg-primary text-white px-4 py-2 text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" ${canGenerate ? '' : 'disabled'}>
@@ -139,7 +138,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
                 </button>
               </div>
 
-              <p class="text-[11px] text-slate-400">Requires <code>OPENAI_API_KEY</code> in Supabase Edge Functions.</p>
+              ${generatedFlow ? `<p class="text-[11px] ${flowApproved ? 'text-emerald-600 dark:text-emerald-300' : 'text-amber-600 dark:text-amber-300'}">${flowApproved ? `Approved at ${formatIsoDate(approvedAt)}. You can create a project now.` : 'Review the generated flow and click Approve Flow before creating a project.'}</p>` : ''}
             </div>
             <div class="p-4 border-t border-primary/5 bg-slate-50 dark:bg-white/5">
               <div class="flex items-center gap-2">
@@ -151,7 +150,10 @@ export function renderTranscriptImport(container: HTMLElement): void {
 
           <!-- Main Canvas Area -->
           <div class="flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
-            ${generatedFlow ? renderFlowCanvas(generatedFlow, selectedNode) : renderEmptyCanvas()}
+            ${generatedFlow
+              ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating)
+              : renderEmptyCanvas(isGenerating)}
+            ${isGenerating && generatedFlow ? renderGeneratingOverlay() : ''}
           </div>
         </main>
       `;
@@ -285,34 +287,12 @@ export function renderTranscriptImport(container: HTMLElement): void {
       userName = userNameInput.value;
     });
 
-    const autoNodesCheckbox = container.querySelector<HTMLInputElement>('#transcript-auto-nodes');
-    const maxNodesInput = container.querySelector<HTMLInputElement>('#transcript-max-nodes');
-
-    autoNodesCheckbox?.addEventListener('change', () => {
-      autoNodeCount = autoNodesCheckbox.checked;
-      if (autoNodeCount) {
-        maxNodes = undefined;
-      } else {
-        maxNodes = DEFAULT_MAX_NODES;
-      }
-      render();
-    });
-
-    maxNodesInput?.addEventListener('change', () => {
-      if (autoNodeCount) return;
-      const parsed = Number.parseInt(maxNodesInput.value, 10);
-      if (!Number.isFinite(parsed)) {
-        maxNodes = DEFAULT_MAX_NODES;
-      } else {
-        maxNodes = Math.max(6, Math.min(40, parsed));
-      }
-      maxNodesInput.value = String(maxNodes);
-    });
-
     const transcriptTextArea = container.querySelector<HTMLTextAreaElement>('#transcript-text');
     transcriptTextArea?.addEventListener('input', () => {
       transcriptText = transcriptTextArea.value;
       generationError = '';
+      persistenceMessage = null;
+      clearFlowApproval();
       container.querySelector('#transcript-generate-error')?.remove();
       syncTranscriptControls();
     });
@@ -332,6 +312,8 @@ export function renderTranscriptImport(container: HTMLElement): void {
           transcriptText = normalizeLineEndings(text);
           transcriptFileName = file.name;
           generationError = '';
+          persistenceMessage = null;
+          clearFlowApproval();
           render();
         } catch {
           generationError = 'Unable to read transcript file.';
@@ -346,6 +328,11 @@ export function renderTranscriptImport(container: HTMLElement): void {
       generationError = '';
       generatedFlow = null;
       selectedNodeId = null;
+      flowRevision = 0;
+      approvedRevision = -1;
+      approvedAt = null;
+      transcriptSetId = null;
+      persistenceMessage = null;
       render();
     });
 
@@ -355,6 +342,14 @@ export function renderTranscriptImport(container: HTMLElement): void {
 
     container.querySelector<HTMLButtonElement>('#btn-create-flow-project')?.addEventListener('click', () => {
       createProjectFromGeneratedFlow();
+    });
+
+    container.querySelector<HTMLButtonElement>('#btn-approve-flow')?.addEventListener('click', () => {
+      if (!generatedFlow) return;
+      approvedRevision = flowRevision;
+      approvedAt = new Date().toISOString();
+      generationError = '';
+      render();
     });
 
     container.querySelector<HTMLButtonElement>('#btn-regenerate-flow')?.addEventListener('click', () => {
@@ -398,20 +393,48 @@ export function renderTranscriptImport(container: HTMLElement): void {
 
     isGenerating = true;
     generationError = '';
+    persistenceMessage = null;
     render();
 
     try {
       const flow = await generateTranscriptFlow({
         transcript,
-        maxNodes: autoNodeCount ? undefined : maxNodes,
         assistantName: assistantName.trim() || undefined,
         userName: userName.trim() || undefined,
       });
 
       generatedFlow = flow;
+      flowRevision += 1;
+      clearFlowApproval();
       transcriptText = transcript;
       if (projectName.trim().length === 0 || projectName === DEFAULT_PROJECT_NAME) {
         projectName = flow.title;
+      }
+
+      try {
+        const persisted = await persistTranscriptFlowArtifacts({
+          transcript,
+          flow,
+          projectName: projectName.trim() || flow.title || DEFAULT_PROJECT_NAME,
+          transcriptSetId,
+          metadata: {
+            assistantName: assistantName.trim() || 'Assistant',
+            userName: userName.trim() || 'User',
+            projectModel,
+            nodeCountStrategy: 'ai-decides',
+            transcriptFileName: transcriptFileName || null,
+          },
+        });
+        transcriptSetId = persisted.transcriptSetId;
+        persistenceMessage = {
+          tone: 'success',
+          text: `Saved transcript artifacts (set ${shortId(persisted.transcriptSetId)}, flow ${shortId(persisted.transcriptFlowId)}).`,
+        };
+      } catch (persistErr) {
+        persistenceMessage = {
+          tone: 'error',
+          text: persistErr instanceof Error ? persistErr.message : 'Failed to persist transcript artifacts.',
+        };
       }
     } catch (err) {
       generationError = err instanceof Error ? err.message : 'Failed to generate flow from transcript.';
@@ -435,6 +458,11 @@ export function renderTranscriptImport(container: HTMLElement): void {
 
   function createProjectFromGeneratedFlow(): void {
     if (!generatedFlow) return;
+    if (!isCurrentFlowApproved()) {
+      generationError = 'Review and approve the generated flow before creating a project.';
+      render();
+      return;
+    }
 
     const normalizedProjectName = projectName.trim() || generatedFlow.title || DEFAULT_PROJECT_NAME;
     const project = store.createProject(
@@ -452,7 +480,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
         id: uid(),
         type: generatedNode.type,
         label: generatedNode.label,
-        icon: normalizeIconName(generatedNode.icon),
+        icon: resolveNodeIcon(generatedNode.icon, generatedNode.type),
         x: position.x,
         y: position.y,
         content: generatedNode.content,
@@ -467,28 +495,50 @@ export function renderTranscriptImport(container: HTMLElement): void {
       const from = nodeIdMap.get(connection.from);
       const to = nodeIdMap.get(connection.to);
       if (!from || !to || from === to) continue;
-      store.addConnection(project.id, from, to);
+      store.addConnection(project.id, from, to, connection.reason);
     }
 
     store.saveAssembledVersion(project.id, 'Initial transcript flow import');
     router.navigate(`/project/${project.id}`);
   }
 
+  function isCurrentFlowApproved(): boolean {
+    return generatedFlow !== null && approvedRevision === flowRevision;
+  }
+
+  function clearFlowApproval(): void {
+    approvedRevision = -1;
+    approvedAt = null;
+  }
+
   render();
 }
 
-function renderEmptyCanvas(): string {
+function renderEmptyCanvas(isGenerating: boolean): string {
+  const previewTitle = isGenerating ? 'Generating Flow...' : 'Flow Preview';
+  const previewBody = isGenerating
+    ? 'AI is analyzing the transcript and building your call flow.'
+    : 'Generate a flow to see the graph here';
+  const icon = isGenerating ? 'auto_awesome' : 'account_tree';
+
   return `
     <div class="flex flex-col items-center justify-center h-full">
       <div class="relative group">
         <div class="absolute inset-0 bg-primary/20 blur-xl rounded-full opacity-50 group-hover:opacity-100 transition-opacity"></div>
         <div class="relative w-48 bg-white dark:bg-slate-900 border-2 border-primary rounded-xl p-4 shadow-xl flex flex-col items-center gap-3">
           <div class="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
-            <span class="material-icons text-primary">account_tree</span>
+            <span class="material-icons text-primary ${isGenerating ? 'animate-pulse' : ''}">${icon}</span>
           </div>
           <div class="text-center">
-            <h2 class="text-sm font-bold">Flow Preview</h2>
-            <p class="text-[10px] text-slate-400">Generate a flow to see the graph here</p>
+            <h2 class="text-sm font-bold">${previewTitle}</h2>
+            <p class="text-[10px] text-slate-400">${previewBody}</p>
+            ${isGenerating ? `
+              <div class="mt-2 flex items-center justify-center gap-1" aria-hidden="true">
+                <span class="w-1.5 h-1.5 rounded-full bg-primary/70 animate-pulse"></span>
+                <span class="w-1.5 h-1.5 rounded-full bg-primary/70 animate-pulse" style="animation-delay:120ms"></span>
+                <span class="w-1.5 h-1.5 rounded-full bg-primary/70 animate-pulse" style="animation-delay:240ms"></span>
+              </div>
+            ` : ''}
           </div>
         </div>
       </div>
@@ -496,7 +546,12 @@ function renderEmptyCanvas(): string {
   `;
 }
 
-function renderFlowCanvas(flow: TranscriptFlowResult, selectedNode: TranscriptFlowNode | null): string {
+function renderFlowCanvas(
+  flow: TranscriptFlowResult,
+  selectedNode: TranscriptFlowNode | null,
+  isApproved: boolean,
+  isGenerating: boolean,
+): string {
   const layout = computeFlowLayout(flow);
   const geometry = computeCanvasGeometry(layout);
   const NODE_WIDTH = 220;
@@ -527,16 +582,18 @@ function renderFlowCanvas(flow: TranscriptFlowResult, selectedNode: TranscriptFl
     .map((node) => {
       const position = layout[node.id] ?? { x: 80, y: 80 };
       const isSelected = node.id === selectedNode?.id;
+      const safeIcon = resolveNodeIcon(node.icon, node.type);
+      const displayLabel = node.label.trim().length > 0 ? node.label.trim() : `Step ${shortId(node.id)}`;
       const contentPreview = esc(node.content).substring(0, 120) + (node.content.length > 120 ? '…' : '');
 
       return `
         <div class="canvas-node pointer-events-auto bg-white dark:bg-slate-900 border ${isSelected ? 'border-primary ring-2 ring-primary/30' : 'border-primary/40'} rounded-lg shadow-xl node-glow cursor-pointer"
              data-flow-node-id="${esc(node.id)}"
              style="left:${position.x}px; top:${position.y}px; width:${NODE_WIDTH}px;">
-          <div class="node-header bg-primary/10 border-b border-primary/20 p-3 flex items-center justify-between rounded-t-lg overflow-hidden">
-            <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0 overflow-hidden">
-              <span class="material-icons text-sm text-primary shrink-0">${node.icon}</span>
-              <span class="truncate">${esc(node.label)}</span>
+          <div class="node-header bg-primary/10 border-b border-primary/20 p-3 flex items-center justify-between rounded-t-lg">
+            <h2 class="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 select-none min-w-0">
+              <span class="material-icons text-sm text-primary shrink-0 w-4 overflow-hidden text-center">${safeIcon}</span>
+              <span class="block max-w-[170px] overflow-hidden text-ellipsis whitespace-nowrap" title="${esc(displayLabel)}">${esc(displayLabel)}</span>
             </h2>
           </div>
           <div class="relative">
@@ -556,7 +613,7 @@ function renderFlowCanvas(flow: TranscriptFlowResult, selectedNode: TranscriptFl
     <div class="absolute top-4 right-4 w-80 bg-white dark:bg-slate-900 border border-primary/20 rounded-xl shadow-2xl z-20 max-h-[calc(100%-2rem)] flex flex-col">
       <div class="flex items-center justify-between p-3 border-b border-primary/10">
         <div class="flex items-center gap-2 min-w-0">
-          <span class="material-icons text-sm text-primary shrink-0">${selectedNode.icon}</span>
+          <span class="material-icons text-sm text-primary shrink-0 w-4 overflow-hidden text-center">${resolveNodeIcon(selectedNode.icon, selectedNode.type)}</span>
           <span class="text-xs font-bold truncate">${esc(selectedNode.label)}</span>
         </div>
         <button id="btn-close-detail" class="text-slate-400 hover:text-slate-600 p-0.5 shrink-0 cursor-pointer" title="Close">
@@ -578,10 +635,21 @@ function renderFlowCanvas(flow: TranscriptFlowResult, selectedNode: TranscriptFl
   const infoBar = `
     <div class="absolute top-4 left-6 flex items-center gap-2 text-xs font-medium text-slate-400 bg-white/80 dark:bg-background-dark/80 px-3 py-1.5 rounded-full border border-primary/10 shadow-sm z-10">
       <span class="text-slate-800 dark:text-slate-200">${esc(flow.title)}</span>
+      <span class="text-[10px]">|</span>
+      <span>${esc(flow.model)}</span>
       <span class="text-[10px]">·</span>
       <span>${flow.nodes.length} nodes</span>
       <span class="text-[10px]">·</span>
       <span>${flow.connections.length} connections</span>
+      <span class="text-[10px]">|</span>
+      <span class="${isApproved ? 'text-emerald-600 dark:text-emerald-300' : 'text-amber-600 dark:text-amber-300'}">${isApproved ? 'approved' : 'pending approval'}</span>
+      ${isGenerating ? `
+        <span class="text-[10px]">|</span>
+        <span class="inline-flex items-center gap-1 text-primary">
+          <span class="w-1.5 h-1.5 rounded-full bg-primary animate-pulse"></span>
+          generating
+        </span>
+      ` : ''}
     </div>
   `;
 
@@ -600,6 +668,27 @@ function renderFlowCanvas(flow: TranscriptFlowResult, selectedNode: TranscriptFl
         </svg>
         <div class="absolute inset-0 z-[2] pointer-events-none">
           ${nodes}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderGeneratingOverlay(): string {
+  return `
+    <div class="absolute inset-0 z-30 pointer-events-none">
+      <div class="absolute inset-0 bg-white/28 dark:bg-slate-950/38 backdrop-blur-[1px]"></div>
+      <div class="absolute inset-0 flex items-center justify-center p-6">
+        <div class="w-52 rounded-xl border border-primary/25 bg-white/92 dark:bg-slate-900/92 shadow-xl px-4 py-4">
+          <div class="flex flex-col items-center gap-2 text-center">
+            <span class="inline-flex h-12 w-12 items-center justify-center rounded-full border-2 border-primary/25">
+              <span class="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin"></span>
+            </span>
+            <div class="text-xs text-slate-700 dark:text-slate-200">
+              <div class="font-semibold">Generating flow...</div>
+              <div class="text-[11px] text-slate-500 dark:text-slate-400">AI is updating your graph from the transcript.</div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -709,13 +798,32 @@ function renderModelOptions(selectedModel: string): string {
     .join('');
 }
 
-function normalizeIconName(value: string): string {
-  const normalized = value.trim().toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
-  return normalized || 'widgets';
-}
-
 function normalizeLineEndings(value: string): string {
   return value.replace(/\r\n?/g, '\n');
+}
+
+function messageClass(tone: MessageTone): string {
+  switch (tone) {
+    case 'success':
+      return 'border-emerald-200 dark:border-emerald-900/40 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-200';
+    case 'error':
+      return 'border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-200';
+    default:
+      return 'border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 text-slate-700 dark:text-slate-200';
+  }
+}
+
+function shortId(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 8) return trimmed;
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
+function formatIsoDate(value: string | null): string {
+  if (!value) return 'unknown';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
 }
 
 function trimForPreview(value: string, maxLength: number): string {
@@ -728,3 +836,4 @@ function esc(value: string): string {
   div.textContent = value;
   return div.innerHTML;
 }
+

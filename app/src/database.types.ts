@@ -318,6 +318,273 @@ export interface Database {
         };
         Relationships: [];
       };
+      transcript_sets: {
+        Row: {
+          id: string;
+          owner_id: string;
+          project_id: string | null;
+          name: string;
+          description: string;
+          source: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          owner_id?: string;
+          project_id?: string | null;
+          name: string;
+          description?: string;
+          source?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          owner_id?: string;
+          project_id?: string | null;
+          name?: string;
+          description?: string;
+          source?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      transcripts: {
+        Row: {
+          id: string;
+          transcript_set_id: string;
+          external_id: string;
+          title: string;
+          transcript_text: string;
+          metadata: Record<string, unknown>;
+          ingested_at: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          transcript_set_id: string;
+          external_id?: string;
+          title?: string;
+          transcript_text: string;
+          metadata?: Record<string, unknown>;
+          ingested_at?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          transcript_set_id?: string;
+          external_id?: string;
+          title?: string;
+          transcript_text?: string;
+          metadata?: Record<string, unknown>;
+          ingested_at?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      transcript_flows: {
+        Row: {
+          id: string;
+          transcript_id: string;
+          prompt_version_id: string | null;
+          model: string;
+          flow_title: string;
+          flow_summary: string;
+          nodes_json: unknown[];
+          connections_json: unknown[];
+          used_fallback: boolean;
+          warning: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          transcript_id: string;
+          prompt_version_id?: string | null;
+          model?: string;
+          flow_title?: string;
+          flow_summary?: string;
+          nodes_json?: unknown[];
+          connections_json?: unknown[];
+          used_fallback?: boolean;
+          warning?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          transcript_id?: string;
+          prompt_version_id?: string | null;
+          model?: string;
+          flow_title?: string;
+          flow_summary?: string;
+          nodes_json?: unknown[];
+          connections_json?: unknown[];
+          used_fallback?: boolean;
+          warning?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      canonical_flow_nodes: {
+        Row: {
+          id: string;
+          transcript_set_id: string;
+          label: string;
+          type: string;
+          icon: string;
+          content: string;
+          meta: Record<string, unknown>;
+          support_count: number;
+          confidence: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          transcript_set_id: string;
+          label: string;
+          type?: string;
+          icon?: string;
+          content?: string;
+          meta?: Record<string, unknown>;
+          support_count?: number;
+          confidence?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          transcript_set_id?: string;
+          label?: string;
+          type?: string;
+          icon?: string;
+          content?: string;
+          meta?: Record<string, unknown>;
+          support_count?: number;
+          confidence?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      canonical_flow_edges: {
+        Row: {
+          id: string;
+          transcript_set_id: string;
+          from_node_id: string;
+          to_node_id: string;
+          reason: string;
+          support_count: number;
+          transition_rate: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          transcript_set_id: string;
+          from_node_id: string;
+          to_node_id: string;
+          reason?: string;
+          support_count?: number;
+          transition_rate?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          transcript_set_id?: string;
+          from_node_id?: string;
+          to_node_id?: string;
+          reason?: string;
+          support_count?: number;
+          transition_rate?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      prompt_flow_alignments: {
+        Row: {
+          id: string;
+          transcript_set_id: string;
+          project_id: string;
+          prompt_node_id: string;
+          canonical_node_id: string;
+          alignment_score: number;
+          alignment_reason: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          transcript_set_id: string;
+          project_id: string;
+          prompt_node_id: string;
+          canonical_node_id: string;
+          alignment_score?: number;
+          alignment_reason?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          transcript_set_id?: string;
+          project_id?: string;
+          prompt_node_id?: string;
+          canonical_node_id?: string;
+          alignment_score?: number;
+          alignment_reason?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      optimization_runs: {
+        Row: {
+          id: string;
+          transcript_set_id: string;
+          project_id: string | null;
+          status: string;
+          objective: string;
+          input_snapshot: Record<string, unknown>;
+          output_patch: Record<string, unknown>;
+          metrics: Record<string, unknown>;
+          error_message: string;
+          started_at: string | null;
+          completed_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          transcript_set_id: string;
+          project_id?: string | null;
+          status?: string;
+          objective?: string;
+          input_snapshot?: Record<string, unknown>;
+          output_patch?: Record<string, unknown>;
+          metrics?: Record<string, unknown>;
+          error_message?: string;
+          started_at?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          transcript_set_id?: string;
+          project_id?: string | null;
+          status?: string;
+          objective?: string;
+          input_snapshot?: Record<string, unknown>;
+          output_patch?: Record<string, unknown>;
+          metrics?: Record<string, unknown>;
+          error_message?: string;
+          started_at?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
