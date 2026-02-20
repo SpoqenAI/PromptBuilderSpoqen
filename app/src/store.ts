@@ -8,6 +8,8 @@
 import { Project, PromptNode, Connection, PromptGraphSnapshot, PromptVersion, NodeType, uid, CustomNodeTemplate } from './models';
 import type { Database } from './database.types';
 import { supabase } from './supabase';
+import { resolveNodeIcon } from './node-icons';
+import type { TranscriptFlowResult } from './transcript-flow';
 
 type ProjectRow = Database['public']['Tables']['projects']['Row'];
 type PromptNodeRow = Database['public']['Tables']['prompt_nodes']['Row'];
@@ -15,6 +17,9 @@ type PromptNodeUpdate = Database['public']['Tables']['prompt_nodes']['Update'];
 type ConnectionRow = Database['public']['Tables']['connections']['Row'];
 type PromptVersionRow = Database['public']['Tables']['prompt_versions']['Row'];
 type CustomNodeRow = Database['public']['Tables']['custom_nodes']['Row'];
+type TranscriptSetRow = Database['public']['Tables']['transcript_sets']['Row'];
+type TranscriptRow = Database['public']['Tables']['transcripts']['Row'];
+type TranscriptFlowRow = Database['public']['Tables']['transcript_flows']['Row'];
 
 export type PersistenceMode = 'database' | 'local-fallback';
 
@@ -33,12 +38,55 @@ export type PromptAssemblyMode = 'runtime' | 'flow-template';
 interface LocalStorePayload {
   projects: Project[];
   customNodeTemplates: CustomNodeTemplate[];
+  transcriptFlowDrafts?: TranscriptFlowDraft[];
+}
+
+export interface TranscriptFlowDraftDetail {
+  transcriptFlowId: string;
+  transcriptId: string;
+  createdAt: string;
+  model: string;
+  flowTitle: string;
+  flowSummary: string;
+  usedFallback: boolean;
+  warning: string;
+  nodeCount: number;
+  connectionCount: number;
+  nodesJson: unknown[];
+  connectionsJson: unknown[];
+}
+
+export interface TranscriptFlowDraft {
+  transcriptSetId: string;
+  projectId: string | null;
+  name: string;
+  description: string;
+  source: string;
+  updatedAt: string;
+  latestFlow: TranscriptFlowDraftDetail | null;
+}
+
+interface ParsedTranscriptNodeSeed {
+  sourceId: string;
+  type: NodeType;
+  label: string;
+  icon: string;
+  content: string;
+  meta: Record<string, string>;
+}
+
+interface ParsedTranscriptConnectionSeed {
+  from: string;
+  to: string;
+  label: string;
 }
 
 /* Store state */
 class Store {
   private projects: Project[] = [];
   private customNodeTemplates: CustomNodeTemplate[] = [];
+  private transcriptFlowDrafts: TranscriptFlowDraft[] = [];
+  private transcriptSetIdByProjectId = new Map<string, string>();
   private _ready: Promise<void> | null = null;
   private remoteWriteChain: Promise<void> = Promise.resolve();
   private currentUserId: string | null = null;
@@ -63,6 +111,8 @@ class Store {
   reset(): void {
     this.projects = [];
     this.customNodeTemplates = [];
+    this.transcriptFlowDrafts = [];
+    this.transcriptSetIdByProjectId.clear();
     this._ready = null;
     this.remoteWriteChain = Promise.resolve();
     this.currentUserId = null;
@@ -80,7 +130,7 @@ class Store {
       const userId = await this.ensureSession();
 
       // 1. Fetch top-level account data in parallel
-      const [projectsRes, customNodesRes] = await Promise.all([
+      const [projectsRes, customNodesRes, transcriptSetsRes] = await Promise.all([
         supabase
           .from('projects')
           .select('*')
@@ -91,6 +141,11 @@ class Store {
           .select('*')
           .eq('owner_id', userId)
           .order('created_at', { ascending: false }),
+        supabase
+          .from('transcript_sets')
+          .select('*')
+          .eq('owner_id', userId)
+          .order('updated_at', { ascending: false }),
       ]);
       this.assertNoError(projectsRes, 'fetch projects');
 
@@ -104,6 +159,17 @@ class Store {
       } else {
         const customNodeRows = toTypedRows(customNodesRes.data, isCustomNodeRow, 'custom_nodes');
         this.customNodeTemplates = customNodeRows.map(toCustomNodeTemplate);
+      }
+
+      let transcriptSetRows: TranscriptSetRow[] = [];
+      if (transcriptSetsRes.error) {
+        if (isTranscriptTableMissing(transcriptSetsRes.error.message, 'transcript_sets')) {
+          transcriptSetRows = [];
+        } else {
+          this.assertNoError(transcriptSetsRes, 'fetch transcript_sets');
+        }
+      } else {
+        transcriptSetRows = toTypedRows(transcriptSetsRes.data, isTranscriptSetRow, 'transcript_sets');
       }
 
       // 2. Fetch project child rows in parallel
@@ -141,6 +207,13 @@ class Store {
         connections: (connsByProject[row.id] ?? []).map(toConnection),
         versions: (versByProject[row.id] ?? []).map(toVersion),
       }));
+
+      this.transcriptFlowDrafts = [];
+      this.transcriptSetIdByProjectId.clear();
+      if (transcriptSetRows.length > 0) {
+        this.transcriptFlowDrafts = await this.loadTranscriptFlowDrafts(transcriptSetRows);
+        this.rebuildTranscriptProjectLinkIndex();
+      }
     } catch (err) {
       this.setPersistenceFallback('initialization', err);
       if (this.isSchemaMismatch(err)) {
@@ -149,6 +222,78 @@ class Store {
         );
       }
       this.loadLocalStorage();
+    }
+  }
+
+  private async loadTranscriptFlowDrafts(transcriptSetRows: TranscriptSetRow[]): Promise<TranscriptFlowDraft[]> {
+    const transcriptSetIds = transcriptSetRows.map((row) => row.id);
+    if (transcriptSetIds.length === 0) return [];
+
+    const transcriptsRes = await supabase
+      .from('transcripts')
+      .select('*')
+      .in('transcript_set_id', transcriptSetIds)
+      .order('created_at', { ascending: false });
+
+    let transcriptRows: TranscriptRow[] = [];
+    if (transcriptsRes.error) {
+      if (!isTranscriptTableMissing(transcriptsRes.error.message, 'transcripts')) {
+        this.assertNoError(transcriptsRes, 'fetch transcripts');
+      }
+    } else {
+      transcriptRows = toTypedRows(transcriptsRes.data, isTranscriptRow, 'transcripts');
+    }
+
+    const transcriptSetIdByTranscriptId = new Map<string, string>();
+    for (const transcriptRow of transcriptRows) {
+      transcriptSetIdByTranscriptId.set(transcriptRow.id, transcriptRow.transcript_set_id);
+    }
+
+    let flowRows: TranscriptFlowRow[] = [];
+    const transcriptIds = transcriptRows.map((row) => row.id);
+    if (transcriptIds.length > 0) {
+      const transcriptFlowsRes = await supabase
+        .from('transcript_flows')
+        .select('*')
+        .in('transcript_id', transcriptIds)
+        .order('created_at', { ascending: false });
+
+      if (transcriptFlowsRes.error) {
+        if (!isTranscriptTableMissing(transcriptFlowsRes.error.message, 'transcript_flows')) {
+          this.assertNoError(transcriptFlowsRes, 'fetch transcript_flows');
+        }
+      } else {
+        flowRows = toTypedRows(transcriptFlowsRes.data, isTranscriptFlowRow, 'transcript_flows');
+      }
+    }
+
+    const latestFlowBySetId = new Map<string, TranscriptFlowDraftDetail>();
+    for (const flowRow of flowRows) {
+      const transcriptSetId = transcriptSetIdByTranscriptId.get(flowRow.transcript_id);
+      if (!transcriptSetId) continue;
+      const currentLatest = latestFlowBySetId.get(transcriptSetId);
+      if (currentLatest && currentLatest.createdAt >= flowRow.created_at) {
+        continue;
+      }
+      latestFlowBySetId.set(transcriptSetId, toTranscriptFlowDraftDetail(flowRow));
+    }
+
+    return transcriptSetRows.map((row) => ({
+      transcriptSetId: row.id,
+      projectId: row.project_id,
+      name: row.name,
+      description: row.description,
+      source: row.source,
+      updatedAt: row.updated_at,
+      latestFlow: latestFlowBySetId.get(row.id) ?? null,
+    }));
+  }
+
+  private rebuildTranscriptProjectLinkIndex(): void {
+    this.transcriptSetIdByProjectId.clear();
+    for (const draft of this.transcriptFlowDrafts) {
+      if (!draft.projectId) continue;
+      this.transcriptSetIdByProjectId.set(draft.projectId, draft.transcriptSetId);
     }
   }
 
@@ -162,22 +307,32 @@ class Store {
         if (isProjectArray(parsed)) {
           this.projects = parsed;
           this.customNodeTemplates = [];
+          this.transcriptFlowDrafts = [];
+          this.transcriptSetIdByProjectId.clear();
           return;
         }
         if (isLocalStorePayload(parsed)) {
           this.projects = parsed.projects;
           this.customNodeTemplates = parsed.customNodeTemplates;
+          this.transcriptFlowDrafts = parsed.transcriptFlowDrafts ?? [];
+          this.rebuildTranscriptProjectLinkIndex();
           return;
         }
         this.projects = [];
         this.customNodeTemplates = [];
+        this.transcriptFlowDrafts = [];
+        this.transcriptSetIdByProjectId.clear();
       } catch {
         this.projects = [];
         this.customNodeTemplates = [];
+        this.transcriptFlowDrafts = [];
+        this.transcriptSetIdByProjectId.clear();
       }
     } else {
       this.projects = [];
       this.customNodeTemplates = [];
+      this.transcriptFlowDrafts = [];
+      this.transcriptSetIdByProjectId.clear();
     }
   }
 
@@ -185,6 +340,7 @@ class Store {
     const payload: LocalStorePayload = {
       projects: this.projects,
       customNodeTemplates: this.customNodeTemplates,
+      transcriptFlowDrafts: this.transcriptFlowDrafts,
     };
     localStorage.setItem(this.storageKey(), JSON.stringify(payload));
   }
@@ -285,6 +441,158 @@ class Store {
     return this.projects.find(p => p.id === id);
   }
 
+  getPromptFlowProjects(): Project[] {
+    return this.projects.filter((project) => !this.transcriptSetIdByProjectId.has(project.id));
+  }
+
+  getTranscriptFlowDrafts(): TranscriptFlowDraft[] {
+    return this.transcriptFlowDrafts
+      .map((draft) => cloneTranscriptFlowDraft(draft))
+      .sort((left, right) => compareTranscriptDraftRecency(left, right));
+  }
+
+  registerTranscriptFlowDraft(
+    transcriptSetId: string,
+    flow: TranscriptFlowResult,
+    transcriptFlowId: string,
+    projectName: string,
+  ): void {
+    const nowIso = new Date().toISOString();
+    const latestFlow = transcriptFlowResultToDraftDetail(flow, transcriptFlowId, nowIso);
+    const existing = this.transcriptFlowDrafts.find((item) => item.transcriptSetId === transcriptSetId);
+    if (existing) {
+      existing.latestFlow = latestFlow;
+      existing.updatedAt = nowIso;
+      if (!existing.name.trim()) {
+        existing.name = `${projectName.trim() || flow.title || 'Transcript'} Transcript Set`;
+      }
+      if (!existing.description.trim()) {
+        existing.description = flow.summary;
+      }
+    } else {
+      this.transcriptFlowDrafts.unshift({
+        transcriptSetId,
+        projectId: null,
+        name: `${projectName.trim() || flow.title || 'Transcript'} Transcript Set`,
+        description: flow.summary,
+        source: 'transcript-import',
+        updatedAt: nowIso,
+        latestFlow,
+      });
+    }
+    this.rebuildTranscriptProjectLinkIndex();
+    this.saveLocalStorage();
+  }
+
+  linkTranscriptSetToProject(
+    transcriptSetId: string,
+    projectId: string,
+    fallbackFlow: TranscriptFlowResult | null = null,
+  ): void {
+    const nowIso = new Date().toISOString();
+    let draft = this.transcriptFlowDrafts.find((item) => item.transcriptSetId === transcriptSetId);
+    if (!draft) {
+      draft = {
+        transcriptSetId,
+        projectId,
+        name: 'Transcript Set',
+        description: '',
+        source: 'transcript-import',
+        updatedAt: nowIso,
+        latestFlow: fallbackFlow ? transcriptFlowResultToDraftDetail(fallbackFlow, uid(), nowIso) : null,
+      };
+      this.transcriptFlowDrafts.unshift(draft);
+    } else {
+      draft.projectId = projectId;
+      draft.updatedAt = nowIso;
+      if (fallbackFlow && !draft.latestFlow) {
+        draft.latestFlow = transcriptFlowResultToDraftDetail(fallbackFlow, uid(), nowIso);
+      }
+    }
+    this.rebuildTranscriptProjectLinkIndex();
+
+    this.bg(async () => {
+      const updateRes = await supabase
+        .from('transcript_sets')
+        .update({ project_id: projectId, updated_at: nowIso })
+        .eq('id', transcriptSetId);
+      if (updateRes.error && isTranscriptTableMissing(updateRes.error.message, 'transcript_sets')) {
+        return;
+      }
+      this.assertNoError(updateRes, 'link transcript_set project');
+    });
+  }
+
+  createProjectFromTranscriptFlowDraft(transcriptSetId: string): Project | null {
+    const draft = this.transcriptFlowDrafts.find((item) => item.transcriptSetId === transcriptSetId);
+    if (!draft || !draft.latestFlow) return null;
+
+    if (draft.projectId) {
+      const existingProject = this.getProject(draft.projectId);
+      if (existingProject) return existingProject;
+      draft.projectId = null;
+      this.rebuildTranscriptProjectLinkIndex();
+    }
+
+    const project = this.createProject(
+      draft.latestFlow.flowTitle.trim() || draft.name.trim() || 'Transcript Flow',
+      draft.latestFlow.flowSummary.trim() || draft.description,
+      draft.latestFlow.model.trim() || 'GPT-4o',
+    );
+
+    const parsedNodes = parseStoredTranscriptNodes(draft.latestFlow.nodesJson);
+    if (parsedNodes.length === 0) {
+      return null;
+    }
+    const parsedConnections = parseStoredTranscriptConnections(draft.latestFlow.connectionsJson, new Set(parsedNodes.map((node) => node.sourceId)));
+    const layout = computeTranscriptSeedLayout(parsedNodes, parsedConnections);
+    const nodeIdMap = new Map<string, string>();
+
+    for (const parsedNode of parsedNodes) {
+      const position = layout[parsedNode.sourceId] ?? { x: 80, y: 80 };
+      const promptNode: PromptNode = {
+        id: uid(),
+        type: parsedNode.type,
+        label: parsedNode.label,
+        icon: parsedNode.icon,
+        x: position.x,
+        y: position.y,
+        content: parsedNode.content,
+        meta: { ...parsedNode.meta },
+      };
+      this.addNode(project.id, promptNode);
+      nodeIdMap.set(parsedNode.sourceId, promptNode.id);
+    }
+
+    for (const connection of parsedConnections) {
+      const from = nodeIdMap.get(connection.from);
+      const to = nodeIdMap.get(connection.to);
+      if (!from || !to) continue;
+      this.addConnection(project.id, from, to, connection.label);
+    }
+
+    this.saveAssembledVersion(project.id, 'Initial transcript flow import');
+    this.linkTranscriptSetToProject(transcriptSetId, project.id);
+    return project;
+  }
+
+  private syncTranscriptDraftCacheFromProject(project: Project): void {
+    const transcriptSetId = this.transcriptSetIdByProjectId.get(project.id);
+    if (!transcriptSetId) return;
+    const draft = this.transcriptFlowDrafts.find((item) => item.transcriptSetId === transcriptSetId);
+    if (!draft) return;
+
+    const nowIso = new Date().toISOString();
+    draft.projectId = project.id;
+    draft.updatedAt = nowIso;
+    draft.latestFlow = projectToTranscriptDraftDetail(
+      project,
+      nowIso,
+      draft.latestFlow?.transcriptFlowId,
+      draft.latestFlow?.transcriptId,
+    );
+  }
+
   getCustomNodeTemplates(): CustomNodeTemplate[] {
     return this.customNodeTemplates;
   }
@@ -338,9 +646,127 @@ class Store {
     return project;
   }
 
+  async createTranscriptFlowProject(name: string, description: string, model: string): Promise<Project> {
+    const normalizedName = name.trim() || 'Untitled Transcript Flow';
+    const normalizedDescription = description.trim() || 'Manual transcript flow workspace.';
+    const project = this.createProject(normalizedName, normalizedDescription, model);
+    const nowIso = new Date().toISOString();
+
+    if (this.persistenceStatus.mode !== 'database') {
+      const localTranscriptSetId = `local-${uid()}`;
+      this.transcriptFlowDrafts.unshift({
+        transcriptSetId: localTranscriptSetId,
+        projectId: project.id,
+        name: `${normalizedName} Transcript Set`,
+        description: normalizedDescription,
+        source: 'manual-transcript-flow',
+        updatedAt: nowIso,
+        latestFlow: projectToTranscriptDraftDetail(project, nowIso),
+      });
+      this.rebuildTranscriptProjectLinkIndex();
+      this.saveLocalStorage();
+      return project;
+    }
+
+    try {
+      const ownerId = this.currentUserId ?? await this.ensureSession();
+      const transcriptSetRes = await supabase
+        .from('transcript_sets')
+        .insert({
+          owner_id: ownerId,
+          project_id: null,
+          name: `${normalizedName} Transcript Set`,
+          description: normalizedDescription,
+          source: 'manual-transcript-flow',
+        })
+        .select('*')
+        .single();
+
+      if (transcriptSetRes.error || !transcriptSetRes.data) {
+        throw new Error(transcriptSetRes.error?.message ?? 'Failed to create transcript set.');
+      }
+
+      const transcriptSet = transcriptSetRes.data;
+      this.transcriptFlowDrafts.unshift({
+        transcriptSetId: transcriptSet.id,
+        projectId: project.id,
+        name: transcriptSet.name,
+        description: transcriptSet.description,
+        source: transcriptSet.source,
+        updatedAt: transcriptSet.updated_at,
+        latestFlow: projectToTranscriptDraftDetail(project, nowIso),
+      });
+      this.rebuildTranscriptProjectLinkIndex();
+      this.saveLocalStorage();
+      this.linkTranscriptSetToProject(transcriptSet.id, project.id);
+      return project;
+    } catch (err) {
+      this.setPersistenceFallback('create transcript flow project', err);
+      const localTranscriptSetId = `local-${uid()}`;
+      this.transcriptFlowDrafts.unshift({
+        transcriptSetId: localTranscriptSetId,
+        projectId: project.id,
+        name: `${normalizedName} Transcript Set`,
+        description: normalizedDescription,
+        source: 'manual-transcript-flow',
+        updatedAt: nowIso,
+        latestFlow: projectToTranscriptDraftDetail(project, nowIso),
+      });
+      this.rebuildTranscriptProjectLinkIndex();
+      this.saveLocalStorage();
+      return project;
+    }
+  }
+
+  deleteTranscriptFlow(transcriptSetId: string): void {
+    const draft = this.transcriptFlowDrafts.find((item) => item.transcriptSetId === transcriptSetId);
+    if (!draft) return;
+
+    const linkedProjectId = draft.projectId;
+    this.transcriptFlowDrafts = this.transcriptFlowDrafts.filter((item) => item.transcriptSetId !== transcriptSetId);
+    if (linkedProjectId) {
+      this.transcriptSetIdByProjectId.delete(linkedProjectId);
+      this.projects = this.projects.filter((project) => project.id !== linkedProjectId);
+    }
+
+    this.bg(async () => {
+      const transcriptSetDeleteRes = await supabase
+        .from('transcript_sets')
+        .delete()
+        .eq('id', transcriptSetId);
+      if (transcriptSetDeleteRes.error && !isTranscriptTableMissing(transcriptSetDeleteRes.error.message, 'transcript_sets')) {
+        this.assertNoError(transcriptSetDeleteRes, 'delete transcript_set');
+      }
+
+      if (!linkedProjectId) return;
+      const projectDeleteRes = await supabase
+        .from('projects')
+        .delete()
+        .eq('id', linkedProjectId);
+      this.assertNoError(projectDeleteRes, 'delete linked transcript project');
+    });
+  }
+
   deleteProject(id: string): void {
+    const linkedTranscriptSetId = this.transcriptSetIdByProjectId.get(id) ?? null;
+    if (linkedTranscriptSetId) {
+      const linkedDraft = this.transcriptFlowDrafts.find((draft) => draft.transcriptSetId === linkedTranscriptSetId);
+      if (linkedDraft) {
+        linkedDraft.projectId = null;
+      }
+      this.transcriptSetIdByProjectId.delete(id);
+    }
     this.projects = this.projects.filter(p => p.id !== id);
     this.bg(async () => {
+      if (linkedTranscriptSetId) {
+        const unlinkRes = await supabase
+          .from('transcript_sets')
+          .update({ project_id: null, updated_at: new Date().toISOString() })
+          .eq('id', linkedTranscriptSetId);
+        if (unlinkRes.error && !isTranscriptTableMissing(unlinkRes.error.message, 'transcript_sets')) {
+          this.assertNoError(unlinkRes, 'unlink transcript_set project');
+        }
+      }
       // Cascade delete handled by DB foreign keys
       const res = await supabase.from('projects').delete().eq('id', id);
       this.assertNoError(res, 'delete project');
@@ -358,6 +784,7 @@ class Store {
     node.type = normalizedType;
     p.nodes.push(node);
     p.lastEdited = 'Just now';
+    this.syncTranscriptDraftCacheFromProject(p);
     this.bg(async () => {
       const nodeInsertRes = await supabase.from('prompt_nodes').insert({
         id: node.id,
@@ -392,6 +819,7 @@ class Store {
     }
     Object.assign(n, mergedUpdates);
     p.lastEdited = 'Just now';
+    this.syncTranscriptDraftCacheFromProject(p);
     this.bg(async () => {
       // Map model field names to DB column names
       const dbUpdates: PromptNodeUpdate = {};
@@ -417,6 +845,7 @@ class Store {
     p.nodes = p.nodes.filter(n => n.id !== nodeId);
     p.connections = p.connections.filter(c => c.from !== nodeId && c.to !== nodeId);
     p.lastEdited = 'Just now';
+    this.syncTranscriptDraftCacheFromProject(p);
     this.bg(async () => {
       // Connections cascade via FK on delete
       const nodeDeleteRes = await supabase.from('prompt_nodes').delete().eq('id', nodeId);
@@ -437,6 +866,7 @@ class Store {
       ? { id: uid(), from, to, label: normalizedLabel }
       : { id: uid(), from, to };
     p.connections.push(conn);
+    this.syncTranscriptDraftCacheFromProject(p);
     this.bg(async () => {
       await this.insertConnectionRemote(projectId, conn);
     });
@@ -454,6 +884,7 @@ class Store {
     } else {
       delete connection.label;
     }
+    this.syncTranscriptDraftCacheFromProject(p);
 
     this.bg(async () => {
       const connectionUpdateRes = await supabase
@@ -474,6 +905,7 @@ class Store {
     const p = this.getProject(projectId);
     if (!p) return;
     p.connections = p.connections.filter(c => c.id !== connectionId);
+    this.syncTranscriptDraftCacheFromProject(p);
     this.bg(async () => {
       const connDeleteRes = await supabase.from('connections').delete().eq('id', connectionId);
       this.assertNoError(connDeleteRes, 'delete connection');
@@ -502,6 +934,7 @@ class Store {
     };
     if (p) {
       p.versions.push(ver);
+      this.syncTranscriptDraftCacheFromProject(p);
       this.bg(async () => {
         const versionInsertRes = await supabase.from('prompt_versions').insert({
           id: ver.id,
@@ -512,6 +945,7 @@ class Store {
           snapshot_json: ver.snapshot,
         });
         this.assertNoError(versionInsertRes, 'insert prompt_version');
+        await this.persistTranscriptFlowSnapshot(projectId, p, ver.id);
       });
     }
     return ver;
@@ -557,6 +991,75 @@ class Store {
 
   persist(): void {
     this.saveLocalStorage();
+  }
+
+  private async persistTranscriptFlowSnapshot(projectId: string, project: Project, promptVersionId: string): Promise<void> {
+    const transcriptSetId = this.transcriptSetIdByProjectId.get(projectId);
+    if (!transcriptSetId) return;
+
+    const transcriptSelectRes = await supabase
+      .from('transcripts')
+      .select('id')
+      .eq('transcript_set_id', transcriptSetId)
+      .order('created_at', { ascending: false })
+      .limit(1);
+    if (transcriptSelectRes.error) {
+      if (isTranscriptTableMissing(transcriptSelectRes.error.message, 'transcripts')) return;
+      this.assertNoError(transcriptSelectRes, 'fetch transcript for snapshot');
+    }
+
+    let transcriptId = transcriptSelectRes.data?.[0]?.id ?? null;
+    if (!transcriptId) {
+      const transcriptInsertRes = await supabase
+        .from('transcripts')
+        .insert({
+          transcript_set_id: transcriptSetId,
+          title: `${project.name} Canvas Snapshot @ ${new Date().toISOString()}`,
+          transcript_text: 'Canvas edits snapshot generated from transcript flow project.',
+          metadata: {
+            source: 'canvas-edit',
+            projectId,
+          },
+        })
+        .select('id')
+        .single();
+      if (transcriptInsertRes.error) {
+        if (isTranscriptTableMissing(transcriptInsertRes.error.message, 'transcripts')) return;
+        this.assertNoError(transcriptInsertRes, 'insert transcript snapshot');
+      }
+      transcriptId = transcriptInsertRes.data?.id ?? null;
+    }
+
+    if (!transcriptId) return;
+
+    const flowInsertRes = await supabase
+      .from('transcript_flows')
+      .insert({
+        transcript_id: transcriptId,
+        prompt_version_id: promptVersionId,
+        model: project.model,
+        flow_title: project.name,
+        flow_summary: project.description,
+        nodes_json: project.nodes.map((node) => ({
+          id: node.id,
+          label: node.label,
+          type: node.type,
+          icon: node.icon,
+          content: node.content,
+          meta: node.meta,
+        })),
+        connections_json: project.connections.map((connection) => ({
+          from: connection.from,
+          to: connection.to,
+          reason: normalizeConnectionLabel(connection.label),
+        })),
+        used_fallback: false,
+        warning: '',
+      });
+    if (flowInsertRes.error && isTranscriptTableMissing(flowInsertRes.error.message, 'transcript_flows')) {
+      return;
+    }
+    this.assertNoError(flowInsertRes, 'insert transcript_flow snapshot');
   }
 
   private async insertCustomNodeRemote(template: CustomNodeTemplate): Promise<void> {
@@ -816,6 +1319,286 @@ function toNodeType(value: string): NodeType {
   return isNodeType(value) ? value : 'custom';
 }
 
+function cloneTranscriptFlowDraft(draft: TranscriptFlowDraft): TranscriptFlowDraft {
+  return {
+    transcriptSetId: draft.transcriptSetId,
+    projectId: draft.projectId,
+    name: draft.name,
+    description: draft.description,
+    source: draft.source,
+    updatedAt: draft.updatedAt,
+    latestFlow: draft.latestFlow
+      ? {
+        transcriptFlowId: draft.latestFlow.transcriptFlowId,
+        transcriptId: draft.latestFlow.transcriptId,
+        createdAt: draft.latestFlow.createdAt,
+        model: draft.latestFlow.model,
+        flowTitle: draft.latestFlow.flowTitle,
+        flowSummary: draft.latestFlow.flowSummary,
+        usedFallback: draft.latestFlow.usedFallback,
+        warning: draft.latestFlow.warning,
+        nodeCount: draft.latestFlow.nodeCount,
+        connectionCount: draft.latestFlow.connectionCount,
+        nodesJson: draft.latestFlow.nodesJson.map((item) => cloneUnknownJson(item)),
+        connectionsJson: draft.latestFlow.connectionsJson.map((item) => cloneUnknownJson(item)),
+      }
+      : null,
+  };
+}
+
+function cloneUnknownJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => cloneUnknownJson(entry));
+  }
+  if (!isRecord(value)) return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, cloneUnknownJson(entry)]));
+}
+
+function compareTranscriptDraftRecency(left: TranscriptFlowDraft, right: TranscriptFlowDraft): number {
+  const leftTs = Date.parse(left.latestFlow?.createdAt ?? left.updatedAt);
+  const rightTs = Date.parse(right.latestFlow?.createdAt ?? right.updatedAt);
+  const safeLeft = Number.isFinite(leftTs) ? leftTs : 0;
+  const safeRight = Number.isFinite(rightTs) ? rightTs : 0;
+  return safeRight - safeLeft;
+}
+
+function transcriptFlowResultToDraftDetail(
+  flow: TranscriptFlowResult,
+  transcriptFlowId: string,
+  createdAt: string,
+): TranscriptFlowDraftDetail {
+  return {
+    transcriptFlowId,
+    transcriptId: '',
+    createdAt,
+    model: flow.model,
+    flowTitle: flow.title,
+    flowSummary: flow.summary,
+    usedFallback: flow.usedFallback,
+    warning: flow.warning ?? '',
+    nodeCount: flow.nodes.length,
+    connectionCount: flow.connections.length,
+    nodesJson: flow.nodes.map((node) => ({
+      id: node.id,
+      label: node.label,
+      type: node.type,
+      icon: resolveNodeIcon(node.icon, node.type),
+      content: node.content,
+      meta: { ...node.meta },
+    })),
+    connectionsJson: flow.connections.map((connection) => ({
+      from: connection.from,
+      to: connection.to,
+      reason: normalizeConnectionLabel(connection.reason),
+    })),
+  };
+}
+
+function projectToTranscriptDraftDetail(
+  project: Project,
+  createdAt: string,
+  transcriptFlowId = uid(),
+  transcriptId = '',
+): TranscriptFlowDraftDetail {
+  return {
+    transcriptFlowId,
+    transcriptId,
+    createdAt,
+    model: project.model,
+    flowTitle: project.name,
+    flowSummary: project.description,
+    usedFallback: false,
+    warning: '',
+    nodeCount: project.nodes.length,
+    connectionCount: project.connections.length,
+    nodesJson: project.nodes.map((node) => ({
+      id: node.id,
+      label: node.label,
+      type: node.type,
+      icon: node.icon,
+      content: node.content,
+      meta: { ...node.meta },
+    })),
+    connectionsJson: project.connections.map((connection) => ({
+      from: connection.from,
+      to: connection.to,
+      reason: normalizeConnectionLabel(connection.label),
+    })),
+  };
+}
+
+function toTranscriptFlowDraftDetail(row: TranscriptFlowRow): TranscriptFlowDraftDetail {
+  const nodesJson = Array.isArray(row.nodes_json) ? row.nodes_json : [];
+  const connectionsJson = Array.isArray(row.connections_json) ? row.connections_json : [];
+  return {
+    transcriptFlowId: row.id,
+    transcriptId: row.transcript_id,
+    createdAt: row.created_at,
+    model: row.model,
+    flowTitle: row.flow_title,
+    flowSummary: row.flow_summary,
+    usedFallback: row.used_fallback,
+    warning: row.warning,
+    nodeCount: nodesJson.length,
+    connectionCount: connectionsJson.length,
+    nodesJson,
+    connectionsJson,
+  };
+}
+
+function parseStoredTranscriptNodes(nodesJson: unknown[]): ParsedTranscriptNodeSeed[] {
+  const parsed: ParsedTranscriptNodeSeed[] = [];
+  const usedIds = new Set<string>();
+
+  nodesJson.forEach((rawNode, index) => {
+    if (!isRecord(rawNode)) return;
+
+    const candidateId = typeof rawNode.id === 'string' ? rawNode.id.trim() : '';
+    const fallbackId = `node_${index + 1}`;
+    let sourceId = candidateId || fallbackId;
+    let duplicateCounter = 2;
+    while (usedIds.has(sourceId)) {
+      sourceId = `${sourceId}_${duplicateCounter}`;
+      duplicateCounter += 1;
+    }
+    usedIds.add(sourceId);
+
+    const candidateType = typeof rawNode.type === 'string' ? rawNode.type : 'custom';
+    const type = toNodeType(candidateType);
+    const candidateLabel = typeof rawNode.label === 'string' ? rawNode.label : '';
+    const label = normalizeNodeIdentityLabel(candidateLabel, type);
+    const candidateIcon = typeof rawNode.icon === 'string' ? rawNode.icon : '';
+    const content = typeof rawNode.content === 'string' ? rawNode.content : label;
+    const meta = toStringRecord(rawNode.meta);
+
+    parsed.push({
+      sourceId,
+      type,
+      label,
+      icon: resolveNodeIcon(candidateIcon, type),
+      content,
+      meta,
+    });
+  });
+
+  return parsed;
+}
+
+function parseStoredTranscriptConnections(
+  connectionsJson: unknown[],
+  validNodeIds: ReadonlySet<string>,
+): ParsedTranscriptConnectionSeed[] {
+  const parsed: ParsedTranscriptConnectionSeed[] = [];
+  const seen = new Set<string>();
+
+  for (const rawConnection of connectionsJson) {
+    if (!isRecord(rawConnection)) continue;
+    const from = typeof rawConnection.from === 'string' ? rawConnection.from.trim() : '';
+    const to = typeof rawConnection.to === 'string' ? rawConnection.to.trim() : '';
+    if (!from || !to || from === to) continue;
+    if (!validNodeIds.has(from) || !validNodeIds.has(to)) continue;
+    const dedupeKey = `${from}->${to}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    const reasonCandidate = typeof rawConnection.reason === 'string'
+      ? rawConnection.reason
+      : (typeof rawConnection.label === 'string' ? rawConnection.label : '');
+    parsed.push({
+      from,
+      to,
+      label: normalizeConnectionLabel(reasonCandidate),
+    });
+  }
+
+  return parsed;
+}
+
+function computeTranscriptSeedLayout(
+  nodes: ParsedTranscriptNodeSeed[],
+  connections: ParsedTranscriptConnectionSeed[],
+): Record<string, { x: number; y: number }> {
+  const incomingCount = new Map<string, number>();
+  const outgoing = new Map<string, string[]>();
+  const levelByNode = new Map<string, number>();
+
+  for (const node of nodes) {
+    incomingCount.set(node.sourceId, 0);
+    outgoing.set(node.sourceId, []);
+  }
+
+  for (const connection of connections) {
+    outgoing.get(connection.from)?.push(connection.to);
+    incomingCount.set(connection.to, (incomingCount.get(connection.to) ?? 0) + 1);
+  }
+
+  const queue = nodes
+    .filter((node) => (incomingCount.get(node.sourceId) ?? 0) === 0)
+    .map((node) => node.sourceId);
+  if (queue.length === 0 && nodes.length > 0) {
+    queue.push(nodes[0].sourceId);
+  }
+
+  for (const sourceId of queue) {
+    levelByNode.set(sourceId, 0);
+  }
+
+  while (queue.length > 0) {
+    const sourceId = queue.shift() ?? '';
+    const sourceLevel = levelByNode.get(sourceId) ?? 0;
+    const targets = outgoing.get(sourceId) ?? [];
+    for (const targetId of targets) {
+      if (levelByNode.has(targetId)) continue;
+      levelByNode.set(targetId, sourceLevel + 1);
+      queue.push(targetId);
+    }
+  }
+
+  const maxLevel = levelByNode.size > 0 ? Math.max(...Array.from(levelByNode.values())) : 0;
+  for (const node of nodes) {
+    if (!levelByNode.has(node.sourceId)) {
+      levelByNode.set(node.sourceId, maxLevel);
+    }
+  }
+
+  const grouped = new Map<number, ParsedTranscriptNodeSeed[]>();
+  for (const node of nodes) {
+    const level = levelByNode.get(node.sourceId) ?? 0;
+    const group = grouped.get(level) ?? [];
+    group.push(node);
+    grouped.set(level, group);
+  }
+
+  const layout: Record<string, { x: number; y: number }> = {};
+  const levels = Array.from(grouped.keys()).sort((left, right) => left - right);
+  const startX = 80;
+  const startY = 80;
+  const xGap = 340;
+  const yGap = 200;
+
+  for (const level of levels) {
+    const nodesAtLevel = grouped.get(level) ?? [];
+    nodesAtLevel.forEach((node, index) => {
+      layout[node.sourceId] = {
+        x: startX + level * xGap,
+        y: startY + index * yGap,
+      };
+    });
+  }
+
+  return layout;
+}
+
+function toStringRecord(value: unknown): Record<string, string> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(([, entry]) => typeof entry === 'string')
+      .map(([key, entry]) => [key, (entry as string).trim()])
+      .filter(([, entry]) => entry.length > 0),
+  );
+}
+
 interface GraphAssemblyPlan {
   orderedNodes: PromptNode[];
   outgoingByFrom: Map<string, Connection[]>;
@@ -996,6 +1779,12 @@ function isCustomNodesTableMissing(message: string): boolean {
   return normalized.includes('does not exist') || normalized.includes('schema cache');
 }
 
+function isTranscriptTableMissing(message: string, tableName: string): boolean {
+  const normalized = message.toLowerCase();
+  if (!normalized.includes(tableName.toLowerCase())) return false;
+  return normalized.includes('does not exist') || normalized.includes('schema cache');
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -1073,17 +1862,65 @@ function isCustomNodeRow(value: unknown): value is CustomNodeRow {
   );
 }
 
+function isTranscriptSetRow(value: unknown): value is TranscriptSetRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.owner_id === 'string' &&
+    (typeof value.project_id === 'string' || value.project_id === null) &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.source === 'string' &&
+    typeof value.created_at === 'string' &&
+    typeof value.updated_at === 'string'
+  );
+}
+
+function isTranscriptRow(value: unknown): value is TranscriptRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.transcript_set_id === 'string' &&
+    typeof value.external_id === 'string' &&
+    typeof value.title === 'string' &&
+    typeof value.transcript_text === 'string' &&
+    isRecord(value.metadata) &&
+    typeof value.ingested_at === 'string' &&
+    typeof value.created_at === 'string'
+  );
+}
+
+function isTranscriptFlowRow(value: unknown): value is TranscriptFlowRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.transcript_id === 'string' &&
+    (typeof value.prompt_version_id === 'string' || value.prompt_version_id === null) &&
+    typeof value.model === 'string' &&
+    typeof value.flow_title === 'string' &&
+    typeof value.flow_summary === 'string' &&
+    Array.isArray(value.nodes_json) &&
+    Array.isArray(value.connections_json) &&
+    typeof value.used_fallback === 'boolean' &&
+    typeof value.warning === 'string' &&
+    typeof value.created_at === 'string'
+  );
+}
+
 function isProjectArray(value: unknown): value is Project[] {
   return Array.isArray(value) && value.every(isProject);
 }
 
 function isLocalStorePayload(value: unknown): value is LocalStorePayload {
   if (!isRecord(value)) return false;
+  const transcriptDrafts = Reflect.get(value, 'transcriptFlowDrafts');
   return (
     Array.isArray(value.projects) &&
     value.projects.every(isProject) &&
     Array.isArray(value.customNodeTemplates) &&
-    value.customNodeTemplates.every(isCustomNodeTemplate)
+    value.customNodeTemplates.every(isCustomNodeTemplate) &&
+    (transcriptDrafts === undefined ||
+      (Array.isArray(transcriptDrafts) && transcriptDrafts.every(isTranscriptFlowDraft)))
   );
 }
 
@@ -1137,6 +1974,38 @@ function isPromptVersion(value: unknown): value is PromptVersion {
     typeof value.content === 'string' &&
     typeof value.notes === 'string' &&
     (value.snapshot === undefined || value.snapshot === null || isPromptGraphSnapshot(value.snapshot))
+  );
+}
+
+function isTranscriptFlowDraft(value: unknown): value is TranscriptFlowDraft {
+  if (!isRecord(value)) return false;
+  const latestFlow = Reflect.get(value, 'latestFlow');
+  return (
+    typeof value.transcriptSetId === 'string' &&
+    (typeof value.projectId === 'string' || value.projectId === null) &&
+    typeof value.name === 'string' &&
+    typeof value.description === 'string' &&
+    typeof value.source === 'string' &&
+    typeof value.updatedAt === 'string' &&
+    (latestFlow === null || latestFlow === undefined || isTranscriptFlowDraftDetail(latestFlow))
+  );
+}
+
+function isTranscriptFlowDraftDetail(value: unknown): value is TranscriptFlowDraftDetail {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.transcriptFlowId === 'string' &&
+    typeof value.transcriptId === 'string' &&
+    typeof value.createdAt === 'string' &&
+    typeof value.model === 'string' &&
+    typeof value.flowTitle === 'string' &&
+    typeof value.flowSummary === 'string' &&
+    typeof value.usedFallback === 'boolean' &&
+    typeof value.warning === 'string' &&
+    typeof value.nodeCount === 'number' &&
+    typeof value.connectionCount === 'number' &&
+    Array.isArray(value.nodesJson) &&
+    Array.isArray(value.connectionsJson)
   );
 }
 

@@ -8,6 +8,7 @@ import type { EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { preserveScrollDuringRender } from '../view-state';
 import { projectViewTabsHTML, wireEscapeToCanvas, wireProjectViewTabs } from './project-nav';
+import { customPrompt } from '../dialogs';
 
 const NODE_ICON_SUGGESTIONS = [
   'psychology',
@@ -356,8 +357,8 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
       container.querySelector('#token-legend')?.remove();
     });
 
-    container.querySelector('#btn-save-version')?.addEventListener('click', () => {
-      const notes = prompt('Version notes:') || 'Manual snapshot';
+    container.querySelector('#btn-save-version')?.addEventListener('click', async () => {
+      const notes = await customPrompt('Version notes:') || 'Manual snapshot';
       persistDraft();
       const version = store.saveAssembledVersion(projectId, notes);
       const button = container.querySelector<HTMLButtonElement>('#btn-save-version');
@@ -370,9 +371,9 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
       }, 2000);
     });
 
-    container.querySelector('#btn-save-custom-node')?.addEventListener('click', () => {
+    container.querySelector('#btn-save-custom-node')?.addEventListener('click', async () => {
       persistDraft();
-      const templateLabel = (prompt('Custom node template name:', node.label) ?? '').trim();
+      const templateLabel = (await customPrompt('Custom node template name:', node.label) ?? '').trim();
       if (!templateLabel) return;
       store.saveCustomNodeTemplate({
         type: node.type,
@@ -416,7 +417,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
     const propIconPreview = container.querySelector<HTMLElement>('#prop-icon-preview');
     const iconGridToggle = container.querySelector<HTMLButtonElement>('#icon-grid-toggle');
     const iconGridDropdown = container.querySelector<HTMLElement>('#icon-grid-dropdown');
-    
+
     const syncIconPreview = (iconName: string): void => {
       if (nodeIconPreview) nodeIconPreview.textContent = iconName;
       if (propIconPreview) propIconPreview.textContent = iconName;

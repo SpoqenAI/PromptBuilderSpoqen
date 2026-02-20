@@ -6,6 +6,7 @@ import { router } from '../router';
 import { BLOCK_PALETTE, PromptNode, uid, CustomNodeTemplate } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas, projectViewTabsHTML, wireProjectViewTabs } from './project-nav';
+import { customPrompt, customConfirm } from '../dialogs';
 
 interface CanvasViewportState {
   zoom: number;
@@ -94,8 +95,8 @@ function renderSidebarBlocksHTML(categories: Map<string, SidebarBlock[]>): strin
         <h3 class="px-2 mb-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">${escapeHTML(category)}</h3>
         <div class="space-y-1">
           ${blocks.map((block) => {
-            const encodedMeta = encodeURIComponent(JSON.stringify(block.meta));
-            return `
+      const encodedMeta = encodeURIComponent(JSON.stringify(block.meta));
+      return `
               <div
                 class="sidebar-block group flex items-center gap-3 p-2 rounded cursor-grab hover:bg-slate-100 dark:hover:bg-white/5 transition-colors border border-transparent hover:border-primary/20"
                 draggable="true"
@@ -110,13 +111,13 @@ function renderSidebarBlocksHTML(categories: Map<string, SidebarBlock[]>): strin
                 <span class="material-icons text-sm text-primary">${escapeHTML(block.icon)}</span>
                 <span class="text-xs font-medium truncate">${escapeHTML(block.label)}</span>
                 ${block.isCustomTemplate
-                  ? `<button type="button" class="sidebar-custom-delete ml-auto p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" data-template-id="${block.templateId ?? ''}" title="Delete custom node template">
+          ? `<button type="button" class="sidebar-custom-delete ml-auto p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors" data-template-id="${block.templateId ?? ''}" title="Delete custom node template">
                       <span class="material-icons text-sm">delete_outline</span>
                     </button>`
-                  : ''}
+          : ''}
               </div>
             `;
-          }).join('')}
+    }).join('')}
           ${customEmptyState}
         </div>
       </section>
@@ -858,9 +859,9 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         router.navigate(`/project/${projectId}/editor/${node.id}`);
       });
 
-      el.querySelector<HTMLButtonElement>('.node-save-template')?.addEventListener('click', (e) => {
+      el.querySelector<HTMLButtonElement>('.node-save-template')?.addEventListener('click', async (e) => {
         e.stopPropagation();
-        const input = prompt('Template name:', node.label) ?? '';
+        const input = await customPrompt('Template name:', node.label) ?? '';
         const templateLabel = input.trim();
         if (!templateLabel) return;
         store.saveCustomNodeTemplate({
@@ -934,10 +935,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     }
   });
 
-  function editConnectionLabel(connectionId: string): void {
+  async function editConnectionLabel(connectionId: string): Promise<void> {
     const connection = project!.connections.find((item) => item.id === connectionId);
     if (!connection) return;
-    const nextLabel = prompt('Branch label (optional):', connection.label ?? '');
+    const nextLabel = await customPrompt('Branch label (optional):', connection.label ?? '');
     if (nextLabel === null) return;
     const normalized = normalizeConnectionLabel(nextLabel);
     store.updateConnectionLabel(projectId, connectionId, normalized);
@@ -954,7 +955,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     if (isTypingTarget) return;
 
     if (e.key === 'l' || e.key === 'L') {
-      editConnectionLabel(selectedConnectionId);
+      void editConnectionLabel(selectedConnectionId);
       e.preventDefault();
       return;
     }
@@ -1041,7 +1042,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         e.preventDefault();
         e.stopPropagation();
         selectedConnectionId = conn.id;
-        editConnectionLabel(conn.id);
+        void editConnectionLabel(conn.id);
       });
       svgEl.appendChild(hitPath);
       svgEl.appendChild(path);
@@ -1311,12 +1312,12 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     });
 
     container.querySelectorAll<HTMLButtonElement>('.sidebar-custom-delete').forEach((button) => {
-      button.addEventListener('click', (event: MouseEvent) => {
+      button.addEventListener('click', async (event: MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
         const templateId = button.dataset.templateId;
         if (!templateId) return;
-        if (!confirm('Delete this custom node template?')) return;
+        if (!(await customConfirm('Delete this custom node template?'))) return;
         store.removeCustomNodeTemplate(templateId);
         refreshSidebarBlocks();
       });
@@ -1400,8 +1401,8 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   wireProjectViewTabs(container, projectId, { beforeNavigate: () => clearCanvasViewCleanup(container) });
 
   // -- Save prompt snapshot for diff/history --
-  container.querySelector('#btn-save-snapshot')?.addEventListener('click', () => {
-    const notes = prompt('Snapshot notes:') || 'Canvas snapshot';
+  container.querySelector('#btn-save-snapshot')?.addEventListener('click', async () => {
+    const notes = await customPrompt('Snapshot notes:') || 'Canvas snapshot';
     const version = store.saveAssembledVersion(projectId, notes);
     const btn = container.querySelector<HTMLButtonElement>('#btn-save-snapshot');
     if (!btn) return;

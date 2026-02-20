@@ -1,7 +1,7 @@
 /**
  * Dashboard View — Project card grid (matches page1.html mockup)
  */
-import { store } from '../store';
+import { store, type TranscriptFlowDraft } from '../store';
 import { router } from '../router';
 import {
   deleteCurrentUserAccount,
@@ -15,6 +15,8 @@ import {
 } from '../auth';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas } from './project-nav';
+import { customAlert, customConfirm } from '../dialogs';
+import { preserveScrollDuringRender } from '../view-state';
 
 type DashboardLayout = 'grid' | 'list';
 const DASHBOARD_LAYOUT_KEY = 'promptblueprint_dashboard_layout';
@@ -47,12 +49,14 @@ interface DashboardAccountState {
 type MessageKind = 'success' | 'error';
 
 export function renderDashboard(container: HTMLElement): void {
-  clearProjectEscapeToCanvas(container);
-  const projects = store.getProjects();
+  preserveScrollDuringRender(container, () => {
+    clearProjectEscapeToCanvas(container);
+    const promptProjects = store.getPromptFlowProjects();
+    const transcriptFlows = store.getTranscriptFlowDrafts();
 
-  container.innerHTML = `
-    <!-- Top Navigation Bar -->
-    <nav class="sticky top-0 z-50 bg-white/80 dark:bg-background-dark/80 backdrop-blur-md border-b border-card-border dark:border-primary/20">
+    container.innerHTML = `
+      <!-- Top Navigation Bar -->
+      <nav class="sticky top-0 z-50 bg-white/80 dark:bg-background-dark/80 backdrop-blur-md border-b border-card-border dark:border-primary/20">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="flex justify-between h-16 items-center">
           <div class="flex items-center gap-2">
@@ -106,7 +110,7 @@ export function renderDashboard(container: HTMLElement): void {
       </div>
     </nav>
 
-    <main class="flex-1 min-h-0 overflow-y-auto custom-scrollbar max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
+    <main data-scroll-preserve="dashboard-main" class="flex-1 min-h-0 overflow-y-auto custom-scrollbar max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
       <!-- Action Header -->
       <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
         <div>
@@ -137,46 +141,56 @@ export function renderDashboard(container: HTMLElement): void {
         </div>
       </div>
 
-      <!-- Project Card Grid -->
-      <div id="project-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-        ${projects.map(p => `
-          <div class="project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden flex flex-col" data-id="${p.id}">
-            <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
-              <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
-              <span class="material-icons-outlined text-slate-300 dark:text-slate-700 text-5xl">${p.icon}</span>
-            </div>
-            <div class="project-card-body p-5 flex-1 flex flex-col">
-              <div class="flex justify-between items-start mb-2">
-                <h3 class="font-semibold text-slate-800 dark:text-slate-100 group-hover:text-primary transition-colors">${p.name}</h3>
-                <button class="delete-project text-slate-400 hover:text-red-500 dark:hover:text-red-400" data-id="${p.id}" title="Delete project">
-                  <span class="material-icons-outlined text-lg">delete_outline</span>
-                </button>
-              </div>
-              <p class="project-description text-sm text-neutral-gray dark:text-neutral-gray/80 line-clamp-2 mb-4">${p.description}</p>
-              <div class="mt-auto">
-                <div class="flex items-center gap-2 mb-3">
-                  <span class="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold uppercase tracking-wider rounded border border-primary/20">${p.model}</span>
-                  <span class="text-[11px] text-slate-400 flex items-center gap-1">
-                    <span class="material-icons-outlined text-[14px]">history</span>
-                    ${p.lastEdited}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        `).join('')}
+      <section class="space-y-3">
+        <div class="flex items-center justify-between gap-3">
+          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Prompt Flows</h2>
+          <span class="text-[11px] text-slate-400">${promptProjects.length} projects</span>
+        </div>
+        <div id="prompt-flow-grid" class="dashboard-project-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          ${promptProjects.map((project) => renderPromptFlowCard(project)).join('')}
 
-        <!-- New Project Card -->
-        <div id="new-project-card" class="group border-2 border-dashed border-card-border dark:border-primary/20 rounded-xl transition-all duration-200 cursor-pointer hover:border-primary/50 hover:bg-primary/5 flex flex-col items-center justify-center min-h-[280px]">
-          <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
-            <span class="material-icons-outlined text-2xl">add_circle_outline</span>
-          </div>
-          <div class="new-project-card-copy flex flex-col items-center">
-            <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Blueprint</span>
-            <span class="text-[11px] text-slate-400 mt-1">Start from a blank canvas</span>
+          <div id="new-project-card" class="new-project-card group border-2 border-dashed border-card-border dark:border-primary/20 rounded-xl transition-all duration-200 cursor-pointer hover:border-primary/50 hover:bg-primary/5 flex flex-col items-center justify-center min-h-[280px]">
+            <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
+              <span class="material-icons-outlined text-2xl">add_circle_outline</span>
+            </div>
+            <div class="new-project-card-copy flex flex-col items-center">
+              <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Blueprint</span>
+              <span class="text-[11px] text-slate-400 mt-1">Start from a blank canvas</span>
+            </div>
           </div>
         </div>
-      </div>
+      </section>
+
+      <section class="space-y-3 mt-10">
+        <div class="flex items-center justify-between gap-3">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Transcript Flows</h2>
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Stored transcript mappings that can be opened or converted into editable canvas projects.</p>
+          </div>
+          <span class="text-[11px] text-slate-400">${transcriptFlows.length} transcript sets</span>
+        </div>
+        <div id="transcript-flow-grid" class="dashboard-project-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          ${transcriptFlows.map((flow) => renderTranscriptFlowCard(flow)).join('')}
+
+          <div id="new-transcript-flow-card" class="new-project-card group border-2 border-dashed border-card-border dark:border-primary/20 rounded-xl transition-all duration-200 cursor-pointer hover:border-primary/50 hover:bg-primary/5 flex flex-col items-center justify-center min-h-[280px]">
+            <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
+              <span class="material-icons-outlined text-2xl">add_circle_outline</span>
+            </div>
+            <div class="new-project-card-copy flex flex-col items-center">
+              <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Transcript Flow</span>
+              <span class="text-[11px] text-slate-400 mt-1">Start from a blank transcript flow</span>
+            </div>
+          </div>
+
+          ${transcriptFlows.length === 0
+        ? `
+              <div class="col-span-full rounded-xl border border-dashed border-card-border dark:border-primary/20 bg-white/70 dark:bg-slate-900/50 px-5 py-6 text-sm text-slate-500 dark:text-slate-300">
+                No transcript flows yet. Use <strong>Import Transcript</strong> to auto-generate one.
+              </div>
+            `
+        : ''}
+        </div>
+      </section>
 
       <!-- Footer -->
       <footer class="mt-16 pt-8 border-t border-card-border dark:border-primary/10 flex flex-col md:flex-row justify-between items-center text-[12px] text-slate-400 gap-4">
@@ -192,35 +206,69 @@ export function renderDashboard(container: HTMLElement): void {
     <!-- New Project Modal -->
     <div id="new-project-modal" class="fixed inset-0 z-[999] hidden items-center justify-center bg-black/40 backdrop-blur-sm">
       <div class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-card-border dark:border-primary/20 w-full max-w-md p-6">
-        <h2 class="text-lg font-bold mb-4">New Project</h2>
+        <h2 id="new-project-modal-title" class="text-lg font-bold">New Project</h2>
+        <p id="new-project-modal-subtitle" class="text-xs text-slate-500 dark:text-slate-400 mt-1 mb-4">Choose a flow type to continue.</p>
         <div class="space-y-4">
           <div>
-            <label class="block text-xs font-medium text-slate-500 mb-1">Project Name</label>
-            <input id="modal-name" class="w-full border border-card-border dark:border-primary/20 rounded-lg px-3 py-2 text-sm bg-background-light dark:bg-background-dark focus:ring-1 focus:ring-primary outline-none" placeholder="My Voice Assistant" />
+            <label class="block text-xs font-medium text-slate-500 mb-2">Flow Type</label>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                id="modal-flow-card-prompt"
+                type="button"
+                data-flow-mode="prompt"
+                data-active="false"
+                class="modal-flow-card text-left rounded-xl border border-card-border dark:border-primary/20 p-3 bg-white dark:bg-slate-800/50"
+              >
+                <div class="flex items-center gap-2">
+                  <span class="material-icons-outlined text-primary text-[20px]">account_tree</span>
+                  <span class="text-sm font-semibold text-slate-800 dark:text-slate-100">Prompt Flow</span>
+                </div>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-2">Blueprint-style node flow from prompt design.</p>
+              </button>
+              <button
+                id="modal-flow-card-transcript"
+                type="button"
+                data-flow-mode="transcript"
+                data-active="false"
+                class="modal-flow-card text-left rounded-xl border border-card-border dark:border-primary/20 p-3 bg-white dark:bg-slate-800/50"
+              >
+                <div class="flex items-center gap-2">
+                  <span class="material-icons-outlined text-primary text-[20px]">smart_toy</span>
+                  <span class="text-sm font-semibold text-slate-800 dark:text-slate-100">Transcript Flow</span>
+                </div>
+                <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-2">Flow built from transcripts and conversation patterns.</p>
+              </button>
+            </div>
           </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-500 mb-1">Description</label>
-            <textarea id="modal-desc" rows="2" class="w-full border border-card-border dark:border-primary/20 rounded-lg px-3 py-2 text-sm bg-background-light dark:bg-background-dark focus:ring-1 focus:ring-primary outline-none" placeholder="Describe the purpose of this prompt..."></textarea>
-          </div>
-          <div>
-            <label class="block text-xs font-medium text-slate-500 mb-1">Target Model</label>
-            <select id="modal-model" class="w-full border border-card-border dark:border-primary/20 rounded-lg px-3 py-2 text-sm bg-background-light dark:bg-background-dark focus:ring-1 focus:ring-primary outline-none">
-              <option>GPT-4o</option>
-              <option>Claude 3.5</option>
-              <option>GPT-4 Turbo</option>
-              <option>Llama 3</option>
-            </select>
+          <div id="modal-project-fields" class="space-y-4 hidden">
+            <div>
+              <label class="block text-xs font-medium text-slate-500 mb-1">Project Name</label>
+              <input id="modal-name" class="w-full border border-card-border dark:border-primary/20 rounded-lg px-3 py-2 text-sm bg-background-light dark:bg-background-dark focus:ring-1 focus:ring-primary outline-none" placeholder="My Voice Assistant" />
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-500 mb-1">Description</label>
+              <textarea id="modal-desc" rows="2" class="w-full border border-card-border dark:border-primary/20 rounded-lg px-3 py-2 text-sm bg-background-light dark:bg-background-dark focus:ring-1 focus:ring-primary outline-none" placeholder="Describe the purpose of this prompt..."></textarea>
+            </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-500 mb-1">Target Model</label>
+              <select id="modal-model" class="w-full border border-card-border dark:border-primary/20 rounded-lg px-3 py-2 text-sm bg-background-light dark:bg-background-dark focus:ring-1 focus:ring-primary outline-none">
+                <option>GPT-4o</option>
+                <option>Claude 3.5</option>
+                <option>GPT-4 Turbo</option>
+                <option>Llama 3</option>
+              </select>
+            </div>
           </div>
         </div>
         <div class="flex justify-end gap-3 mt-6">
           <button id="modal-cancel" class="px-4 py-2 text-sm font-medium border border-card-border rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Cancel</button>
-          <button id="modal-create" class="px-4 py-2 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors">Create</button>
+          <button id="modal-create" class="px-4 py-2 text-sm font-medium bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors">Create Project</button>
         </div>
       </div>
     </div>
 
     <div id="account-settings-modal" class="fixed inset-0 z-[1000] hidden items-center justify-center bg-black/50 backdrop-blur-sm px-4">
-      <div class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-card-border dark:border-primary/20 w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto custom-scrollbar">
+      <div data-scroll-preserve="dashboard-account-modal" class="bg-white dark:bg-slate-900 rounded-xl shadow-2xl border border-card-border dark:border-primary/20 w-full max-w-2xl p-6 max-h-[90vh] overflow-y-auto custom-scrollbar">
         <div class="flex items-start justify-between gap-4 mb-5">
           <div>
             <h2 class="text-lg font-bold text-slate-900 dark:text-slate-100">Account settings</h2>
@@ -313,96 +361,330 @@ export function renderDashboard(container: HTMLElement): void {
     </div>
   `;
 
-  // ── Event Wiring ──────────────────────
-  // Click on project card → open canvas
-  container.querySelectorAll<HTMLElement>('.project-card').forEach(card => {
-    card.addEventListener('click', (e) => {
-      // Don't navigate if clicking delete button
-      if ((e.target as HTMLElement).closest('.delete-project')) return;
-      const id = card.dataset.id;
-      if (id) router.navigate(`/project/${id}`);
+    // ── Event Wiring ──────────────────────
+    // Click on project card → open canvas
+    container.querySelectorAll<HTMLElement>('.prompt-project-card, .transcript-project-card').forEach((card) => {
+      card.addEventListener('click', (event) => {
+        if ((event.target as HTMLElement).closest('.delete-project,.create-transcript-project,.open-transcript-project')) return;
+        const projectId = card.dataset.projectId;
+        if (projectId) router.navigate(`/project/${projectId}`);
+      });
     });
-  });
 
-  // Delete project
-  container.querySelectorAll<HTMLElement>('.delete-project').forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      e.stopPropagation();
-      const id = btn.dataset.id;
-      if (id && confirm('Delete this project?')) {
-        store.deleteProject(id);
+    container.querySelectorAll<HTMLButtonElement>('.open-transcript-project').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const projectId = button.dataset.projectId;
+        if (!projectId) return;
+        router.navigate(`/project/${projectId}`);
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.create-transcript-project').forEach((button) => {
+      button.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const transcriptSetId = button.dataset.transcriptSetId;
+        if (!transcriptSetId) return;
+        const project = store.createProjectFromTranscriptFlowDraft(transcriptSetId);
+        if (!project) {
+          await customAlert('This transcript set does not have a generated flow to edit yet.');
+          return;
+        }
+        router.navigate(`/project/${project.id}`);
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('.delete-project').forEach((button) => {
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const projectId = button.dataset.id;
+        if (projectId && await customConfirm('Delete this project?')) {
+          store.deleteProject(projectId);
+          renderDashboard(container);
+        }
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('.delete-transcript-flow').forEach((button) => {
+      button.addEventListener('click', async (event) => {
+        event.stopPropagation();
+        const transcriptSetId = button.dataset.transcriptSetId;
+        if (!transcriptSetId) return;
+        const linkedProjectId = button.dataset.projectId;
+        const confirmText = linkedProjectId
+          ? 'Delete this transcript flow and its linked project?'
+          : 'Delete this transcript flow?';
+        if (!(await customConfirm(confirmText))) return;
+        store.deleteTranscriptFlow(transcriptSetId);
         renderDashboard(container);
+      });
+    });
+
+    // New project modal
+    const modal = container.querySelector<HTMLElement>('#new-project-modal')!;
+    const modalTitle = container.querySelector<HTMLElement>('#new-project-modal-title');
+    const modalSubtitle = container.querySelector<HTMLElement>('#new-project-modal-subtitle');
+    const modalFlowCards = Array.from(container.querySelectorAll<HTMLButtonElement>('.modal-flow-card'));
+    const modalFields = container.querySelector<HTMLElement>('#modal-project-fields');
+    const modalCreateButton = container.querySelector<HTMLButtonElement>('#modal-create');
+    let modalMode: 'prompt' | 'transcript' | null = null;
+
+    const setModalMode = (mode: 'prompt' | 'transcript' | null): void => {
+      modalMode = mode;
+      modalFlowCards.forEach((card) => {
+        card.dataset.active = String(card.dataset.flowMode === mode);
+      });
+      if (modalFields) {
+        modalFields.classList.toggle('hidden', mode === null);
       }
+      const nameInput = container.querySelector<HTMLInputElement>('#modal-name');
+      const descInput = container.querySelector<HTMLTextAreaElement>('#modal-desc');
+      if (mode === null) {
+        if (modalTitle) modalTitle.textContent = 'New Project';
+        if (modalSubtitle) modalSubtitle.textContent = 'Choose a flow type to continue.';
+        if (modalCreateButton) {
+          modalCreateButton.textContent = 'Create Project';
+          modalCreateButton.disabled = true;
+        }
+        if (nameInput) {
+          nameInput.placeholder = 'Project Name';
+        }
+        if (descInput) {
+          descInput.placeholder = 'Describe this project...';
+        }
+        return;
+      }
+
+      if (modalCreateButton) {
+        modalCreateButton.disabled = false;
+      }
+
+      if (mode === 'transcript') {
+        if (modalTitle) modalTitle.textContent = 'New Transcript Flow';
+        if (modalSubtitle) modalSubtitle.textContent = 'Create a standalone transcript flow project you can edit in Canvas.';
+        if (modalCreateButton) modalCreateButton.textContent = 'Create Transcript Flow';
+        if (nameInput) {
+          nameInput.placeholder = 'Customer Support Transcript Flow';
+        }
+        if (descInput) {
+          descInput.placeholder = 'Describe this transcript flow workspace...';
+        }
+        return;
+      }
+
+      if (modalTitle) modalTitle.textContent = 'New Project';
+      if (modalSubtitle) modalSubtitle.textContent = 'Create a prompt flow project.';
+      if (modalCreateButton) modalCreateButton.textContent = 'Create Project';
+      if (nameInput) {
+        nameInput.placeholder = 'My Voice Assistant';
+      }
+      if (descInput) {
+        descInput.placeholder = 'Describe the purpose of this prompt...';
+      }
+    };
+
+    const openModal = () => { modal.classList.remove('hidden'); modal.classList.add('flex'); };
+    const closeModal = () => { modal.classList.add('hidden'); modal.classList.remove('flex'); };
+    const openNewProjectModal = () => {
+      setModalMode(null);
+      openModal();
+    };
+    const openPromptModal = () => {
+      setModalMode('prompt');
+      openModal();
+    };
+    const openTranscriptModal = () => {
+      setModalMode('transcript');
+      openModal();
+    };
+    setModalMode(null);
+    modalFlowCards.forEach((card) => {
+      card.addEventListener('click', () => {
+        setModalMode(card.dataset.flowMode === 'transcript' ? 'transcript' : 'prompt');
+      });
     });
-  });
 
-  // New project modal
-  const modal = container.querySelector<HTMLElement>('#new-project-modal')!;
-  const openModal = () => { modal.classList.remove('hidden'); modal.classList.add('flex'); };
-  const closeModal = () => { modal.classList.add('hidden'); modal.classList.remove('flex'); };
+    container.querySelector('#btn-import-prompt')?.addEventListener('click', () => router.navigate('/import'));
+    container.querySelector('#btn-import-transcript')?.addEventListener('click', () => router.navigate('/import/transcript'));
+    container.querySelector('#btn-new-project')?.addEventListener('click', openNewProjectModal);
+    container.querySelector('#new-project-card')?.addEventListener('click', openPromptModal);
+    container.querySelector('#new-transcript-flow-card')?.addEventListener('click', openTranscriptModal);
+    container.querySelector('#modal-cancel')?.addEventListener('click', closeModal);
+    modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
-  container.querySelector('#btn-import-prompt')?.addEventListener('click', () => router.navigate('/import'));
-  container.querySelector('#btn-import-transcript')?.addEventListener('click', () => router.navigate('/import/transcript'));
-  container.querySelector('#btn-new-project')?.addEventListener('click', openModal);
-  container.querySelector('#new-project-card')?.addEventListener('click', openModal);
-  container.querySelector('#modal-cancel')?.addEventListener('click', closeModal);
-  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+    container.querySelector('#modal-create')?.addEventListener('click', () => {
+      void (async () => {
+        const createButton = container.querySelector<HTMLButtonElement>('#modal-create');
+        if (createButton) createButton.disabled = true;
 
-  container.querySelector('#modal-create')?.addEventListener('click', () => {
-    const name = (container.querySelector('#modal-name') as HTMLInputElement).value.trim() || 'Untitled Blueprint';
-    const desc = (container.querySelector('#modal-desc') as HTMLTextAreaElement).value.trim();
-    const model = (container.querySelector('#modal-model') as HTMLSelectElement).value;
-    const project = store.createProject(name, desc, model);
-    closeModal();
-    router.navigate(`/project/${project.id}`);
-  });
-
-  // Dashboard layout toggle (grid/list)
-  const grid = container.querySelector<HTMLElement>('#project-grid');
-  const gridBtn = container.querySelector<HTMLButtonElement>('#btn-grid-view');
-  const listBtn = container.querySelector<HTMLButtonElement>('#btn-list-view');
-
-  const setViewButtonState = (button: HTMLButtonElement, active: boolean): void => {
-    button.classList.toggle('bg-primary/10', active);
-    button.classList.toggle('text-primary', active);
-    button.classList.toggle('text-slate-400', !active);
-    button.classList.toggle('hover:text-slate-600', !active);
-    button.classList.toggle('dark:hover:text-slate-200', !active);
-    button.setAttribute('aria-pressed', String(active));
-  };
-
-  const applyLayout = (layout: DashboardLayout): void => {
-    if (!grid || !gridBtn || !listBtn) return;
-    const listView = layout === 'list';
-    grid.classList.toggle('dashboard-list-view', listView);
-    setViewButtonState(gridBtn, !listView);
-    setViewButtonState(listBtn, listView);
-    localStorage.setItem(DASHBOARD_LAYOUT_KEY, layout);
-  };
-
-  if (grid && gridBtn && listBtn) {
-    const savedLayout = localStorage.getItem(DASHBOARD_LAYOUT_KEY);
-    const initialLayout: DashboardLayout = savedLayout === 'list' ? 'list' : 'grid';
-    gridBtn.addEventListener('click', () => applyLayout('grid'));
-    listBtn.addEventListener('click', () => applyLayout('list'));
-    applyLayout(initialLayout);
-  }
-
-  // Search filter
-  const searchInput = container.querySelector<HTMLInputElement>('#search-input');
-  searchInput?.addEventListener('input', () => {
-    const q = searchInput.value.toLowerCase();
-    container.querySelectorAll<HTMLElement>('.project-card').forEach(card => {
-      const text = card.textContent?.toLowerCase() ?? '';
-      card.style.display = text.includes(q) ? '' : 'none';
+        try {
+          if (!modalMode) {
+            await customAlert('Select Prompt Flow or Transcript Flow first.');
+            return;
+          }
+          const name = (container.querySelector('#modal-name') as HTMLInputElement).value.trim();
+          const desc = (container.querySelector('#modal-desc') as HTMLTextAreaElement).value.trim();
+          const model = (container.querySelector('#modal-model') as HTMLSelectElement).value;
+          const project = modalMode === 'transcript'
+            ? await store.createTranscriptFlowProject(name || 'Untitled Transcript Flow', desc, model)
+            : store.createProject(name || 'Untitled Blueprint', desc, model);
+          closeModal();
+          router.navigate(`/project/${project.id}`);
+        } catch (err) {
+          console.error('Failed to create project:', err);
+          await customAlert(err instanceof Error ? err.message : 'Unable to create project.');
+        } finally {
+          if (createButton) createButton.disabled = false;
+        }
+      })();
     });
-  });
 
-  // Theme toggle
-  wireThemeToggle(container);
-  wireDashboardAccountInteractions(container);
-  void hydrateDashboardAccount(container);
+    // Dashboard layout toggle (grid/list)
+    const grids = Array.from(container.querySelectorAll<HTMLElement>('.dashboard-project-grid'));
+    const gridBtn = container.querySelector<HTMLButtonElement>('#btn-grid-view');
+    const listBtn = container.querySelector<HTMLButtonElement>('#btn-list-view');
+
+    const setViewButtonState = (button: HTMLButtonElement, active: boolean): void => {
+      button.classList.toggle('bg-primary/10', active);
+      button.classList.toggle('text-primary', active);
+      button.classList.toggle('text-slate-400', !active);
+      button.classList.toggle('hover:text-slate-600', !active);
+      button.classList.toggle('dark:hover:text-slate-200', !active);
+      button.setAttribute('aria-pressed', String(active));
+    };
+
+    const applyLayout = (layout: DashboardLayout): void => {
+      if (grids.length === 0 || !gridBtn || !listBtn) return;
+      const listView = layout === 'list';
+      grids.forEach((grid) => {
+        grid.classList.toggle('dashboard-list-view', listView);
+      });
+      setViewButtonState(gridBtn, !listView);
+      setViewButtonState(listBtn, listView);
+      localStorage.setItem(DASHBOARD_LAYOUT_KEY, layout);
+    };
+
+    if (grids.length > 0 && gridBtn && listBtn) {
+      const savedLayout = localStorage.getItem(DASHBOARD_LAYOUT_KEY);
+      const initialLayout: DashboardLayout = savedLayout === 'list' ? 'list' : 'grid';
+      gridBtn.addEventListener('click', () => applyLayout('grid'));
+      listBtn.addEventListener('click', () => applyLayout('list'));
+      applyLayout(initialLayout);
+    }
+
+    // Search filter
+    const searchInput = container.querySelector<HTMLInputElement>('#search-input');
+    searchInput?.addEventListener('input', () => {
+      const q = searchInput.value.toLowerCase();
+      container.querySelectorAll<HTMLElement>('.dashboard-search-card').forEach(card => {
+        const text = card.textContent?.toLowerCase() ?? '';
+        card.style.display = text.includes(q) ? '' : 'none';
+      });
+    });
+
+    // Theme toggle
+    wireThemeToggle(container);
+    wireDashboardAccountInteractions(container);
+    void hydrateDashboardAccount(container);
+  });
 }
+
+function renderPromptFlowCard(project: {
+  id: string;
+  icon: string;
+  name: string;
+  description: string;
+  model: string;
+  lastEdited: string;
+}): string {
+  return `
+    <div class="dashboard-search-card prompt-project-card project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden flex flex-col" data-project-id="${escapeHtml(project.id)}">
+      <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
+        <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
+        <span class="material-icons-outlined text-slate-300 dark:text-slate-700 text-5xl">${escapeHtml(project.icon)}</span>
+      </div>
+      <div class="project-card-body p-5 flex-1 flex flex-col">
+        <div class="flex justify-between items-start mb-2 gap-2">
+          <h3 class="font-semibold text-slate-800 dark:text-slate-100 group-hover:text-primary transition-colors">${escapeHtml(project.name)}</h3>
+          <button class="delete-project text-slate-400 hover:text-red-500 dark:hover:text-red-400 shrink-0" data-id="${escapeHtml(project.id)}" title="Delete project">
+            <span class="material-icons-outlined text-lg">delete_outline</span>
+          </button>
+        </div>
+        <p class="project-description text-sm text-neutral-gray dark:text-neutral-gray/80 line-clamp-2 mb-4">${escapeHtml(project.description)}</p>
+        <div class="mt-auto">
+          <div class="flex items-center gap-2 mb-3">
+            <span class="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold uppercase tracking-wider rounded border border-primary/20">${escapeHtml(project.model)}</span>
+            <span class="text-[11px] text-slate-400 flex items-center gap-1">
+              <span class="material-icons-outlined text-[14px]">history</span>
+              ${escapeHtml(project.lastEdited)}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
+  const linkedProject = flow.projectId ? store.getProject(flow.projectId) ?? null : null;
+  const linkedProjectId = linkedProject?.id ?? null;
+  const latestFlow = flow.latestFlow;
+  const model = linkedProject?.model || latestFlow?.model || 'unknown';
+  const flowTitle = linkedProject?.name || latestFlow?.flowTitle || flow.name.replace(/\s+Transcript Set$/, '') || 'Transcript Flow';
+  const flowSummary = linkedProject?.description || latestFlow?.flowSummary || flow.description || 'Stored transcript flow mapping.';
+  const nodeCount = linkedProject?.nodes.length ?? latestFlow?.nodeCount ?? 0;
+  const connectionCount = linkedProject?.connections.length ?? latestFlow?.connectionCount ?? 0;
+  const updatedAt = linkedProject?.lastEdited || latestFlow?.createdAt || flow.updatedAt;
+
+  return `
+    <div class="dashboard-search-card ${linkedProjectId ? 'transcript-project-card cursor-pointer' : ''} project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 overflow-hidden flex flex-col"
+      data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}">
+      <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
+        <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
+        <span class="material-icons-outlined text-slate-300 dark:text-slate-700 text-5xl">smart_toy</span>
+      </div>
+      <div class="project-card-body p-5 flex-1 flex flex-col">
+        <div class="flex items-start justify-between gap-2 mb-2">
+          <h3 class="font-semibold text-slate-800 dark:text-slate-100 group-hover:text-primary transition-colors">${escapeHtml(flowTitle)}</h3>
+          <button class="delete-transcript-flow text-slate-400 hover:text-red-500 dark:hover:text-red-400 shrink-0" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}" data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}" title="Delete transcript flow">
+            <span class="material-icons-outlined text-lg">delete_outline</span>
+          </button>
+        </div>
+        <p class="project-description text-sm text-neutral-gray dark:text-neutral-gray/80 line-clamp-2 mb-4">${escapeHtml(flowSummary)}</p>
+        <div class="mt-auto space-y-3">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="px-2 py-0.5 bg-primary/10 text-primary text-[10px] font-bold uppercase tracking-wider rounded border border-primary/20">${escapeHtml(model)}</span>
+            <span class="text-[11px] text-slate-400 flex items-center gap-1">
+              <span class="material-icons-outlined text-[14px]">account_tree</span>
+              ${nodeCount} nodes · ${connectionCount} edges
+            </span>
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-[11px] text-slate-400">Updated ${escapeHtml(formatDashboardTimestamp(updatedAt))}</span>
+            ${linkedProjectId
+      ? `<button class="open-transcript-project px-2.5 py-1 text-[11px] font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors" data-project-id="${escapeHtml(linkedProjectId)}">Open in Canvas</button>`
+      : `<button class="create-transcript-project px-2.5 py-1 text-[11px] font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">Create Editable Flow</button>`}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function formatDashboardTimestamp(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value;
+  return parsed.toLocaleString();
+}
+
+function escapeHtml(value: string): string {
+  const div = document.createElement('div');
+  div.textContent = value;
+  return div.innerHTML;
+}
+
 async function resolveDashboardAccount(): Promise<DashboardAccountState> {
   const user = await getCurrentUser();
   if (!user) {
@@ -573,7 +855,7 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
         router.navigate('/auth/sign-in');
       } catch (err) {
         console.error('Sign-out failed:', err);
-        alert('Sign-out failed. Please try again.');
+        await customAlert('Sign-out failed. Please try again.');
       }
     })();
   });
@@ -703,7 +985,7 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
         return;
       }
 
-      if (!confirm('Delete your account and all projects permanently? This cannot be undone.')) {
+      if (!(await customConfirm('Delete your account and all projects permanently? This cannot be undone.'))) {
         return;
       }
 

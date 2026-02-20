@@ -37,6 +37,22 @@ const TRANSCRIPT_NODE_HEIGHT = 140;
 const TRANSCRIPT_NODE_DECORATION_WIDTH = 128;
 const TRANSCRIPT_NODE_X_GAP = 120;
 const TRANSCRIPT_NODE_Y_GAP = 170;
+const GENERATING_THOUGHT_POOL = [
+  'Untangling speaker turns and hidden intents...',
+  'Negotiating peace between interruptions and edge cases...',
+  'Folding small talk into deterministic state machines...',
+  'Asking the transcript politely what happened here...',
+  'Ranking branches by "would a human do this?" confidence...',
+  'Converting "uhh" into production-grade transitions...',
+  'Cross-checking every handoff for dropped context...',
+  'Simulating awkward silence as a first-class node...',
+  'Optimizing loops so callers do not loop forever...',
+  'Pinning down escalation paths before they escape...',
+  'Teaching the graph to survive Friday-night support traffic...',
+  'Adding labels so future-you does not squint at edges...',
+] as const;
+const GENERATING_THOUGHTS_VISIBLE = 6;
+const GENERATING_THOUGHT_STEP_SECONDS = 2;
 
 const nodeLabelMeasureCanvas = document.createElement('canvas');
 const nodeLabelMeasureContext = nodeLabelMeasureCanvas.getContext('2d');
@@ -63,6 +79,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
   let latestRenderedNodeSizes: NodeSizeMap = {};
   let suppressNextNodeClick = false;
   let cleanupFlowViewport: (() => void) | null = null;
+  let generatingThoughts = buildGeneratingThoughtSequence();
 
   // Persist viewport state across renders
   let savedZoom: number | null = null;
@@ -183,8 +200,8 @@ export function renderTranscriptImport(container: HTMLElement): void {
           <div class="flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
             ${generatedFlow
               ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating, flowRenderState as FlowRenderState)
-              : renderEmptyCanvas(isGenerating)}
-            ${isGenerating && generatedFlow ? renderGeneratingOverlay() : ''}
+              : renderEmptyCanvas(isGenerating, generatingThoughts)}
+            ${isGenerating && generatedFlow ? renderGeneratingOverlay(generatingThoughts) : ''}
           </div>
         </main>
       `;
@@ -566,6 +583,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
     }
 
     isGenerating = true;
+    generatingThoughts = buildGeneratingThoughtSequence();
     generationError = '';
     persistenceMessage = null;
     render();
@@ -606,6 +624,12 @@ export function renderTranscriptImport(container: HTMLElement): void {
           },
         });
         transcriptSetId = persisted.transcriptSetId;
+        store.registerTranscriptFlowDraft(
+          persisted.transcriptSetId,
+          flow,
+          persisted.transcriptFlowId,
+          projectName.trim() || flow.title || DEFAULT_PROJECT_NAME,
+        );
         persistenceMessage = {
           tone: 'success',
           text: `Saved transcript artifacts (set ${shortId(persisted.transcriptSetId)}, flow ${shortId(persisted.transcriptFlowId)}).`,
@@ -679,6 +703,9 @@ export function renderTranscriptImport(container: HTMLElement): void {
     }
 
     store.saveAssembledVersion(project.id, 'Initial transcript flow import');
+    if (transcriptSetId) {
+      store.linkTranscriptSetToProject(transcriptSetId, project.id, generatedFlow);
+    }
     cleanupFlowViewport?.();
     cleanupFlowViewport = null;
     router.navigate(`/project/${project.id}`);
@@ -696,7 +723,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
   render();
 }
 
-function renderEmptyCanvas(isGenerating: boolean): string {
+function renderEmptyCanvas(isGenerating: boolean, generatingThoughts: string[]): string {
   const previewTitle = isGenerating ? 'Generating Flow...' : 'Flow Preview';
   const previewBody = isGenerating
     ? 'AI is analyzing the transcript and building your call flow.'
@@ -715,11 +742,14 @@ function renderEmptyCanvas(isGenerating: boolean): string {
             <h2 class="text-sm font-bold">${previewTitle}</h2>
             <p class="text-[10px] text-slate-400">${previewBody}</p>
             ${isGenerating ? `
-              <div class="mt-2 flex items-center justify-center gap-1" aria-hidden="true">
-                <span class="w-1.5 h-1.5 rounded-full bg-primary/70 animate-pulse"></span>
-                <span class="w-1.5 h-1.5 rounded-full bg-primary/70 animate-pulse" style="animation-delay:120ms"></span>
-                <span class="w-1.5 h-1.5 rounded-full bg-primary/70 animate-pulse" style="animation-delay:240ms"></span>
+              <div class="mt-3 flex justify-center" aria-hidden="true">
+                <span class="relative inline-flex h-14 w-14 items-center justify-center">
+                  <span class="absolute inset-0 rounded-full border-2 border-primary/25"></span>
+                  <span class="absolute inset-1 rounded-full border-2 border-primary border-t-transparent animate-spin"></span>
+                  <span class="absolute h-2.5 w-2.5 rounded-full bg-primary/80 animate-pulse"></span>
+                </span>
               </div>
+              ${renderThinkingMessages(generatingThoughts)}
             ` : ''}
           </div>
         </div>
@@ -857,25 +887,52 @@ function renderFlowCanvas(
   `;
 }
 
-function renderGeneratingOverlay(): string {
+function renderGeneratingOverlay(generatingThoughts: string[]): string {
   return `
     <div class="absolute inset-0 z-30 pointer-events-none">
       <div class="absolute inset-0 bg-white/28 dark:bg-slate-950/38 backdrop-blur-[1px]"></div>
       <div class="absolute inset-0 flex items-center justify-center p-6">
-        <div class="w-52 rounded-xl border border-primary/25 bg-white/92 dark:bg-slate-900/92 shadow-xl px-4 py-4">
+        <div class="w-[22rem] max-w-full rounded-xl border border-primary/25 bg-white/92 dark:bg-slate-900/92 shadow-xl px-4 py-4">
           <div class="flex flex-col items-center gap-2 text-center">
-            <span class="inline-flex h-12 w-12 items-center justify-center rounded-full border-2 border-primary/25">
-              <span class="h-7 w-7 rounded-full border-2 border-primary border-t-transparent animate-spin"></span>
+            <span class="relative inline-flex h-14 w-14 items-center justify-center">
+              <span class="absolute inset-0 rounded-full border-2 border-primary/25"></span>
+              <span class="absolute inset-1 rounded-full border-2 border-primary border-t-transparent animate-spin"></span>
+              <span class="absolute h-2.5 w-2.5 rounded-full bg-primary/80 animate-pulse"></span>
             </span>
             <div class="text-xs text-slate-700 dark:text-slate-200">
               <div class="font-semibold">Generating flow...</div>
               <div class="text-[11px] text-slate-500 dark:text-slate-400">AI is updating your graph from the transcript.</div>
             </div>
+            ${renderThinkingMessages(generatingThoughts)}
           </div>
         </div>
       </div>
     </div>
   `;
+}
+
+function renderThinkingMessages(messages: string[]): string {
+  const selected = messages.length > 0 ? messages : ['Analyzing transcript...'];
+  const durationSeconds = Math.max(selected.length * GENERATING_THOUGHT_STEP_SECONDS, 2);
+  return `
+    <div class="thinking-message-stack mt-2 h-5 w-full max-w-[320px]" style="--thinking-duration:${durationSeconds}s">
+      ${selected.map((message, index) => `
+        <p
+          class="thinking-message absolute inset-0 text-center text-[11px] text-slate-500 dark:text-slate-400 font-mono"
+          style="animation-delay:${index * GENERATING_THOUGHT_STEP_SECONDS}s"
+        >${esc(message)}</p>
+      `).join('')}
+    </div>
+  `;
+}
+
+function buildGeneratingThoughtSequence(): string[] {
+  const pool = [...GENERATING_THOUGHT_POOL];
+  for (let index = pool.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
+  }
+  return pool.slice(0, Math.min(GENERATING_THOUGHTS_VISIBLE, pool.length));
 }
 
 function buildFlowRenderState(flow: TranscriptFlowResult, overrides: LayoutMap): FlowRenderState {
