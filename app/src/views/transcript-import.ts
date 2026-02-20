@@ -17,11 +17,29 @@ type LayoutPosition = {
 };
 
 type LayoutMap = Record<string, LayoutPosition>;
+type NodeVisualSize = {
+  width: number;
+  height: number;
+};
+type NodeSizeMap = Record<string, NodeVisualSize>;
+type FlowRenderState = {
+  layout: LayoutMap;
+  nodeSizes: NodeSizeMap;
+  geometry: { width: number; height: number };
+};
 type MessageTone = 'info' | 'success' | 'error';
 
 const DEFAULT_PROJECT_NAME = 'Transcript Flow';
 const DEFAULT_PROJECT_MODEL = 'GPT-4o';
 const MIN_TRANSCRIPT_LENGTH = 20;
+const TRANSCRIPT_NODE_MIN_WIDTH = 224;
+const TRANSCRIPT_NODE_HEIGHT = 140;
+const TRANSCRIPT_NODE_DECORATION_WIDTH = 128;
+const TRANSCRIPT_NODE_X_GAP = 120;
+const TRANSCRIPT_NODE_Y_GAP = 170;
+
+const nodeLabelMeasureCanvas = document.createElement('canvas');
+const nodeLabelMeasureContext = nodeLabelMeasureCanvas.getContext('2d');
 
 export function renderTranscriptImport(container: HTMLElement): void {
   let projectName = DEFAULT_PROJECT_NAME;
@@ -40,6 +58,11 @@ export function renderTranscriptImport(container: HTMLElement): void {
   let approvedAt: string | null = null;
   let transcriptSetId: string | null = null;
   let persistenceMessage: { tone: MessageTone; text: string } | null = null;
+  let nodePositionOverrides: LayoutMap = {};
+  let latestRenderedLayout: LayoutMap = {};
+  let latestRenderedNodeSizes: NodeSizeMap = {};
+  let suppressNextNodeClick = false;
+  let cleanupFlowViewport: (() => void) | null = null;
 
   // Persist viewport state across renders
   let savedZoom: number | null = null;
@@ -47,11 +70,19 @@ export function renderTranscriptImport(container: HTMLElement): void {
   let savedPanY: number | null = null;
 
   function render(): void {
+    cleanupFlowViewport?.();
+    cleanupFlowViewport = null;
+
     const canGenerate = transcriptText.trim().length >= MIN_TRANSCRIPT_LENGTH && !isGenerating;
     const flowApproved = isCurrentFlowApproved();
     const selectedNode = selectedNodeId && generatedFlow
       ? generatedFlow.nodes.find((n) => n.id === selectedNodeId) ?? null
       : null;
+    const flowRenderState = generatedFlow
+      ? buildFlowRenderState(generatedFlow, nodePositionOverrides)
+      : null;
+    latestRenderedLayout = flowRenderState ? cloneLayout(flowRenderState.layout) : {};
+    latestRenderedNodeSizes = flowRenderState ? { ...flowRenderState.nodeSizes } : {};
 
     preserveScrollDuringRender(container, () => {
       container.innerHTML = `
@@ -151,7 +182,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
           <!-- Main Canvas Area -->
           <div class="flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
             ${generatedFlow
-              ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating)
+              ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating, flowRenderState as FlowRenderState)
               : renderEmptyCanvas(isGenerating)}
             ${isGenerating && generatedFlow ? renderGeneratingOverlay() : ''}
           </div>
@@ -174,6 +205,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
     let zoom: number;
     let panX: number;
     let panY: number;
+    const liveLayout = cloneLayout(latestRenderedLayout);
 
     if (savedZoom !== null && savedPanX !== null && savedPanY !== null) {
       // Restore previous viewport position
@@ -201,19 +233,73 @@ export function renderTranscriptImport(container: HTMLElement): void {
     }
     applyTransform();
 
+    const svg = world.querySelector<SVGSVGElement>('#flow-connections-svg');
+
+    const updateEdgeGeometry = (): void => {
+      world.querySelectorAll<SVGGElement>('[data-flow-edge]').forEach((edgeEl) => {
+        const fromId = edgeEl.dataset.fromId ?? '';
+        const toId = edgeEl.dataset.toId ?? '';
+        const from = liveLayout[fromId];
+        const to = liveLayout[toId];
+        if (!from || !to) return;
+
+        const fromSize = latestRenderedNodeSizes[fromId] ?? defaultNodeSize();
+        const toSize = latestRenderedNodeSizes[toId] ?? defaultNodeSize();
+        const geometry = edgeGeometry(from, fromSize, to, toSize);
+
+        const pathEl = edgeEl.querySelector<SVGPathElement>('[data-flow-edge-path]');
+        if (pathEl) pathEl.setAttribute('d', geometry.curve);
+
+        const fromDot = edgeEl.querySelector<SVGCircleElement>('[data-flow-edge-from-dot]');
+        if (fromDot) {
+          fromDot.setAttribute('cx', String(geometry.fromX));
+          fromDot.setAttribute('cy', String(geometry.fromY));
+        }
+
+        const toDot = edgeEl.querySelector<SVGCircleElement>('[data-flow-edge-to-dot]');
+        if (toDot) {
+          toDot.setAttribute('cx', String(geometry.toX));
+          toDot.setAttribute('cy', String(geometry.toY));
+        }
+
+        const motion = edgeEl.querySelector<SVGAnimateMotionElement>('[data-flow-edge-motion]');
+        if (motion) motion.setAttribute('path', geometry.curve);
+      });
+    };
+
+    const updateWorldGeometry = (): void => {
+      const geometry = computeCanvasGeometry(liveLayout, latestRenderedNodeSizes);
+      world.style.width = `${geometry.width}px`;
+      world.style.height = `${geometry.height}px`;
+      if (svg) {
+        svg.setAttribute('width', String(geometry.width));
+        svg.setAttribute('height', String(geometry.height));
+        svg.setAttribute('viewBox', `0 0 ${geometry.width} ${geometry.height}`);
+      }
+    };
+
     // Right-click drag panning (matches Canvas view exactly)
     let isPanning = false;
     let panStartMouseX = 0;
     let panStartMouseY = 0;
     let panStartX = 0;
     let panStartY = 0;
+    let isDraggingNode = false;
+    let activeDragNodeId: string | null = null;
+    let activeDragNodeEl: HTMLElement | null = null;
+    let dragStartMouseX = 0;
+    let dragStartMouseY = 0;
+    let dragStartNodeX = 0;
+    let dragStartNodeY = 0;
+    let dragMoved = false;
 
-    viewport.addEventListener('contextmenu', (e: MouseEvent) => {
+    const onContextMenu = (e: MouseEvent): void => {
       e.preventDefault();
-    });
+    };
 
-    viewport.addEventListener('mousedown', (e: MouseEvent) => {
+    const onViewportMouseDown = (e: MouseEvent): void => {
       if (e.button !== 2) return;
+      if (isDraggingNode) return;
       isPanning = true;
       panStartMouseX = e.clientX;
       panStartMouseY = e.clientY;
@@ -221,9 +307,28 @@ export function renderTranscriptImport(container: HTMLElement): void {
       panStartY = panY;
       viewport.classList.add('cursor-grabbing');
       e.preventDefault();
-    });
+    };
 
     const onMouseMove = (e: MouseEvent): void => {
+      if (isDraggingNode && activeDragNodeId && activeDragNodeEl) {
+        const deltaX = (e.clientX - dragStartMouseX) / zoom;
+        const deltaY = (e.clientY - dragStartMouseY) / zoom;
+        const nextX = Math.round((dragStartNodeX + deltaX) / 20) * 20;
+        const nextY = Math.round((dragStartNodeY + deltaY) / 20) * 20;
+
+        if (Math.abs(nextX - dragStartNodeX) > 1 || Math.abs(nextY - dragStartNodeY) > 1) {
+          dragMoved = true;
+        }
+
+        liveLayout[activeDragNodeId] = { x: nextX, y: nextY };
+        nodePositionOverrides[activeDragNodeId] = { x: nextX, y: nextY };
+        activeDragNodeEl.style.left = `${nextX}px`;
+        activeDragNodeEl.style.top = `${nextY}px`;
+        updateWorldGeometry();
+        updateEdgeGeometry();
+        return;
+      }
+
       if (!isPanning) return;
       panX = panStartX + (e.clientX - panStartMouseX);
       panY = panStartY + (e.clientY - panStartMouseY);
@@ -231,16 +336,64 @@ export function renderTranscriptImport(container: HTMLElement): void {
     };
 
     const onMouseUp = (): void => {
+      if (isDraggingNode) {
+        isDraggingNode = false;
+        if (dragMoved) {
+          suppressNextNodeClick = true;
+          setTimeout(() => {
+            suppressNextNodeClick = false;
+          }, 0);
+          render();
+        }
+        viewport.classList.remove('cursor-grabbing');
+        activeDragNodeId = null;
+        activeDragNodeEl = null;
+        return;
+      }
+
       if (!isPanning) return;
       isPanning = false;
       viewport.classList.remove('cursor-grabbing');
     };
 
+    const nodeDragCleanup: Array<() => void> = [];
+    container.querySelectorAll<HTMLElement>('[data-flow-node-id]').forEach((nodeEl) => {
+      const handle = nodeEl.querySelector<HTMLElement>('.node-header') ?? nodeEl;
+      const onNodeMouseDown = (e: MouseEvent): void => {
+        if (e.button !== 0) return;
+        if ((e.target as HTMLElement).closest('button,input,select,textarea,a')) return;
+        const nodeId = nodeEl.dataset.flowNodeId;
+        if (!nodeId) return;
+
+        const startPosition = liveLayout[nodeId] ?? latestRenderedLayout[nodeId];
+        if (!startPosition) return;
+
+        isDraggingNode = true;
+        activeDragNodeId = nodeId;
+        activeDragNodeEl = nodeEl;
+        dragStartMouseX = e.clientX;
+        dragStartMouseY = e.clientY;
+        dragStartNodeX = startPosition.x;
+        dragStartNodeY = startPosition.y;
+        dragMoved = false;
+        viewport.classList.add('cursor-grabbing');
+        e.preventDefault();
+        e.stopPropagation();
+      };
+
+      handle.addEventListener('mousedown', onNodeMouseDown);
+      nodeDragCleanup.push(() => {
+        handle.removeEventListener('mousedown', onNodeMouseDown);
+      });
+    });
+
+    viewport.addEventListener('contextmenu', onContextMenu);
+    viewport.addEventListener('mousedown', onViewportMouseDown);
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
 
     // Scroll-wheel zoom around cursor (matches Canvas view exactly)
-    viewport.addEventListener('wheel', (e: WheelEvent) => {
+    const onWheel = (e: WheelEvent): void => {
       e.preventDefault();
       const rect = viewport.getBoundingClientRect();
       const focalX = e.clientX - rect.left;
@@ -255,15 +408,29 @@ export function renderTranscriptImport(container: HTMLElement): void {
       panY = focalY - wy * next;
       zoom = next;
       applyTransform();
-    }, { passive: false });
+    };
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+
+    cleanupFlowViewport = () => {
+      viewport.removeEventListener('contextmenu', onContextMenu);
+      viewport.removeEventListener('mousedown', onViewportMouseDown);
+      viewport.removeEventListener('wheel', onWheel);
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+      nodeDragCleanup.forEach((cleanup) => cleanup());
+    };
   }
 
   function wireEvents(): void {
     container.querySelector<HTMLButtonElement>('#nav-home')?.addEventListener('click', () => {
+      cleanupFlowViewport?.();
+      cleanupFlowViewport = null;
       router.navigate('/');
     });
 
     container.querySelector<HTMLButtonElement>('#btn-back')?.addEventListener('click', () => {
+      cleanupFlowViewport?.();
+      cleanupFlowViewport = null;
       router.navigate('/import');
     });
 
@@ -327,12 +494,18 @@ export function renderTranscriptImport(container: HTMLElement): void {
       transcriptFileName = '';
       generationError = '';
       generatedFlow = null;
+      nodePositionOverrides = {};
+      latestRenderedLayout = {};
+      latestRenderedNodeSizes = {};
       selectedNodeId = null;
       flowRevision = 0;
       approvedRevision = -1;
       approvedAt = null;
       transcriptSetId = null;
       persistenceMessage = null;
+      savedZoom = null;
+      savedPanX = null;
+      savedPanY = null;
       render();
     });
 
@@ -364,6 +537,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
     // Wire clickable nodes
     container.querySelectorAll<HTMLElement>('[data-flow-node-id]').forEach((el) => {
       el.addEventListener('click', (e) => {
+        if (suppressNextNodeClick) return;
         e.stopPropagation();
         selectedNodeId = el.dataset.flowNodeId ?? null;
         render();
@@ -404,6 +578,12 @@ export function renderTranscriptImport(container: HTMLElement): void {
       });
 
       generatedFlow = flow;
+      nodePositionOverrides = {};
+      latestRenderedLayout = {};
+      latestRenderedNodeSizes = {};
+      savedZoom = null;
+      savedPanX = null;
+      savedPanY = null;
       flowRevision += 1;
       clearFlowApproval();
       transcriptText = transcript;
@@ -471,7 +651,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
       projectModel,
     );
 
-    const layout = computeFlowLayout(generatedFlow);
+    const layout = buildFlowRenderState(generatedFlow, nodePositionOverrides).layout;
     const nodeIdMap = new Map<string, string>();
 
     for (const generatedNode of generatedFlow.nodes) {
@@ -499,6 +679,8 @@ export function renderTranscriptImport(container: HTMLElement): void {
     }
 
     store.saveAssembledVersion(project.id, 'Initial transcript flow import');
+    cleanupFlowViewport?.();
+    cleanupFlowViewport = null;
     router.navigate(`/project/${project.id}`);
   }
 
@@ -551,29 +733,29 @@ function renderFlowCanvas(
   selectedNode: TranscriptFlowNode | null,
   isApproved: boolean,
   isGenerating: boolean,
+  flowRenderState: FlowRenderState,
 ): string {
-  const layout = computeFlowLayout(flow);
-  const geometry = computeCanvasGeometry(layout);
-  const NODE_WIDTH = 220;
+  const { layout, nodeSizes, geometry } = flowRenderState;
 
   const edges = flow.connections
-    .map((connection) => {
+    .map((connection, index) => {
       const from = layout[connection.from];
       const to = layout[connection.to];
       if (!from || !to) return '';
 
-      const fromX = from.x + NODE_WIDTH;
-      const fromY = from.y + 48;
-      const toX = to.x;
-      const toY = to.y + 48;
-      const dx = Math.abs(toX - fromX) * 0.5;
-      const curve = `M ${fromX} ${fromY} C ${fromX + dx} ${fromY}, ${toX - dx} ${toY}, ${toX} ${toY}`;
+      const fromSize = nodeSizes[connection.from] ?? defaultNodeSize();
+      const toSize = nodeSizes[connection.to] ?? defaultNodeSize();
+      const geometryData = edgeGeometry(from, fromSize, to, toSize);
 
       return `
-        <path d="${curve}" stroke="#23956F" stroke-width="2" fill="none" class="connector-path" />
-        <circle cx="${fromX}" cy="${fromY}" r="5" fill="#23956F" />
-        <circle cx="${toX}" cy="${toY}" r="5" fill="#23956F" />
-        <circle r="3" fill="#23956F" opacity="0.7"><animateMotion dur="3s" repeatCount="indefinite" path="${curve}" /></circle>
+        <g data-flow-edge="${index}" data-from-id="${esc(connection.from)}" data-to-id="${esc(connection.to)}">
+          <path data-flow-edge-path="1" d="${geometryData.curve}" stroke="#23956F" stroke-width="2" fill="none" class="connector-path" />
+          <circle data-flow-edge-from-dot="1" cx="${geometryData.fromX}" cy="${geometryData.fromY}" r="5" fill="#23956F" />
+          <circle data-flow-edge-to-dot="1" cx="${geometryData.toX}" cy="${geometryData.toY}" r="5" fill="#23956F" />
+          <circle r="3" fill="#23956F" opacity="0.7">
+            <animateMotion data-flow-edge-motion="1" dur="3s" repeatCount="indefinite" path="${geometryData.curve}" />
+          </circle>
+        </g>
       `;
     })
     .join('');
@@ -584,16 +766,17 @@ function renderFlowCanvas(
       const isSelected = node.id === selectedNode?.id;
       const safeIcon = resolveNodeIcon(node.icon, node.type);
       const displayLabel = node.label.trim().length > 0 ? node.label.trim() : `Step ${shortId(node.id)}`;
-      const contentPreview = esc(node.content).substring(0, 120) + (node.content.length > 120 ? '…' : '');
+      const contentPreview = esc(trimForPreview(node.content, 120));
+      const nodeSize = nodeSizes[node.id] ?? defaultNodeSize();
 
       return `
         <div class="canvas-node pointer-events-auto bg-white dark:bg-slate-900 border ${isSelected ? 'border-primary ring-2 ring-primary/30' : 'border-primary/40'} rounded-lg shadow-xl node-glow cursor-pointer"
              data-flow-node-id="${esc(node.id)}"
-             style="left:${position.x}px; top:${position.y}px; width:${NODE_WIDTH}px;">
-          <div class="node-header bg-primary/10 border-b border-primary/20 p-3 flex items-center justify-between rounded-t-lg">
+             style="left:${position.x}px; top:${position.y}px; width:${nodeSize.width}px;">
+          <div class="node-header bg-primary/10 border-b border-primary/20 p-3 flex items-center justify-between rounded-t-lg cursor-move">
             <h2 class="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 select-none min-w-0">
               <span class="material-icons text-sm text-primary shrink-0 w-4 overflow-hidden text-center">${safeIcon}</span>
-              <span class="block max-w-[170px] overflow-hidden text-ellipsis whitespace-nowrap" title="${esc(displayLabel)}">${esc(displayLabel)}</span>
+              <span class="block whitespace-nowrap" title="${esc(displayLabel)}">${esc(displayLabel)}</span>
             </h2>
           </div>
           <div class="relative">
@@ -663,7 +846,7 @@ function renderFlowCanvas(
     ${detailPanel}
     <div id="flow-viewport" class="absolute inset-0 overflow-hidden">
       <div id="flow-world" style="transform-origin:0 0; position:absolute; width:${geometry.width}px; height:${geometry.height}px;">
-        <svg class="absolute inset-0 pointer-events-none z-[1]" width="${geometry.width}" height="${geometry.height}" viewBox="0 0 ${geometry.width} ${geometry.height}" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+        <svg id="flow-connections-svg" class="absolute inset-0 pointer-events-none z-[1]" width="${geometry.width}" height="${geometry.height}" viewBox="0 0 ${geometry.width} ${geometry.height}" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
           ${edges}
         </svg>
         <div class="absolute inset-0 z-[2] pointer-events-none">
@@ -695,25 +878,75 @@ function renderGeneratingOverlay(): string {
   `;
 }
 
-function computeCanvasGeometry(layout: LayoutMap): { width: number; height: number } {
-  const NODE_WIDTH = 220;
-  const NODE_HEIGHT = 96;
+function buildFlowRenderState(flow: TranscriptFlowResult, overrides: LayoutMap): FlowRenderState {
+  const nodeSizes = computeNodeVisualSizes(flow);
+  const autoLayout = computeFlowLayout(flow, nodeSizes);
+  const layout = cloneLayout(autoLayout);
 
-  let maxX = 0;
-  let maxY = 0;
-
-  for (const position of Object.values(layout)) {
-    maxX = Math.max(maxX, position.x + NODE_WIDTH);
-    maxY = Math.max(maxY, position.y + NODE_HEIGHT);
+  for (const node of flow.nodes) {
+    const override = overrides[node.id];
+    if (!override) continue;
+    layout[node.id] = { x: override.x, y: override.y };
   }
 
   return {
-    width: Math.max(maxX + 80, 760),
-    height: Math.max(maxY + 80, 420),
+    layout,
+    nodeSizes,
+    geometry: computeCanvasGeometry(layout, nodeSizes),
   };
 }
 
-function computeFlowLayout(flow: TranscriptFlowResult): LayoutMap {
+function cloneLayout(layout: LayoutMap): LayoutMap {
+  const cloned: LayoutMap = {};
+  for (const [nodeId, position] of Object.entries(layout)) {
+    cloned[nodeId] = { x: position.x, y: position.y };
+  }
+  return cloned;
+}
+
+function defaultNodeSize(): NodeVisualSize {
+  return {
+    width: TRANSCRIPT_NODE_MIN_WIDTH,
+    height: TRANSCRIPT_NODE_HEIGHT,
+  };
+}
+
+function computeNodeVisualSizes(flow: TranscriptFlowResult): NodeSizeMap {
+  const sizes: NodeSizeMap = {};
+  for (const node of flow.nodes) {
+    const label = node.label.trim().length > 0 ? node.label.trim() : `Step ${shortId(node.id)}`;
+    sizes[node.id] = {
+      width: Math.max(TRANSCRIPT_NODE_MIN_WIDTH, estimateTranscriptNodeLabelWidth(label) + TRANSCRIPT_NODE_DECORATION_WIDTH),
+      height: TRANSCRIPT_NODE_HEIGHT,
+    };
+  }
+  return sizes;
+}
+
+function estimateTranscriptNodeLabelWidth(label: string): number {
+  const text = label.trim().length > 0 ? label.trim() : 'Node';
+  if (!nodeLabelMeasureContext) return text.length * 7;
+  nodeLabelMeasureContext.font = '700 12px system-ui, -apple-system, sans-serif';
+  return Math.ceil(nodeLabelMeasureContext.measureText(text).width);
+}
+
+function computeCanvasGeometry(layout: LayoutMap, nodeSizes: NodeSizeMap): { width: number; height: number } {
+  let maxX = 0;
+  let maxY = 0;
+
+  for (const [nodeId, position] of Object.entries(layout)) {
+    const nodeSize = nodeSizes[nodeId] ?? defaultNodeSize();
+    maxX = Math.max(maxX, position.x + nodeSize.width);
+    maxY = Math.max(maxY, position.y + nodeSize.height);
+  }
+
+  return {
+    width: Math.max(maxX + 120, 760),
+    height: Math.max(maxY + 120, 420),
+  };
+}
+
+function computeFlowLayout(flow: TranscriptFlowResult, nodeSizes: NodeSizeMap): LayoutMap {
   const levelByNode = new Map<string, number>();
   const outgoing = new Map<string, string[]>();
   const incomingCounts = new Map<string, number>();
@@ -775,20 +1008,45 @@ function computeFlowLayout(flow: TranscriptFlowResult): LayoutMap {
 
   const startX = 60;
   const startY = 50;
-  const xSpacing = 320;
-  const ySpacing = 170;
+  const ySpacing = TRANSCRIPT_NODE_Y_GAP;
+  let currentX = startX;
 
   for (const level of levels) {
     const nodesAtLevel = groups.get(level) ?? [];
+    const levelWidth = Math.max(
+      TRANSCRIPT_NODE_MIN_WIDTH,
+      ...nodesAtLevel.map((node) => (nodeSizes[node.id] ?? defaultNodeSize()).width),
+    );
     nodesAtLevel.forEach((node, index) => {
       layout[node.id] = {
-        x: startX + level * xSpacing,
+        x: currentX,
         y: startY + index * ySpacing,
       };
     });
+    currentX += levelWidth + TRANSCRIPT_NODE_X_GAP;
   }
 
   return layout;
+}
+
+function edgeGeometry(
+  from: LayoutPosition,
+  fromSize: NodeVisualSize,
+  to: LayoutPosition,
+  toSize: NodeVisualSize,
+): { fromX: number; fromY: number; toX: number; toY: number; curve: string } {
+  const fromX = from.x + fromSize.width;
+  const fromY = from.y + fromSize.height / 2;
+  const toX = to.x;
+  const toY = to.y + toSize.height / 2;
+  const dx = Math.abs(toX - fromX) * 0.5;
+  return {
+    fromX,
+    fromY,
+    toX,
+    toY,
+    curve: `M ${fromX} ${fromY} C ${fromX + dx} ${fromY}, ${toX - dx} ${toY}, ${toX} ${toY}`,
+  };
 }
 
 function renderModelOptions(selectedModel: string): string {

@@ -19,6 +19,13 @@ import { store } from '../store';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { preserveScrollDuringRender } from '../view-state';
 import { projectViewTabsHTML, wireEscapeToCanvas, wireProjectViewTabs } from './project-nav';
+import {
+  listTranscriptSetsForAlignment,
+  runPromptFlowAlignment,
+  type PromptCoverageStatus,
+  type PromptFlowAlignmentResult,
+  type TranscriptSetOption,
+} from '../prompt-flow-alignment';
 
 type BannerTone = 'success' | 'error' | 'info';
 type NodeDiffStatus = 'unchanged' | 'modified' | 'added' | 'removed';
@@ -109,6 +116,13 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
   let connectionStatus = EMPTY_CONNECTION_STATUS;
   let connectionStatusLoaded = false;
   let connectionStatusBusy = false;
+  let transcriptSetOptions: TranscriptSetOption[] = [];
+  let transcriptSetsLoaded = false;
+  let transcriptSetsBusy = false;
+  let selectedTranscriptSetId = '';
+  let alignmentBusy = false;
+  let alignmentMessage: BannerMessage | null = null;
+  let alignmentResult: PromptFlowAlignmentResult | null = null;
   let sidebarCollapsed = loadSidebarCollapsedState();
   let nodeDiffCollapsed = true;
   const graphViewportState: Record<'old' | 'new', GraphViewportState> = {
@@ -163,6 +177,28 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
     }
   };
 
+  const refreshTranscriptSets = async (): Promise<void> => {
+    transcriptSetsBusy = true;
+    render();
+    try {
+      const sets = await listTranscriptSetsForAlignment(projectId);
+      transcriptSetOptions = sets;
+      transcriptSetsLoaded = true;
+      if (sets.length === 0) {
+        selectedTranscriptSetId = '';
+        alignmentResult = null;
+      } else if (!sets.some((option) => option.id === selectedTranscriptSetId)) {
+        selectedTranscriptSetId = sets[0].id;
+      }
+    } catch (err) {
+      transcriptSetsLoaded = true;
+      alignmentMessage = { tone: 'error', text: toErrorMessage(err) };
+    } finally {
+      transcriptSetsBusy = false;
+      render();
+    }
+  };
+
   const render = (): void => {
     clampSelection();
 
@@ -212,6 +248,11 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
         : connectionStatusLoaded
           ? 'Not connected'
           : 'Connection not loaded';
+    const selectedTranscriptSet = transcriptSetOptions.find((option) => option.id === selectedTranscriptSetId) ?? null;
+    const alignmentRunDisabled = alignmentBusy || transcriptSetsBusy || !selectedTranscriptSetId;
+    const scopedAlignmentResult = alignmentResult && alignmentResult.transcriptSetId === selectedTranscriptSetId
+      ? alignmentResult
+      : null;
 
     const disposeViewportListeners = (): void => {
       graphViewportCleanup.old?.();
@@ -432,6 +473,18 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                 </section>
               ` : ''}
 
+              ${renderPromptAlignmentSection({
+                transcriptSetOptions,
+                transcriptSetsLoaded,
+                transcriptSetsBusy,
+                selectedTranscriptSetId,
+                selectedTranscriptSetName: selectedTranscriptSet?.name ?? '',
+                alignmentBusy,
+                alignmentRunDisabled,
+                alignmentMessage,
+                alignmentResult: scopedAlignmentResult,
+              })}
+
               <section class="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
                 <div>
                   <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">GitHub Prompt File Sync</h2>
@@ -610,6 +663,44 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
       });
     });
 
+    container.querySelector('#alignment-transcript-set')?.addEventListener('change', (event) => {
+      selectedTranscriptSetId = (event.target as HTMLSelectElement).value;
+      alignmentResult = null;
+      alignmentMessage = null;
+      render();
+    });
+
+    container.querySelector('#btn-refresh-transcript-sets')?.addEventListener('click', () => {
+      void refreshTranscriptSets();
+    });
+
+    container.querySelector('#btn-run-alignment')?.addEventListener('click', () => {
+      if (!selectedTranscriptSetId) return;
+
+      void (async () => {
+        alignmentBusy = true;
+        alignmentMessage = null;
+        render();
+
+        try {
+          const result = await runPromptFlowAlignment({
+            projectId,
+            transcriptSetId: selectedTranscriptSetId,
+          });
+          alignmentResult = result;
+          alignmentMessage = {
+            tone: 'success',
+            text: `Alignment saved. Covered ${result.coveredCount}, uncovered ${result.uncoveredCount}, overconstrained ${result.overconstrainedCount}.`,
+          };
+        } catch (err) {
+          alignmentMessage = { tone: 'error', text: toErrorMessage(err) };
+        } finally {
+          alignmentBusy = false;
+          render();
+        }
+      })();
+    });
+
     container.querySelector('#btn-gh-connect')?.addEventListener('click', () => {
       void (async () => {
         githubBusy = true;
@@ -757,6 +848,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
 
   render();
   void refreshConnectionStatus();
+  void refreshTranscriptSets();
 }
 
 function renderGraphPaneMarkup(
@@ -1203,6 +1295,128 @@ function paletteForStatus(status: NodeDiffStatus): {
     headerBorder: 'border-primary/20 dark:border-primary/30',
     badge: 'bg-slate-500/10 text-slate-600 dark:text-slate-300',
   };
+}
+
+interface PromptAlignmentSectionArgs {
+  transcriptSetOptions: TranscriptSetOption[];
+  transcriptSetsLoaded: boolean;
+  transcriptSetsBusy: boolean;
+  selectedTranscriptSetId: string;
+  selectedTranscriptSetName: string;
+  alignmentBusy: boolean;
+  alignmentRunDisabled: boolean;
+  alignmentMessage: BannerMessage | null;
+  alignmentResult: PromptFlowAlignmentResult | null;
+}
+
+function renderPromptAlignmentSection(args: PromptAlignmentSectionArgs): string {
+  const loadingText = args.transcriptSetsBusy
+    ? 'Loading transcript sets...'
+    : args.transcriptSetsLoaded
+      ? ''
+      : 'Loading transcript sets...';
+  const summary = args.alignmentResult
+    ? `<div class="grid grid-cols-3 gap-2 text-[10px]">
+        ${renderCoverageSummaryBadge('Covered', args.alignmentResult.coveredCount, 'text-emerald-700 bg-emerald-50 border-emerald-200 dark:text-emerald-300 dark:bg-emerald-950/40 dark:border-emerald-800')}
+        ${renderCoverageSummaryBadge('Uncovered', args.alignmentResult.uncoveredCount, 'text-red-700 bg-red-50 border-red-200 dark:text-red-300 dark:bg-red-950/40 dark:border-red-800')}
+        ${renderCoverageSummaryBadge('Overconstrained', args.alignmentResult.overconstrainedCount, 'text-amber-700 bg-amber-50 border-amber-200 dark:text-amber-300 dark:bg-amber-950/40 dark:border-amber-800')}
+      </div>`
+    : '';
+
+  const itemRows = args.alignmentResult
+    ? args.alignmentResult.items.map((item) => {
+      const statusBadge = coverageStatusBadge(item.status);
+      const confidence = `${Math.round(item.confidence * 100)}%`;
+      return `
+        <div class="rounded-lg border border-slate-200 dark:border-slate-700 p-2">
+          <div class="flex items-center justify-between gap-2">
+            <div class="text-[11px] font-medium text-slate-700 dark:text-slate-200 truncate" title="${escapeHtml(item.promptLabel)}">${escapeHtml(item.promptLabel)}</div>
+            <span class="text-[10px] px-1.5 py-0.5 rounded border ${statusBadge}">${escapeHtml(item.status)}</span>
+          </div>
+          <div class="mt-1 text-[10px] text-slate-500 dark:text-slate-400">
+            ${item.canonicalLabel ? `Canonical: ${escapeHtml(item.canonicalLabel)} | ` : ''}Confidence: ${confidence}
+          </div>
+          <div class="mt-1 text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2" title="${escapeHtml(item.reason)}">${escapeHtml(item.reason)}</div>
+        </div>
+      `;
+    }).join('')
+    : '';
+
+  return `
+    <section class="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Prompt Coverage Alignment</h2>
+        <p class="text-xs text-slate-500 dark:text-slate-400">Map prompt nodes to canonical flow nodes with confidence.</p>
+      </div>
+
+      ${renderBanner(args.alignmentMessage)}
+
+      <div class="space-y-2">
+        <label class="text-[11px] font-medium text-slate-600 dark:text-slate-300">Transcript set</label>
+        <select
+          id="alignment-transcript-set"
+          class="w-full rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-800"
+          ${args.transcriptSetOptions.length === 0 || args.transcriptSetsBusy ? 'disabled' : ''}
+        >
+          ${args.transcriptSetOptions.length === 0
+            ? '<option value="">No transcript sets</option>'
+            : args.transcriptSetOptions.map((option) => `
+              <option value="${escapeHtml(option.id)}" ${option.id === args.selectedTranscriptSetId ? 'selected' : ''}>
+                ${escapeHtml(option.name)}
+              </option>
+            `).join('')}
+        </select>
+        ${loadingText ? `<p class="text-[10px] text-slate-400">${loadingText}</p>` : ''}
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          id="btn-run-alignment"
+          class="px-2 py-1.5 text-xs rounded bg-slate-900 text-white hover:bg-slate-800 transition-colors disabled:opacity-60"
+          ${args.alignmentRunDisabled ? 'disabled' : ''}
+        >
+          ${args.alignmentBusy ? 'Aligning...' : 'Run Alignment'}
+        </button>
+        <button
+          id="btn-refresh-transcript-sets"
+          class="px-2 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-60"
+          ${args.transcriptSetsBusy ? 'disabled' : ''}
+        >
+          Refresh Sets
+        </button>
+      </div>
+
+      ${args.alignmentResult ? `
+        <div class="text-[10px] text-slate-500 dark:text-slate-400">
+          Set: <span class="font-medium">${escapeHtml(args.selectedTranscriptSetName)}</span> | Prompt nodes: ${args.alignmentResult.promptNodeCount} | Canonical nodes: ${args.alignmentResult.canonicalNodeCount} | Saved: ${args.alignmentResult.persistedCount}
+        </div>
+        ${summary}
+        <div class="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-1">
+          ${itemRows}
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
+function renderCoverageSummaryBadge(label: string, count: number, classes: string): string {
+  return `
+    <div class="rounded border px-2 py-1 ${classes}">
+      <div class="font-semibold">${count}</div>
+      <div class="uppercase tracking-wide">${escapeHtml(label)}</div>
+    </div>
+  `;
+}
+
+function coverageStatusBadge(status: PromptCoverageStatus): string {
+  switch (status) {
+    case 'covered':
+      return 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-700 dark:text-emerald-300 dark:bg-emerald-950/40';
+    case 'overconstrained':
+      return 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-700 dark:text-amber-300 dark:bg-amber-950/40';
+    default:
+      return 'border-red-300 text-red-700 bg-red-50 dark:border-red-700 dark:text-red-300 dark:bg-red-950/40';
+  }
 }
 
 function renderBanner(message: BannerMessage | null): string {
