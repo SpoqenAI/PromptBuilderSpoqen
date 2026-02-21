@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [tailwindcss(), mcpRelayPlugin()],
   root: '.',
   envPrefix: ['VITE_', 'NEXT_PUBLIC_'],
+  base: '/builder/',
   build: {
     outDir: 'dist',
   },
