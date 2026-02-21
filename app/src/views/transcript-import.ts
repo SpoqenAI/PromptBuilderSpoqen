@@ -35,8 +35,8 @@ const MIN_TRANSCRIPT_LENGTH = 20;
 const TRANSCRIPT_NODE_MIN_WIDTH = 224;
 const TRANSCRIPT_NODE_HEIGHT = 140;
 const TRANSCRIPT_NODE_DECORATION_WIDTH = 128;
-const TRANSCRIPT_NODE_X_GAP = 120;
-const TRANSCRIPT_NODE_Y_GAP = 170;
+const TRANSCRIPT_NODE_X_GAP = 300;
+const TRANSCRIPT_NODE_Y_GAP = 350;
 const GENERATING_THOUGHT_POOL = [
   'Untangling speaker turns and hidden intents...',
   'Negotiating peace between interruptions and edge cases...',
@@ -199,8 +199,8 @@ export function renderTranscriptImport(container: HTMLElement): void {
           <!-- Main Canvas Area -->
           <div class="flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
             ${generatedFlow
-              ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating, flowRenderState as FlowRenderState)
-              : renderEmptyCanvas(isGenerating, generatingThoughts)}
+          ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating, flowRenderState as FlowRenderState)
+          : renderEmptyCanvas(isGenerating, generatingThoughts)}
             ${isGenerating && generatedFlow ? renderGeneratingOverlay(generatingThoughts) : ''}
           </div>
         </main>

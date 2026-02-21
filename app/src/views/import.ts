@@ -883,10 +883,10 @@ export function renderImport(container: HTMLElement): void {
     );
 
     // Create nodes laid out vertically
-    const NODE_SPACING_X = 300;
+    const NODE_SPACING_X = 600;
     const NODE_START_X = 80;
     const NODE_START_Y = 80;
-    const NODE_SPACING_Y = 200;
+    const NODE_SPACING_Y = 400;
     const NODES_PER_ROW = 3;
 
     const createdNodes: PromptNode[] = [];
