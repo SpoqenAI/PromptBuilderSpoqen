@@ -119,11 +119,11 @@ export function renderDashboard(container: HTMLElement): void {
         </div>
         <div class="flex flex-wrap items-center gap-2 sm:justify-end">
           <div class="flex bg-white dark:bg-slate-800 border border-card-border dark:border-primary/20 rounded-lg p-1">
-            <button id="btn-grid-view" type="button" aria-label="Grid view" aria-pressed="true" class="p-1.5 rounded-md transition-colors bg-primary/10 text-primary">
-              <span class="material-icons-outlined text-sm">grid_view</span>
+            <button id="btn-grid-view" type="button" aria-label="Grid view" aria-pressed="true" class="p-1 rounded-md transition-colors bg-primary/10 text-primary inline-flex items-center justify-center">
+              <span class="material-icons-outlined text-[18px] leading-none">grid_view</span>
             </button>
-            <button id="btn-list-view" type="button" aria-label="List view" aria-pressed="false" class="p-1.5 rounded-md transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700">
-              <span class="material-icons-outlined text-sm">view_list</span>
+            <button id="btn-list-view" type="button" aria-label="List view" aria-pressed="false" class="p-1 rounded-md transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 inline-flex items-center justify-center">
+              <span class="material-icons-outlined text-[18px] leading-none">view_list</span>
             </button>
           </div>
           <button id="btn-import-prompt" class="ui-btn ui-btn-outline !text-sm !py-2">
