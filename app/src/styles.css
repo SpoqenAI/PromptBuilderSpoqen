@@ -2,12 +2,15 @@
 
 /* ── Theme tokens ─────────────────────────────── */
 @theme {
-  --color-primary: #23956F;
+  --color-primary: hsl(160 57% 47%);
+  --color-secondary: hsl(160 42% 38%);
+  --color-accent: hsl(160 65% 54%);
   --color-background-light: #f6f8f7;
-  --color-background-dark: #131f1b;
+  --color-background-dark: hsl(222 24% 4%);
+  --color-card-dark: hsl(222 24% 6%);
   --color-neutral-gray: #6b7c75;
   --color-card-border: #e1e8e5;
-  --font-display: "Inter", sans-serif;
+  --font-display: 'Segoe UI', -apple-system, BlinkMacSystemFont, 'Roboto', Arial, sans-serif;
   --font-mono: "JetBrains Mono", monospace;
   --radius-DEFAULT: 0.125rem;
   --radius-lg: 0.25rem;
@@ -41,8 +44,18 @@ body {
 
 html.dark body {
   background-color: var(--color-background-dark);
-  background-image: radial-gradient(rgba(35, 149, 111, 0.12) 1px, transparent 1px);
+  background-image: radial-gradient(hsl(160 57% 47% / 0.12) 1px, transparent 1px);
   color: #e2e8f0;
+}
+
+html.dark body::before {
+  content: "";
+  position: fixed;
+  inset: -50px;
+  pointer-events: none;
+  z-index: 9999;
+  border: 50px solid hsl(160 57% 47% / 0.08);
+  filter: blur(34px) saturate(110%);
 }
 
 #app {
@@ -113,7 +126,10 @@ label {
 }
 
 html.dark .ui-header {
-  background: color-mix(in srgb, #131f1b 86%, transparent);
+  background: rgba(17, 24, 39, 0.6);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
 }
 
 .ui-header-left,
@@ -294,9 +310,14 @@ body.canvas-sidebar-resizing * {
 }
 
 html.dark .ui-card {
-  border-color: rgba(35, 149, 111, 0.2);
-  background-color: rgba(15, 23, 42, 0.75);
-  box-shadow: 0 10px 24px rgba(2, 6, 23, 0.35);
+  border-color: rgba(255, 255, 255, 0.05);
+  /* subtle 1px translucent borders */
+  background-color: var(--color-card-dark);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+  background: rgba(17, 24, 39, 0.6);
+  /* glassmorphism fallback / mix */
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
 }
 
 .ui-input,
@@ -352,10 +373,12 @@ html.dark .ui-textarea {
 .ui-btn-primary {
   background: var(--color-primary);
   color: white;
+  transition: all 0.2s ease;
 }
 
 .ui-btn-primary:hover:not(:disabled) {
-  filter: brightness(0.96);
+  background: var(--color-secondary);
+  box-shadow: 0 0 20px hsl(160 57% 47% / 0.3);
 }
 
 .ui-btn-outline {
@@ -1015,4 +1038,73 @@ html.dark .theme-toggle {
 html.dark .theme-toggle::after {
   transform: translateX(20px);
   background: #0f172a;
+}
+
+/* ── Custom Brand Animations ───────────────────── */
+.animate-float {
+  animation: float 4s ease-in-out infinite;
+}
+
+.animate-glow-pulse {
+  animation: glow-pulse 3s infinite;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.5s ease-out;
+}
+
+.animate-slide-in-right {
+  animation: slide-in-right 0.5s ease-out;
+}
+
+@keyframes float {
+  0% {
+    transform: translateY(0px);
+  }
+
+  50% {
+    transform: translateY(-10px);
+  }
+
+  100% {
+    transform: translateY(0px);
+  }
+}
+
+@keyframes glow-pulse {
+  0% {
+    box-shadow: 0 0 10px hsl(160 57% 47% / 0.2);
+  }
+
+  50% {
+    box-shadow: 0 0 25px hsl(160 65% 54% / 0.5);
+  }
+
+  100% {
+    box-shadow: 0 0 10px hsl(160 57% 47% / 0.2);
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }

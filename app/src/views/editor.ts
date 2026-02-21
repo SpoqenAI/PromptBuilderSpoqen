@@ -146,7 +146,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
               </button>
               <div class="flex items-center gap-3 min-w-0">
                 <button type="button" class="h-10 w-[min(14rem,42vw)] flex items-center justify-start cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
-                  <img src="/Spoqen(2).svg" alt="Spoqen" class="h-full w-full object-contain object-left" />
+                  <img src="/Spoqen-2.svg" alt="Spoqen" class="h-full w-full object-contain object-left" />
                 </button>
                 <div class="min-w-0">
                   <h1 class="text-sm font-semibold leading-none truncate max-w-[26ch]">${project.name}</h1>

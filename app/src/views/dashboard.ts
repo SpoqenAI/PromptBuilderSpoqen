@@ -60,7 +60,7 @@ export function renderDashboard(container: HTMLElement): void {
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div class="min-h-16 py-3 flex flex-wrap items-center justify-between gap-3">
           <div class="flex items-center gap-2">
-            <img src="/Spoqen(2).svg" alt="Spoqen" class="h-8 w-auto" />
+            <img src="/Spoqen-2.svg" alt="Spoqen" class="h-8 w-auto" />
           </div>
           <div class="hidden lg:flex flex-1 min-w-[16rem] max-w-md mx-4 xl:mx-8">
             <div class="relative w-full">
