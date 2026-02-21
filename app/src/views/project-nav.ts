@@ -29,7 +29,7 @@ export function projectViewTabsHTML(activeView: ProjectView): string {
   const activeSubView: ProjectSubView = activeView === 'diff' ? 'diff' : 'canvas';
 
   return `
-    <div class="flex items-center gap-2">
+    <div class="project-view-tabs flex items-center gap-2">
       <div class="flex items-center bg-slate-100 dark:bg-slate-800 p-1 rounded-lg border border-slate-200 dark:border-slate-700">
         ${SUB_VIEWS.map(({ view, label, icon }) => `
           <button

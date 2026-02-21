@@ -58,11 +58,11 @@ export function renderDashboard(container: HTMLElement): void {
       <!-- Top Navigation Bar -->
       <nav class="sticky top-0 z-50 bg-white/80 dark:bg-background-dark/80 backdrop-blur-md border-b border-card-border dark:border-primary/20">
       <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div class="flex justify-between h-16 items-center">
+        <div class="min-h-16 py-3 flex flex-wrap items-center justify-between gap-3">
           <div class="flex items-center gap-2">
             <img src="/Spoqen(2).svg" alt="Spoqen" class="h-8 w-auto" />
           </div>
-          <div class="hidden md:flex flex-1 max-w-md mx-8">
+          <div class="hidden lg:flex flex-1 min-w-[16rem] max-w-md mx-4 xl:mx-8">
             <div class="relative w-full">
               <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                 <span class="material-icons-outlined text-slate-400 text-sm">search</span>
@@ -70,7 +70,7 @@ export function renderDashboard(container: HTMLElement): void {
               <input id="search-input" class="block w-full pl-10 pr-3 py-2 border border-card-border dark:border-primary/20 rounded-lg bg-background-light dark:bg-background-dark/50 text-sm placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary" placeholder="Search projects by name or model..." type="text" />
             </div>
           </div>
-          <div class="flex items-center gap-4">
+          <div class="flex items-center gap-2 sm:gap-4 flex-wrap justify-end">
             ${themeToggleHTML()}
             <button class="p-2 text-slate-500 hover:text-primary transition-colors">
               <span class="material-icons-outlined">notifications</span>
@@ -117,7 +117,7 @@ export function renderDashboard(container: HTMLElement): void {
           <h1 class="text-2xl font-bold text-slate-900 dark:text-white leading-tight">Project Dashboard</h1>
           <p class="text-neutral-gray dark:text-neutral-gray/80 text-sm mt-1">Manage and orchestrate your node-based AI workflows.</p>
         </div>
-        <div class="flex items-center gap-3">
+        <div class="flex flex-wrap items-center gap-2 sm:justify-end">
           <div class="flex bg-white dark:bg-slate-800 border border-card-border dark:border-primary/20 rounded-lg p-1">
             <button id="btn-grid-view" type="button" aria-label="Grid view" aria-pressed="true" class="p-1.5 rounded-md transition-colors bg-primary/10 text-primary">
               <span class="material-icons-outlined text-sm">grid_view</span>
@@ -126,15 +126,15 @@ export function renderDashboard(container: HTMLElement): void {
               <span class="material-icons-outlined text-sm">view_list</span>
             </button>
           </div>
-          <button id="btn-import-prompt" class="flex items-center gap-2 border border-primary/30 text-primary hover:bg-primary/5 px-4 py-2 rounded-lg font-medium transition-all">
+          <button id="btn-import-prompt" class="ui-btn ui-btn-outline !text-sm !py-2">
             <span class="material-icons-outlined text-sm">file_upload</span>
             <span>Import Prompt</span>
           </button>
-          <button id="btn-import-transcript" class="flex items-center gap-2 border border-primary/30 text-primary hover:bg-primary/5 px-4 py-2 rounded-lg font-medium transition-all">
+          <button id="btn-import-transcript" class="ui-btn ui-btn-outline !text-sm !py-2">
             <span class="material-icons-outlined text-sm">smart_toy</span>
             <span>Import Transcript</span>
           </button>
-          <button id="btn-new-project" class="flex items-center gap-2 bg-primary hover:bg-primary/90 text-white px-4 py-2 rounded-lg font-medium transition-all shadow-sm">
+          <button id="btn-new-project" class="ui-btn ui-btn-primary !text-sm !py-2">
             <span class="material-icons-outlined text-sm">add</span>
             <span>New Project</span>
           </button>

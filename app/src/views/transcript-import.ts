@@ -10,6 +10,7 @@ import {
 } from '../transcript-flow';
 import { persistTranscriptFlowArtifacts } from '../transcript-artifacts';
 import { resolveNodeIcon } from '../node-icons';
+import { buildNodeColorStyles, getAutoNodeColor, readNodeColorMeta, withNodeColorMeta } from '../node-colors';
 
 type LayoutPosition = {
   x: number;
@@ -103,60 +104,61 @@ export function renderTranscriptImport(container: HTMLElement): void {
 
     preserveScrollDuringRender(container, () => {
       container.innerHTML = `
-        <header class="h-14 border-b border-primary/10 flex items-center justify-between px-6 bg-white dark:bg-background-dark/80 z-20">
-          <div class="flex items-center gap-3">
+        <header class="ui-header z-20">
+          <div class="ui-header-left">
             <button type="button" class="w-8 h-8 flex items-center justify-center cursor-pointer rounded" id="nav-home" aria-label="Go to dashboard">
               <img src="/Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
             </button>
-            <div>
+            <div class="min-w-0">
               <h1 class="text-sm font-semibold leading-none">Import Transcript (AI)</h1>
               <span class="text-[10px] text-slate-400 uppercase tracking-wider">Generate a hypothetical call-flow diagram</span>
             </div>
           </div>
-          <div class="flex items-center gap-3">
+          <div class="ui-header-center"></div>
+          <div class="ui-header-right ui-toolbar">
             ${generatedFlow ? `
-              <button id="btn-regenerate-flow" type="button" class="px-3 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors flex items-center gap-2">
+              <button id="btn-regenerate-flow" type="button" class="ui-btn ui-btn-outline">
                 <span class="material-icons text-sm">refresh</span> Regenerate
               </button>
-              <button id="btn-approve-flow" type="button" class="px-3 py-1.5 text-xs font-medium border ${flowApproved ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-700 dark:text-emerald-200 dark:bg-emerald-950/30' : 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-700 dark:text-amber-200 dark:bg-amber-950/30'} rounded transition-colors flex items-center gap-2">
+              <button id="btn-approve-flow" type="button" class="ui-btn border ${flowApproved ? 'border-emerald-300 text-emerald-700 bg-emerald-50 dark:border-emerald-700 dark:text-emerald-200 dark:bg-emerald-950/30' : 'border-amber-300 text-amber-700 bg-amber-50 dark:border-amber-700 dark:text-amber-200 dark:bg-amber-950/30'} transition-colors">
                 <span class="material-icons text-sm">${flowApproved ? 'task_alt' : 'rule'}</span> ${flowApproved ? 'Approved' : 'Approve Flow'}
               </button>
-              <button id="btn-create-flow-project" type="button" class="px-4 py-1.5 text-xs font-medium rounded transition-colors flex items-center gap-2 ${flowApproved ? 'bg-primary text-white hover:bg-primary/90' : 'bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-300 cursor-not-allowed'}" ${flowApproved ? '' : 'disabled'} title="${flowApproved ? 'Create project from reviewed flow' : 'Approve flow before creating project'}">
+              <button id="btn-create-flow-project" type="button" class="ui-btn ${flowApproved ? 'ui-btn-primary' : 'bg-slate-200 text-slate-500 dark:bg-slate-700 dark:text-slate-300 cursor-not-allowed'}" ${flowApproved ? '' : 'disabled'} title="${flowApproved ? 'Create project from reviewed flow' : 'Approve flow before creating project'}">
                 <span class="material-icons text-sm">add_circle</span> Create Project from Flow
               </button>
             ` : ''}
             ${themeToggleHTML()}
-            <button id="btn-back" class="px-3 py-1.5 text-xs font-medium border border-slate-200 dark:border-white/10 text-slate-500 hover:bg-slate-50 dark:hover:bg-white/5 rounded transition-colors">
+            <button id="btn-back" class="ui-btn ui-btn-ghost">
               Back
             </button>
           </div>
         </header>
 
-        <main class="flex-1 min-h-0 flex overflow-hidden">
+        <main class="ui-main ui-stack-lg">
           <!-- Sidebar -->
-          <aside class="w-72 border-r border-primary/10 bg-white dark:bg-background-dark/50 flex flex-col z-10 shrink-0">
-            <div class="flex-1 overflow-y-auto p-4 space-y-3 custom-scrollbar" data-scroll-preserve="transcript-import-sidebar">
+          <aside class="ui-sidebar border-r border-primary/10 bg-white dark:bg-background-dark/50 z-10">
+            <div class="ui-scroll p-4 space-y-3 custom-scrollbar" data-scroll-preserve="transcript-import-sidebar">
               <h2 class="text-sm font-semibold text-slate-900 dark:text-slate-100">Transcript Input</h2>
               <p class="text-xs text-slate-500 dark:text-slate-400">Upload or paste a transcript. AI converts it into a flow graph.</p>
 
               <div>
                 <label for="transcript-project-name" class="block text-xs font-medium text-slate-500 mb-1">Project name</label>
-                <input id="transcript-project-name" value="${esc(projectName)}" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                <input id="transcript-project-name" value="${esc(projectName)}" class="ui-input" />
               </div>
               <div>
                 <label for="transcript-project-model" class="block text-xs font-medium text-slate-500 mb-1">Target model</label>
-                <select id="transcript-project-model" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary">
+                <select id="transcript-project-model" class="ui-select">
                   ${renderModelOptions(projectModel)}
                 </select>
               </div>
               <div class="grid grid-cols-2 gap-2">
                 <div>
                   <label for="transcript-assistant-name" class="block text-xs font-medium text-slate-500 mb-1">Assistant label</label>
-                  <input id="transcript-assistant-name" value="${esc(assistantName)}" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="Assistant" />
+                  <input id="transcript-assistant-name" value="${esc(assistantName)}" class="ui-input" placeholder="Assistant" />
                 </div>
                 <div>
                   <label for="transcript-user-name" class="block text-xs font-medium text-slate-500 mb-1">User label</label>
-                  <input id="transcript-user-name" value="${esc(userName)}" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" placeholder="User" />
+                  <input id="transcript-user-name" value="${esc(userName)}" class="ui-input" placeholder="User" />
                 </div>
               </div>
               <div>
@@ -164,13 +166,13 @@ export function renderTranscriptImport(container: HTMLElement): void {
                   <label for="transcript-text" class="text-xs font-medium text-slate-500">Transcript</label>
                   <span id="transcript-char-count" class="text-[11px] text-slate-400">${transcriptText.length} chars</span>
                 </div>
-                <textarea id="transcript-text" rows="10" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-mono leading-relaxed focus:outline-none focus:ring-1 focus:ring-primary custom-scrollbar" placeholder="Example:\nUser: I need to change my reservation.\nAssistant: Sure, I can help with that...">${esc(transcriptText)}</textarea>
+                <textarea id="transcript-text" rows="10" class="ui-textarea font-mono leading-relaxed custom-scrollbar" placeholder="Example:\nUser: I need to change my reservation.\nAssistant: Sure, I can help with that...">${esc(transcriptText)}</textarea>
                 <div class="mt-2 flex flex-wrap items-center gap-2">
                   <input id="transcript-file" type="file" accept=".txt,.md,.log,.json,.csv,.srt,.vtt" class="hidden" />
-                  <button id="btn-upload-transcript" type="button" class="rounded-lg border border-card-border dark:border-primary/20 px-3 py-1.5 text-xs font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                  <button id="btn-upload-transcript" type="button" class="ui-btn ui-btn-ghost">
                     Upload file
                   </button>
-                  ${transcriptFileName ? `<span class="text-[11px] text-slate-500 truncate max-w-[180px]" title="${esc(transcriptFileName)}">${esc(transcriptFileName)}</span>` : '<span class="text-[11px] text-slate-400">No file</span>'}
+                  ${transcriptFileName ? `<span class="text-[11px] text-slate-500 truncate max-w-[min(12rem,45vw)]" title="${esc(transcriptFileName)}">${esc(transcriptFileName)}</span>` : '<span class="text-[11px] text-slate-400">No file</span>'}
                 </div>
               </div>
 
@@ -178,10 +180,10 @@ export function renderTranscriptImport(container: HTMLElement): void {
               ${persistenceMessage ? `<p class="rounded-lg border px-3 py-2 text-xs ${messageClass(persistenceMessage.tone)}">${esc(persistenceMessage.text)}</p>` : ''}
 
               <div class="flex flex-wrap gap-2 pt-1">
-                <button id="btn-generate-flow" class="flex-1 rounded-lg bg-primary text-white px-4 py-2 text-sm font-semibold hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed" ${canGenerate ? '' : 'disabled'}>
+                <button id="btn-generate-flow" class="flex-1 ui-btn ui-btn-primary !text-sm !py-2 disabled:opacity-50 disabled:cursor-not-allowed" ${canGenerate ? '' : 'disabled'}>
                   ${isGenerating ? 'Generating...' : 'Generate Flow'}
                 </button>
-                <button id="btn-clear-transcript" type="button" class="rounded-lg border border-card-border dark:border-primary/20 px-3 py-2 text-sm font-medium hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
+                <button id="btn-clear-transcript" type="button" class="ui-btn ui-btn-ghost !text-sm !py-2">
                   Clear
                 </button>
               </div>
@@ -197,7 +199,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
           </aside>
 
           <!-- Main Canvas Area -->
-          <div class="flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
+          <div class="ui-pane flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
             ${generatedFlow
           ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating, flowRenderState as FlowRenderState)
           : renderEmptyCanvas(isGenerating, generatingThoughts)}
@@ -678,8 +680,9 @@ export function renderTranscriptImport(container: HTMLElement): void {
     const layout = buildFlowRenderState(generatedFlow, nodePositionOverrides).layout;
     const nodeIdMap = new Map<string, string>();
 
-    for (const generatedNode of generatedFlow.nodes) {
+    for (const [index, generatedNode] of generatedFlow.nodes.entries()) {
       const position = layout[generatedNode.id] ?? { x: 80, y: 80 };
+      const seededColor = readNodeColorMeta(generatedNode.meta) ?? getAutoNodeColor(index);
       const promptNode: PromptNode = {
         id: uid(),
         type: generatedNode.type,
@@ -688,7 +691,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
         x: position.x,
         y: position.y,
         content: generatedNode.content,
-        meta: { ...generatedNode.meta },
+        meta: withNodeColorMeta(generatedNode.meta, seededColor),
       };
 
       store.addNode(project.id, promptNode);
@@ -791,22 +794,25 @@ function renderFlowCanvas(
     .join('');
 
   const nodes = flow.nodes
-    .map((node) => {
+    .map((node, index) => {
       const position = layout[node.id] ?? { x: 80, y: 80 };
       const isSelected = node.id === selectedNode?.id;
       const safeIcon = resolveNodeIcon(node.icon, node.type);
       const displayLabel = node.label.trim().length > 0 ? node.label.trim() : `Step ${shortId(node.id)}`;
       const contentPreview = esc(trimForPreview(node.content, 120));
       const nodeSize = nodeSizes[node.id] ?? defaultNodeSize();
+      const nodeColor = readNodeColorMeta(node.meta) ?? getAutoNodeColor(index);
+      const styles = buildNodeColorStyles(nodeColor);
+      const selectionOutline = isSelected ? `0 0 0 2px ${styles.ring}` : 'none';
 
       return `
-        <div class="canvas-node pointer-events-auto bg-white dark:bg-slate-900 border ${isSelected ? 'border-primary ring-2 ring-primary/30' : 'border-primary/40'} rounded-lg shadow-xl node-glow cursor-pointer"
+        <div class="canvas-node pointer-events-auto bg-white dark:bg-slate-900 border rounded-lg shadow-xl node-glow cursor-pointer"
              data-flow-node-id="${esc(node.id)}"
-             style="left:${position.x}px; top:${position.y}px; width:${nodeSize.width}px;">
-          <div class="node-header bg-primary/10 border-b border-primary/20 p-3 flex items-center justify-between rounded-t-lg cursor-move">
+             style="left:${position.x}px; top:${position.y}px; width:${nodeSize.width}px; border-color:${styles.border}; box-shadow:${selectionOutline};">
+          <div class="node-header p-3 flex items-center justify-between rounded-t-lg cursor-move" style="background:${styles.headerBackground}; border-bottom:1px solid ${styles.headerBorder};">
             <h2 class="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 select-none min-w-0">
-              <span class="material-icons text-sm text-primary shrink-0 w-4 overflow-hidden text-center">${safeIcon}</span>
-              <span class="block whitespace-nowrap" title="${esc(displayLabel)}">${esc(displayLabel)}</span>
+              <span class="material-icons text-sm shrink-0 w-4 overflow-hidden text-center" style="color:${styles.icon};">${safeIcon}</span>
+              <span class="block truncate" title="${esc(displayLabel)}">${esc(displayLabel)}</span>
             </h2>
           </div>
           <div class="relative">
@@ -814,8 +820,8 @@ function renderFlowCanvas(
               ${contentPreview}
             </div>
           </div>
-          <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center rounded-b-lg border-t border-primary/10">
-            <span class="text-[9px] text-primary/60 font-mono">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
+          <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center rounded-b-lg border-t" style="border-top-color:${styles.footerBorder};">
+            <span class="text-[9px] font-mono" style="color:${styles.tokenText};">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
           </div>
         </div>
       `;
@@ -823,7 +829,7 @@ function renderFlowCanvas(
     .join('');
 
   const detailPanel = selectedNode ? `
-    <div class="absolute top-4 right-4 w-80 bg-white dark:bg-slate-900 border border-primary/20 rounded-xl shadow-2xl z-20 max-h-[calc(100%-2rem)] flex flex-col">
+    <div class="absolute top-4 right-4 w-[min(22rem,calc(100vw-2rem))] bg-white dark:bg-slate-900 border border-primary/20 rounded-xl shadow-2xl z-20 max-h-[calc(100%-2rem)] flex flex-col">
       <div class="flex items-center justify-between p-3 border-b border-primary/10">
         <div class="flex items-center gap-2 min-w-0">
           <span class="material-icons text-sm text-primary shrink-0 w-4 overflow-hidden text-center">${resolveNodeIcon(selectedNode.icon, selectedNode.type)}</span>
@@ -846,7 +852,7 @@ function renderFlowCanvas(
   ` : '';
 
   const infoBar = `
-    <div class="absolute top-4 left-6 flex items-center gap-2 text-xs font-medium text-slate-400 bg-white/80 dark:bg-background-dark/80 px-3 py-1.5 rounded-full border border-primary/10 shadow-sm z-10">
+    <div class="absolute top-4 left-4 right-4 sm:right-auto sm:max-w-[min(90vw,60rem)] flex items-center gap-2 overflow-x-auto whitespace-nowrap custom-scrollbar text-xs font-medium text-slate-400 bg-white/80 dark:bg-background-dark/80 px-3 py-1.5 rounded-full border border-primary/10 shadow-sm z-10">
       <span class="text-slate-800 dark:text-slate-200">${esc(flow.title)}</span>
       <span class="text-[10px]">|</span>
       <span>${esc(flow.model)}</span>
@@ -867,7 +873,7 @@ function renderFlowCanvas(
   `;
 
   const fallbackBanner = flow.usedFallback
-    ? `<div class="absolute bottom-4 left-6 rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-200 z-10">${esc(flow.warning ?? 'AI unavailable, using deterministic fallback.')}</div>`
+    ? `<div class="absolute bottom-4 left-4 right-4 sm:right-auto sm:max-w-[min(90vw,36rem)] rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-200 z-10">${esc(flow.warning ?? 'AI unavailable, using deterministic fallback.')}</div>`
     : '';
 
   return `

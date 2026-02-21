@@ -965,6 +965,13 @@ class Store {
     return this.saveVersion(projectId, assembled, notes, snapshot);
   }
 
+  saveCurrentState(projectId: string, mode: PromptAssemblyMode = 'runtime'): PromptVersion | null {
+    const p = this.getProject(projectId);
+    if (!p) return null;
+    const nextSnapshotNumber = p.versions.length + 1;
+    return this.saveAssembledVersion(projectId, `Snapshot ${nextSnapshotNumber}`, mode);
+  }
+
   getVersions(projectId: string): PromptVersion[] {
     return this.getProject(projectId)?.versions ?? [];
   }

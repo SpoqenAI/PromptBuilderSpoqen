@@ -1,18 +1,5 @@
 
 import { computeDiff, toSideBySideHTML } from '../diff';
-import {
-  clearGitHubPromptSyncConfig,
-  createGitHubConnectUrl,
-  disconnectGitHubConnection,
-  getGitHubConnectionStatus,
-  loadGitHubPromptSyncConfig,
-  normalizeGitHubPromptSyncConfig,
-  readPromptFileFromGitHub,
-  saveGitHubPromptSyncConfig,
-  upsertPromptFileToGitHub,
-  type GitHubConnectionStatus,
-  type GitHubPromptSyncConfig,
-} from '../github';
 import type { Connection, PromptGraphSnapshot, PromptNode } from '../models';
 import { router } from '../router';
 import { store } from '../store';
@@ -35,14 +22,6 @@ interface BannerMessage {
   text: string;
 }
 
-interface GitHubDraft {
-  owner: string;
-  repo: string;
-  branch: string;
-  filePath: string;
-  commitMessage: string;
-}
-
 interface GraphDiffResult {
   oldStatusById: Map<string, NodeDiffStatus>;
   newStatusById: Map<string, NodeDiffStatus>;
@@ -61,12 +40,6 @@ interface GraphViewportState {
   panY: number;
   zoom: number;
 }
-
-const EMPTY_CONNECTION_STATUS: GitHubConnectionStatus = {
-  connected: false,
-  accountLogin: '',
-  accountType: '',
-};
 
 const EMPTY_GRAPH_DIFF: GraphDiffResult = {
   oldStatusById: new Map(),
@@ -96,26 +69,12 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
     return;
   }
 
-  const savedConfig = loadGitHubPromptSyncConfig(projectId);
-  let githubDraft: GitHubDraft = {
-    owner: savedConfig?.owner ?? '',
-    repo: savedConfig?.repo ?? '',
-    branch: savedConfig?.branch ?? 'main',
-    filePath: savedConfig?.filePath ?? 'prompt.md',
-    commitMessage: defaultCommitMessage(project.name),
-  };
-
   let leftIdx = 0;
   let rightIdx = 0;
   let selectedNodeId: string | null = null;
   let pendingNodeSync = false;
 
   let snapshotMessage: BannerMessage | null = null;
-  let githubMessage: BannerMessage | null = null;
-  let githubBusy = false;
-  let connectionStatus = EMPTY_CONNECTION_STATUS;
-  let connectionStatusLoaded = false;
-  let connectionStatusBusy = false;
   let transcriptSetOptions: TranscriptSetOption[] = [];
   let transcriptSetsLoaded = false;
   let transcriptSetsBusy = false;
@@ -145,37 +104,6 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
   };
 
   selectLatestPair();
-
-  const readFieldValue = (selector: string): string => {
-    const field = container.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(selector);
-    return field?.value.trim() ?? '';
-  };
-
-  const syncGitHubDraftFromForm = (): void => {
-    githubDraft = {
-      owner: readFieldValue('#gh-owner'),
-      repo: readFieldValue('#gh-repo'),
-      branch: readFieldValue('#gh-branch') || 'main',
-      filePath: readFieldValue('#gh-path'),
-      commitMessage: readFieldValue('#gh-commit-message') || defaultCommitMessage(project.name),
-    };
-  };
-
-  const refreshConnectionStatus = async (): Promise<void> => {
-    connectionStatusBusy = true;
-    render();
-    try {
-      connectionStatus = await getGitHubConnectionStatus();
-      connectionStatusLoaded = true;
-    } catch (err) {
-      connectionStatus = EMPTY_CONNECTION_STATUS;
-      connectionStatusLoaded = true;
-      githubMessage = { tone: 'error', text: toErrorMessage(err) };
-    } finally {
-      connectionStatusBusy = false;
-      render();
-    }
-  };
 
   const refreshTranscriptSets = async (): Promise<void> => {
     transcriptSetsBusy = true;
@@ -239,15 +167,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
       .slice(Math.max(versions.length - 10, 0))
       .reverse();
 
-    const githubOpsDisabled = githubBusy || connectionStatusBusy || !connectionStatus.connected;
-    const graphPaneHeightClass = nodeDiffCollapsed ? 'min-h-[720px]' : 'min-h-[560px]';
-    const connectionLabel = connectionStatusBusy
-      ? 'Checking GitHub connection...'
-      : connectionStatus.connected
-        ? `Connected as ${connectionStatus.accountLogin || 'GitHub user'}`
-        : connectionStatusLoaded
-          ? 'Not connected'
-          : 'Connection not loaded';
+    const graphPaneHeightClass = nodeDiffCollapsed ? 'min-h-[clamp(24rem,52vh,45rem)]' : 'min-h-[clamp(20rem,42vh,35rem)]';
     const selectedTranscriptSet = transcriptSetOptions.find((option) => option.id === selectedTranscriptSetId) ?? null;
     const alignmentRunDisabled = alignmentBusy || transcriptSetsBusy || !selectedTranscriptSetId;
     const scopedAlignmentResult = alignmentResult && alignmentResult.transcriptSetId === selectedTranscriptSetId
@@ -263,35 +183,34 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
 
     preserveScrollDuringRender(container, () => {
       container.innerHTML = `
-      <header class="h-14 border-b border-primary/10 bg-white dark:bg-background-dark relative flex items-center px-4 z-30">
-        <div class="flex items-center gap-2">
+      <header class="ui-header z-30">
+        <div class="ui-header-left">
           <button type="button" class="w-8 h-8 flex items-center justify-center cursor-pointer rounded" id="nav-home" aria-label="Go to dashboard">
             <img src="/Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
           </button>
-          <div>
-            <h1 class="text-sm font-semibold leading-none">${escapeHtml(project.name)}</h1>
+          <div class="min-w-0">
+            <h1 class="text-sm font-semibold leading-none truncate max-w-[30ch]">${escapeHtml(project.name)}</h1>
             <span class="text-[10px] text-slate-400 uppercase tracking-wider">Graph Diff</span>
           </div>
         </div>
-        <div class="absolute left-1/2 -translate-x-1/2">
+        <div class="ui-header-center">
           ${projectViewTabsHTML('diff')}
         </div>
-        <div class="ml-auto flex items-center gap-3">
+        <div class="ui-header-right ui-toolbar">
           ${themeToggleHTML()}
-          <button id="btn-back" class="flex items-center gap-2 px-3 py-1.5 text-sm font-medium border border-primary/20 rounded text-primary hover:bg-primary/5 transition-colors">
+          <button id="btn-back" class="ui-btn ui-btn-outline">
             <span class="material-icons text-sm">arrow_back</span>
             Back to Canvas
           </button>
         </div>
       </header>
 
-      <main class="flex-1 flex overflow-x-hidden overflow-y-auto" data-scroll-preserve="diff-main">
-        <section class="flex-1 flex flex-col">
+      <main class="ui-main ui-stack-lg" data-scroll-preserve="diff-main">
+        <section class="ui-pane flex-1 flex flex-col overflow-y-auto custom-scrollbar">
           <div class="px-4 py-3 border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 flex flex-wrap items-center gap-2">
             <button id="btn-save-snapshot" class="px-3 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors">
-              Save Snapshot
+              Save Current State
             </button>
-            <input id="snapshot-note" type="text" class="min-w-[240px] flex-1 px-3 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800" placeholder="Snapshot note (optional)" />
             <button id="btn-compare-latest" class="px-3 py-1.5 text-xs font-medium border border-slate-200 dark:border-slate-700 rounded hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
               Compare Latest
             </button>
@@ -315,7 +234,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                   <select id="select-left" class="text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 focus:ring-1 focus:ring-primary outline-none">
                     ${versions.map((version, index) => `
                       <option value="${index}" ${index === leftIdx ? 'selected' : ''}>
-                        ${escapeHtml(formatVersionLabel(version.timestamp, version.notes))}
+                        ${escapeHtml(formatVersionLabel(index, versions.length, version.timestamp))}
                       </option>
                     `).join('')}
                   </select>
@@ -326,7 +245,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                   <select id="select-right" class="text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-2 py-1.5 focus:ring-1 focus:ring-primary outline-none">
                     ${versions.map((version, index) => `
                       <option value="${index}" ${index === rightIdx ? 'selected' : ''}>
-                        ${escapeHtml(formatVersionLabel(version.timestamp, version.notes))}
+                        ${escapeHtml(formatVersionLabel(index, versions.length, version.timestamp))}
                       </option>
                     `).join('')}
                   </select>
@@ -343,7 +262,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
 
             ${hasLegacySnapshotGap ? `
               <p class="mx-4 mt-3 rounded border border-amber-300 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-100 px-3 py-2 text-xs">
-                One of these versions is missing graph snapshot data. Save a new snapshot to enable full graph-to-graph comparison.
+                One of these versions is missing graph snapshot data. Save current state to enable full graph-to-graph comparison.
               </p>
             ` : ''}
 
@@ -381,7 +300,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                     Text diff is collapsed. Expand to compare node content.
                   </div>
                 ` : selectedNodeId ? `
-                  <div class="grid grid-cols-1 xl:grid-cols-2 h-[400px]">
+                  <div class="grid grid-cols-1 xl:grid-cols-2 h-[min(50vh,28rem)] min-h-[16rem]">
                     <div class="border-r border-slate-200 dark:border-slate-700 overflow-auto custom-scrollbar">
                       <div class="px-2 py-1 border-b border-slate-100 dark:border-slate-800 bg-red-50 dark:bg-red-900/10 text-xs font-medium text-slate-500 sticky top-0">
                         <span class="text-red-500 font-bold">OLD NODE</span>
@@ -399,7 +318,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
           ? '<p class="px-3 py-2 border-t border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">Node content is unchanged. Highlighting is from label/type/icon/meta/connection changes.</p>'
           : ''}
                 ` : `
-                  <div class="h-[260px] flex items-center justify-center text-center px-6">
+                  <div class="h-[min(32vh,16rem)] min-h-[10rem] flex items-center justify-center text-center px-6">
                     <p class="text-sm text-slate-500 dark:text-slate-400">Select a highlighted node in either graph to compare node content side-by-side.</p>
                   </div>
                 `}
@@ -410,14 +329,14 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
               <span class="material-icons text-6xl text-slate-300">difference</span>
               <h2 class="text-xl font-bold text-slate-600 dark:text-slate-300">Need at least 2 snapshots</h2>
               <p class="text-sm text-slate-400 max-w-md">
-                Save a snapshot of the current graph and prompt, make changes in Canvas or Editor, then save another snapshot to compare graph evolution over time.
+                Save current state at least twice to compare how your flow changed over time.
               </p>
             </div>
           `}
         </section>
 
         ${sidebarCollapsed ? '' : `
-        <aside class="w-[360px] shrink-0 border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/70 transition-[width] duration-200 ease-out max-h-[calc(100vh-56px)] flex flex-col">
+        <aside class="ui-sidebar ui-sidebar-wide border-l border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900/70 transition-[width] duration-200 ease-out">
           <div class="px-2 py-2 border-b border-slate-200 dark:border-slate-800 flex justify-end">
             <button
               id="btn-toggle-sidebar-rail"
@@ -428,7 +347,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
               <span class="material-icons text-sm">chevron_right</span>
             </button>
           </div>
-          <div class="p-4 space-y-6 overflow-y-auto custom-scrollbar" data-scroll-preserve="diff-sidebar">
+          <div class="p-4 space-y-6 ui-scroll custom-scrollbar" data-scroll-preserve="diff-sidebar">
               <section class="space-y-3">
                 <div>
                   <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Snapshot History</h2>
@@ -437,8 +356,8 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                 <div class="space-y-2 max-h-56 overflow-y-auto custom-scrollbar pr-1">
                   ${recentVersions.length > 0 ? recentVersions.map(({ version, index }) => `
                     <div class="rounded-lg border border-slate-200 dark:border-slate-700 p-2">
-                      <p class="text-[11px] font-medium text-slate-700 dark:text-slate-200">${escapeHtml(formatDate(version.timestamp))}</p>
-                      <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">${escapeHtml(version.notes || 'Snapshot')}</p>
+                      <p class="text-[11px] font-medium text-slate-700 dark:text-slate-200">${escapeHtml(formatSnapshotId(index, versions.length))}</p>
+                      <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5 line-clamp-2">${escapeHtml(formatDate(version.timestamp))}</p>
                       <div class="mt-2 flex gap-2">
                         <button class="version-select px-2 py-1 text-[11px] rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" data-role="left" data-index="${index}">Use as Old</button>
                         <button class="version-select px-2 py-1 text-[11px] rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800" data-role="right" data-index="${index}">Use as New</button>
@@ -484,67 +403,12 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                 alignmentMessage,
                 alignmentResult: scopedAlignmentResult,
               })}
-
-              <section class="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
-                <div>
-                  <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">GitHub Prompt File Sync</h2>
-                  <p class="text-xs text-slate-500 dark:text-slate-400">OAuth connection + server-side GitHub App token. Only your configured prompt file is synced.</p>
-                </div>
-
-                ${renderBanner(githubMessage)}
-
-                <div class="rounded border border-slate-200 dark:border-slate-700 px-3 py-2 text-xs">
-                  <p class="font-medium text-slate-700 dark:text-slate-200">${escapeHtml(connectionLabel)}</p>
-                  ${connectionStatus.connected && connectionStatus.accountType
-          ? `<p class="mt-0.5 text-slate-500 dark:text-slate-400">${escapeHtml(connectionStatus.accountType)}</p>`
-          : ''}
-                </div>
-
-                <div class="grid grid-cols-2 gap-2">
-                  ${connectionStatus.connected ? `
-                    <button id="btn-gh-disconnect" class="col-span-2 px-2 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors disabled:opacity-60" ${connectionStatusBusy || githubBusy ? 'disabled' : ''}>
-                      Disconnect GitHub
-                    </button>
-                  ` : `
-                    <button id="btn-gh-connect" class="col-span-2 px-2 py-1.5 text-xs rounded bg-slate-900 text-white hover:bg-slate-800 transition-colors disabled:opacity-60" ${connectionStatusBusy || githubBusy ? 'disabled' : ''}>
-                      Connect GitHub
-                    </button>
-                  `}
-                </div>
-
-                <div class="space-y-2">
-                  <div class="grid grid-cols-2 gap-2">
-                    <input id="gh-owner" class="w-full rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-800" placeholder="Owner" value="${escapeHtml(githubDraft.owner)}" />
-                    <input id="gh-repo" class="w-full rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-800" placeholder="Repository" value="${escapeHtml(githubDraft.repo)}" />
-                  </div>
-                  <div class="grid grid-cols-2 gap-2">
-                    <input id="gh-branch" class="w-full rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-800" placeholder="Branch" value="${escapeHtml(githubDraft.branch)}" />
-                    <input id="gh-path" class="w-full rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-800" placeholder="prompt file path" value="${escapeHtml(githubDraft.filePath)}" />
-                  </div>
-                  <input id="gh-commit-message" class="w-full rounded border border-slate-200 dark:border-slate-700 px-2 py-1.5 text-xs bg-slate-50 dark:bg-slate-800" placeholder="Commit message" value="${escapeHtml(githubDraft.commitMessage)}" />
-                </div>
-
-                <div class="grid grid-cols-2 gap-2">
-                  <button id="btn-gh-save" class="px-2 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" ${githubBusy ? 'disabled' : ''}>Save Settings</button>
-                  <button id="btn-gh-clear" class="px-2 py-1.5 text-xs rounded border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors" ${githubBusy ? 'disabled' : ''}>Clear Settings</button>
-                </div>
-
-                <div class="grid grid-cols-2 gap-2">
-                  <button id="btn-gh-pull" class="px-2 py-1.5 text-xs rounded bg-slate-900 text-white hover:bg-slate-800 transition-colors disabled:opacity-60" ${githubOpsDisabled ? 'disabled' : ''}>Pull to Snapshot</button>
-                  <button id="btn-gh-push" class="px-2 py-1.5 text-xs rounded bg-primary text-white hover:bg-primary/90 transition-colors disabled:opacity-60" ${githubOpsDisabled ? 'disabled' : ''}>Push Current Prompt</button>
-                </div>
-              </section>
           </div>
         </aside>
         `}
       </main>
       `;
     });
-
-    const snapshotNoteInput = container.querySelector<HTMLInputElement>('#snapshot-note');
-    if (snapshotNoteInput) {
-      snapshotNoteInput.value = '';
-    }
 
     container.querySelector('#nav-home')?.addEventListener('click', () => {
       disposeViewportListeners();
@@ -603,13 +467,12 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
     }
 
     container.querySelector('#btn-save-snapshot')?.addEventListener('click', () => {
-      const notes = readFieldValue('#snapshot-note') || 'Manual snapshot';
-      const version = store.saveAssembledVersion(projectId, notes);
+      const version = store.saveCurrentState(projectId);
       if (version) {
         selectLatestPair();
-        snapshotMessage = { tone: 'success', text: 'Snapshot saved.' };
+        snapshotMessage = { tone: 'success', text: 'Current state saved.' };
       } else {
-        snapshotMessage = { tone: 'info', text: 'No graph or prompt changes since the latest snapshot.' };
+        snapshotMessage = { tone: 'info', text: 'No graph or prompt changes since the latest saved state.' };
       }
       render();
     });
@@ -701,153 +564,10 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
       })();
     });
 
-    container.querySelector('#btn-gh-connect')?.addEventListener('click', () => {
-      void (async () => {
-        githubBusy = true;
-        githubMessage = null;
-        render();
-
-        try {
-          const connectUrl = await createGitHubConnectUrl(window.location.href);
-          window.location.assign(connectUrl);
-        } catch (err) {
-          githubBusy = false;
-          githubMessage = { tone: 'error', text: toErrorMessage(err) };
-          render();
-        }
-      })();
-    });
-
-    container.querySelector('#btn-gh-disconnect')?.addEventListener('click', () => {
-      void (async () => {
-        githubBusy = true;
-        githubMessage = null;
-        render();
-
-        try {
-          await disconnectGitHubConnection();
-          connectionStatus = EMPTY_CONNECTION_STATUS;
-          connectionStatusLoaded = true;
-          githubMessage = { tone: 'info', text: 'GitHub disconnected.' };
-        } catch (err) {
-          githubMessage = { tone: 'error', text: toErrorMessage(err) };
-        } finally {
-          githubBusy = false;
-          render();
-        }
-      })();
-    });
-
-    container.querySelector('#btn-gh-save')?.addEventListener('click', () => {
-      syncGitHubDraftFromForm();
-      try {
-        const config = normalizeGitHubPromptSyncConfig(githubDraft);
-        saveGitHubPromptSyncConfig(projectId, config);
-        githubMessage = { tone: 'success', text: 'GitHub prompt sync settings saved.' };
-      } catch (err) {
-        githubMessage = { tone: 'error', text: toErrorMessage(err) };
-      }
-      render();
-    });
-
-    container.querySelector('#btn-gh-clear')?.addEventListener('click', () => {
-      clearGitHubPromptSyncConfig(projectId);
-      githubDraft = {
-        owner: '',
-        repo: '',
-        branch: 'main',
-        filePath: 'prompt.md',
-        commitMessage: defaultCommitMessage(project.name),
-      };
-      githubMessage = { tone: 'info', text: 'GitHub prompt sync settings cleared.' };
-      render();
-    });
-
-    container.querySelector('#btn-gh-pull')?.addEventListener('click', () => {
-      void (async () => {
-        syncGitHubDraftFromForm();
-        let config: GitHubPromptSyncConfig;
-        try {
-          config = normalizeGitHubPromptSyncConfig(githubDraft);
-        } catch (err) {
-          githubMessage = { tone: 'error', text: toErrorMessage(err) };
-          render();
-          return;
-        }
-
-        githubBusy = true;
-        githubMessage = null;
-        render();
-
-        try {
-          const file = await readPromptFileFromGitHub(config);
-          const latestVersion = store.getVersions(projectId).at(-1);
-          if (latestVersion && latestVersion.content === file.content) {
-            githubMessage = { tone: 'info', text: 'Pulled file matches the latest snapshot. No new snapshot created.' };
-          } else {
-            store.saveVersion(projectId, file.content, `GitHub pull: ${config.owner}/${config.repo}:${config.filePath}`);
-            selectLatestPair();
-            selectedNodeId = null;
-            githubMessage = { tone: 'success', text: 'Prompt file pulled and saved as a snapshot.' };
-          }
-          saveGitHubPromptSyncConfig(projectId, config);
-        } catch (err) {
-          githubMessage = { tone: 'error', text: toErrorMessage(err) };
-        } finally {
-          githubBusy = false;
-          render();
-        }
-      })();
-    });
-
-    container.querySelector('#btn-gh-push')?.addEventListener('click', () => {
-      void (async () => {
-        syncGitHubDraftFromForm();
-        let config: GitHubPromptSyncConfig;
-        try {
-          config = normalizeGitHubPromptSyncConfig(githubDraft);
-        } catch (err) {
-          githubMessage = { tone: 'error', text: toErrorMessage(err) };
-          render();
-          return;
-        }
-
-        const assembled = store.assemblePrompt(projectId, 'runtime');
-        if (!assembled.trim()) {
-          githubMessage = { tone: 'error', text: 'Current runtime prompt is empty.' };
-          render();
-          return;
-        }
-
-        githubBusy = true;
-        githubMessage = null;
-        render();
-
-        try {
-          const commitMessage = githubDraft.commitMessage || defaultCommitMessage(project.name);
-          const result = await upsertPromptFileToGitHub(config, assembled, commitMessage);
-          store.saveAssembledVersion(projectId, `GitHub push: ${config.owner}/${config.repo}:${config.filePath}`);
-          selectLatestPair();
-          selectedNodeId = null;
-          saveGitHubPromptSyncConfig(projectId, config);
-          githubMessage = {
-            tone: 'success',
-            text: `Prompt pushed to GitHub. Commit ${result.commitSha.slice(0, 7)}.`,
-          };
-        } catch (err) {
-          githubMessage = { tone: 'error', text: toErrorMessage(err) };
-        } finally {
-          githubBusy = false;
-          render();
-        }
-      })();
-    });
-
     wireThemeToggle(container);
   };
 
   render();
-  void refreshConnectionStatus();
   void refreshTranscriptSets();
 }
 
@@ -1442,14 +1162,14 @@ function formatDate(timestamp: number): string {
   });
 }
 
-function formatVersionLabel(timestamp: number, notes: string): string {
-  const note = notes.trim() || 'Snapshot';
-  return `${formatDate(timestamp)} - ${note}`;
+function formatSnapshotId(index: number, totalVersions: number): string {
+  const snapshotNumber = index + 1;
+  const padded = String(snapshotNumber).padStart(Math.max(2, String(totalVersions).length), '0');
+  return `Snapshot ${padded}`;
 }
 
-function defaultCommitMessage(projectName: string): string {
-  const now = new Date().toISOString().slice(0, 16).replace('T', ' ');
-  return `Update ${projectName} prompt (${now} UTC)`;
+function formatVersionLabel(index: number, totalVersions: number, timestamp: number): string {
+  return `${formatSnapshotId(index, totalVersions)} - ${formatDate(timestamp)}`;
 }
 
 function loadSidebarCollapsedState(): boolean {

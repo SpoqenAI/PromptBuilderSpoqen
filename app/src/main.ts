@@ -18,7 +18,7 @@ import { getCurrentUser, isOnboardingComplete } from './auth';
 applyTheme();
 
 const app = document.getElementById('app')!;
-app.className = 'flex flex-col h-screen overflow-hidden';
+app.className = 'ui-shell';
 
 function upsertPersistenceBanner(detail: StoreRemoteErrorEventDetail | null = null): void {
   const status = detail ?? { context: 'status', ...store.getPersistenceStatus() };

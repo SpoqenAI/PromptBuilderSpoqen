@@ -195,11 +195,11 @@ const FLOW_JSON_SCHEMA: Record<string, unknown> = {
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { headers: corsHeaders(req) });
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse(405, { error: 'Method not allowed.' });
+    return jsonResponse(405, { error: 'Method not allowed.' }, req);
   }
 
   try {
@@ -252,14 +252,14 @@ serve(async (req: Request) => {
       model,
       usedFallback,
       warning,
-    });
+    }, req);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const normalized = message.toLowerCase();
     const status = normalized.includes('unauthorized') ? 401 : 400;
     return jsonResponse(status, {
       error: message,
-    });
+    }, req);
   }
 });
 

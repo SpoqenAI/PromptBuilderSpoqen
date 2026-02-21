@@ -9,11 +9,11 @@ interface ConnectUrlBody {
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { headers: corsHeaders(req) });
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse(405, { error: 'Method not allowed.' });
+    return jsonResponse(405, { error: 'Method not allowed.' }, req);
   }
 
   try {
@@ -41,11 +41,11 @@ serve(async (req: Request) => {
 
     const appSlug = getGitHubAppSlug();
     const connectUrl = `https://github.com/apps/${encodeURIComponent(appSlug)}/installations/new?state=${encodeURIComponent(state)}`;
-    return jsonResponse(200, { url: connectUrl });
+    return jsonResponse(200, { url: connectUrl }, req);
   } catch (err) {
     return jsonResponse(400, {
       error: err instanceof Error ? err.message : String(err),
-    });
+    }, req);
   }
 });
 

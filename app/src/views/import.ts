@@ -11,6 +11,7 @@ import { router } from '../router';
 import { BLOCK_PALETTE, PromptNode, uid, type EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { preserveScrollDuringRender } from '../view-state';
+import { getAutoNodeColor, rgbaFromHex, withNodeColorMeta } from '../node-colors';
 
 /* ── Types ────────────────────────────────────── */
 
@@ -37,19 +38,12 @@ const SECTION_ICON_OPTIONS = Array.from(new Set<string>([
 
 /* ── Color palette for section highlighting ───── */
 
-const SECTION_COLORS = [
-  { bg: 'rgba(35, 149, 111, 0.12)', border: '#23956F' },
-  { bg: 'rgba(59, 130, 246, 0.12)', border: '#3B82F6' },
-  { bg: 'rgba(139, 92, 246, 0.12)', border: '#8B5CF6' },
-  { bg: 'rgba(245, 158, 11, 0.12)', border: '#F59E0B' },
-  { bg: 'rgba(236, 72, 153, 0.12)', border: '#EC4899' },
-  { bg: 'rgba(20, 184, 166, 0.12)', border: '#14B8A6' },
-  { bg: 'rgba(239, 68, 68, 0.12)', border: '#EF4444' },
-  { bg: 'rgba(99, 102, 241, 0.12)', border: '#6366F1' },
-];
-
 function getColor(index: number) {
-  return SECTION_COLORS[index % SECTION_COLORS.length];
+  const border = getAutoNodeColor(index);
+  return {
+    border,
+    bg: rgbaFromHex(border, 0.12),
+  };
 }
 
 /* ── Escape helper ────────────────────────────── */
@@ -907,7 +901,7 @@ export function renderImport(container: HTMLElement): void {
         x: NODE_START_X + col * NODE_SPACING_X,
         y: NODE_START_Y + row * NODE_SPACING_Y,
         content,
-        meta: {},
+        meta: withNodeColorMeta({}, getAutoNodeColor(i)),
       };
 
       store.addNode(project.id, node);

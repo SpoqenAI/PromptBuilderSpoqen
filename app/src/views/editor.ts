@@ -9,6 +9,15 @@ import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { preserveScrollDuringRender } from '../view-state';
 import { projectViewTabsHTML, wireEscapeToCanvas, wireProjectViewTabs } from './project-nav';
 import { customPrompt } from '../dialogs';
+import {
+  buildNodeColorStyles,
+  DEFAULT_NODE_COLOR,
+  getAutoNodeColor,
+  NODE_AUTO_COLORS,
+  normalizeNodeColor,
+  readNodeColorMeta,
+  withNodeColorMeta,
+} from '../node-colors';
 
 const NODE_ICON_SUGGESTIONS = [
   'psychology',
@@ -83,19 +92,33 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
   let editorFormat: EditorFormat = 'markdown';
   let currentContent = normalizeLineEndings(node.content);
   let currentIcon = normalizeIconName(node.icon) || 'widgets';
+  let currentNodeColor = readNodeColorMeta(node.meta) ?? DEFAULT_NODE_COLOR;
 
   const persistDraft = (): void => {
     const labelInput = container.querySelector<HTMLInputElement>('#prop-label');
-    const iconInput = container.querySelector<HTMLInputElement>('#prop-icon');
+    const iconInput = container.querySelector<HTMLSelectElement>('#prop-icon');
+    const colorInput = container.querySelector<HTMLInputElement>('#prop-node-color');
     const nextLabel = labelInput?.value.trim() || node.label;
     const nextIcon = normalizeIconName(iconInput?.value ?? currentIcon) || 'widgets';
-    store.updateNode(projectId, nodeId, { content: currentContent, label: nextLabel, icon: nextIcon });
+    const nextColor = normalizeNodeColor(colorInput?.value ?? currentNodeColor) ?? DEFAULT_NODE_COLOR;
+    const nextMeta = withNodeColorMeta(node.meta, nextColor);
+    store.updateNode(projectId, nodeId, {
+      content: currentContent,
+      label: nextLabel,
+      icon: nextIcon,
+      meta: nextMeta,
+    });
     node.content = currentContent;
     node.label = nextLabel;
     node.icon = nextIcon;
+    node.meta = nextMeta;
     currentIcon = nextIcon;
+    currentNodeColor = nextColor;
     if (iconInput) {
       iconInput.value = nextIcon;
+    }
+    if (colorInput) {
+      colorInput.value = nextColor;
     }
   };
 
@@ -106,63 +129,67 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
 
   function render(): void {
     const tokenCount = countTokens(currentContent);
+    const previewColor = normalizeNodeColor(currentNodeColor) ?? DEFAULT_NODE_COLOR;
+    const previewStyles = buildNodeColorStyles(previewColor);
+    const colorPalette = [previewColor, ...NODE_AUTO_COLORS.filter((value) => value !== previewColor)];
 
     preserveScrollDuringRender(container, () => {
       container.innerHTML = `
-      <div id="editor-overlay" class="fixed inset-0 z-[900] bg-slate-950/35 backdrop-blur-sm flex items-center justify-center p-4">
-        <div id="editor-modal" class="w-full max-w-[1800px] h-[95vh] bg-white dark:bg-background-dark rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col">
+      <div id="editor-overlay" class="fixed inset-0 z-[900] bg-slate-950/35 backdrop-blur-sm flex items-center justify-center p-3 sm:p-4">
+        <div id="editor-modal" class="w-full max-w-[1800px] h-[min(95dvh,1100px)] min-h-[26rem] bg-white dark:bg-background-dark rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xl overflow-hidden flex flex-col">
           <!-- Top Navigation Bar -->
-          <header class="h-14 border-b border-primary/10 bg-white/95 dark:bg-background-dark/95 flex items-center justify-between px-4 z-30">
-            <div class="flex items-center gap-4">
-              <button id="btn-back-canvas" class="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-semibold border border-primary/20 rounded-md text-primary hover:bg-primary/5 transition-colors">
+          <header class="ui-header z-30">
+            <div class="ui-header-left">
+              <button id="btn-back-canvas" class="ui-btn ui-btn-outline">
                 <span class="material-icons text-sm">arrow_back</span>
                 Canvas
               </button>
-              <div class="flex items-center gap-3 shrink-0">
-                <button type="button" class="h-12 w-[220px] flex items-center justify-start cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
+              <div class="flex items-center gap-3 min-w-0">
+                <button type="button" class="h-10 w-[min(14rem,42vw)] flex items-center justify-start cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
                   <img src="/Spoqen(2).svg" alt="Spoqen" class="h-full w-full object-contain object-left" />
                 </button>
-                <div>
-                  <h1 class="text-sm font-semibold leading-none">${project.name}</h1>
-                  <span class="text-[10px] text-slate-400 uppercase tracking-wider">${node.label}</span>
+                <div class="min-w-0">
+                  <h1 class="text-sm font-semibold leading-none truncate max-w-[26ch]">${project.name}</h1>
+                  <span class="text-[10px] text-slate-400 uppercase tracking-wider truncate block max-w-[26ch]">${node.label}</span>
                 </div>
               </div>
-              <div class="h-6 w-px bg-slate-200 dark:bg-slate-800 mx-1"></div>
+            </div>
+            <div class="ui-header-center">
               ${projectViewTabsHTML('editor')}
             </div>
-            <div class="flex items-center gap-3">
+            <div class="ui-header-right ui-toolbar">
               ${themeToggleHTML()}
-              <button id="btn-save-version" class="flex items-center gap-2 px-3 py-1.5 text-sm font-medium border border-primary/20 rounded text-primary hover:bg-primary/5 transition-colors">
+              <button id="btn-save-version" class="ui-btn ui-btn-outline">
                 <span class="material-icons text-sm">save</span>
-                Save Version
+                Save Current State
               </button>
-              <button id="btn-save-custom-node" class="flex items-center gap-2 px-3 py-1.5 text-sm font-medium border border-primary/20 rounded text-primary hover:bg-primary/5 transition-colors">
+              <button id="btn-save-custom-node" class="ui-btn ui-btn-outline">
                 <span class="material-icons text-sm">bookmark_add</span>
                 Save Custom Node
               </button>
-              <button id="btn-export-runtime" class="flex items-center gap-2 px-4 py-1.5 text-sm font-medium bg-primary text-white rounded hover:bg-primary/90 transition-colors shadow-sm">
+              <button id="btn-export-runtime" class="ui-btn ui-btn-primary">
                 <span class="material-icons text-sm">content_copy</span>
                 Copy Runtime
               </button>
-              <button id="btn-export-flow" class="flex items-center gap-2 px-3 py-1.5 text-sm font-medium border border-primary/20 text-primary rounded hover:bg-primary/5 transition-colors">
+              <button id="btn-export-flow" class="ui-btn ui-btn-outline">
                 <span class="material-icons text-sm">account_tree</span>
                 Copy Flow
               </button>
-              <button id="btn-close-editor" class="w-8 h-8 rounded-md border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-primary hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors" aria-label="Close editor">
+              <button id="btn-close-editor" class="ui-btn ui-btn-ghost !p-2" aria-label="Close editor">
                 <span class="material-icons text-sm">close</span>
               </button>
             </div>
           </header>
 
           <!-- Main Workspace -->
-          <main class="flex-1 flex overflow-hidden min-h-0">
+          <main class="ui-main ui-stack-lg">
             <!-- Editor Area -->
-            <div class="flex-1 relative bg-slate-50 dark:bg-slate-900/50 p-8 overflow-auto custom-scrollbar" data-scroll-preserve="editor-main">
-              <div class="max-w-4xl mx-auto bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-[600px]">
+            <div class="ui-pane flex-1 relative bg-slate-50 dark:bg-slate-900/50 p-4 sm:p-6 lg:p-8 overflow-auto custom-scrollbar" data-scroll-preserve="editor-main">
+              <div class="max-w-4xl mx-auto bg-white dark:bg-slate-900 rounded-xl shadow-xl border border-slate-200 dark:border-slate-800 overflow-hidden flex flex-col min-h-full">
                 <!-- Node Header -->
                 <div class="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between bg-white dark:bg-slate-900 sticky top-0 z-10">
                   <div class="flex items-center gap-3">
-                    <div class="p-2 bg-primary/10 rounded-lg text-primary">
+                    <div class="p-2 rounded-lg" style="background:${previewStyles.headerBackground}; color:${previewStyles.icon}; border:1px solid ${previewStyles.headerBorder};">
                       <span id="node-icon-preview" class="material-icons">${currentIcon}</span>
                     </div>
                     <div>
@@ -184,7 +211,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                 </div>
 
                 <!-- Content Area with Tokenizer Highlights -->
-                <div class="flex-1 editor-overlay min-h-[400px]">
+                <div class="flex-1 editor-overlay min-h-[18rem]">
                   <div class="highlight-layer" id="highlight-layer">${toHighlightedHTML(currentContent, tokenizerActive)}</div>
                   <textarea id="editor-textarea" spellcheck="false"></textarea>
                 </div>
@@ -204,7 +231,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
             </div>
 
             <!-- Properties Panel -->
-            <aside class="w-80 border-l border-primary/10 bg-white dark:bg-background-dark flex flex-col z-20 shrink-0">
+            <aside class="ui-sidebar ui-sidebar-wide border-l border-primary/10 bg-white dark:bg-background-dark z-20">
               <div class="p-4 border-b border-slate-100 dark:border-slate-800">
                 <h3 class="font-bold text-sm uppercase tracking-widest text-slate-400">Node Properties</h3>
               </div>
@@ -212,20 +239,20 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                 <!-- Node Label -->
                 <div class="space-y-3">
                   <label class="block text-xs font-medium text-slate-500 mb-1.5">Node Label</label>
-                  <input id="prop-label" class="w-full bg-slate-50 dark:bg-slate-800 border-none text-sm rounded px-3 py-2 text-slate-700 dark:text-slate-300 focus:ring-1 focus:ring-primary outline-none" value="${node.label}" />
+                  <input id="prop-label" class="ui-input" value="${node.label}" />
                 </div>
 
                 <!-- Node Icon -->
                 <div class="space-y-3">
                   <label class="block text-xs font-medium text-slate-500 mb-1.5">Node Icon</label>
                   <div class="flex items-center gap-2">
-                    <div class="w-9 h-9 rounded bg-primary/10 text-primary flex items-center justify-center shrink-0">
+                    <div class="w-9 h-9 rounded flex items-center justify-center shrink-0" style="background:${previewStyles.headerBackground}; color:${previewStyles.icon}; border:1px solid ${previewStyles.headerBorder};">
                       <span id="prop-icon-preview" class="material-icons text-base">${currentIcon}</span>
                     </div>
                     <div class="relative flex-1">
                       <select
                         id="prop-icon"
-                        class="w-full bg-slate-50 dark:bg-slate-800 border-none text-sm rounded px-3 py-2 text-slate-700 dark:text-slate-300 focus:ring-1 focus:ring-primary outline-none appearance-none cursor-pointer"
+                        class="ui-select appearance-none cursor-pointer"
                       >
                         ${NODE_ICON_SUGGESTIONS.map((icon) => `
                           <option value="${icon}" ${icon === currentIcon ? 'selected' : ''}>${icon}</option>
@@ -255,13 +282,28 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
                   </div>
                 </div>
 
+                <!-- Node Color -->
+                <div class="space-y-3">
+                  <label class="block text-xs font-medium text-slate-500 mb-1.5">Node Color</label>
+                  <div class="flex items-center gap-2">
+                    <input id="prop-node-color" type="color" class="h-9 w-12 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 cursor-pointer" value="${previewColor}" />
+                    <div class="flex flex-wrap gap-1.5">
+                      ${colorPalette.slice(0, 8).map((color) => `
+                        <button type="button" class="node-color-swatch h-6 w-6 rounded-full border-2 transition-transform hover:scale-105 ${color === previewColor ? 'border-slate-700 dark:border-slate-200' : 'border-white dark:border-slate-800'}" data-color="${color}" style="background:${color};"></button>
+                      `).join('')}
+                    </div>
+                    <button id="btn-reset-node-color" type="button" class="ml-auto text-[11px] px-2 py-1 rounded border border-slate-200 dark:border-slate-700 text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">Reset</button>
+                  </div>
+                  <p class="text-[10px] text-slate-400">Color persists with this node and controls its canvas card styling.</p>
+                </div>
+
                 <!-- Model Override -->
                 <div class="pt-4 border-t border-slate-100 dark:border-slate-800">
                   <h3 class="font-bold text-sm uppercase tracking-widest text-slate-400 mb-4">Meta Information</h3>
                   <div class="space-y-4">
                     <div>
                       <label class="block text-xs font-medium text-slate-500 mb-1.5">Model Override</label>
-                      <select id="prop-model" class="w-full bg-slate-50 dark:bg-slate-800 border-none text-sm rounded px-3 py-2 text-slate-700 dark:text-slate-300 focus:ring-1 focus:ring-primary">
+                      <select id="prop-model" class="ui-select">
                         <option ${project.model === 'GPT-4o' ? 'selected' : ''}>GPT-4o</option>
                         <option ${project.model === 'Claude 3.5' ? 'selected' : ''}>Claude 3.5</option>
                         <option ${project.model === 'GPT-4 Turbo' ? 'selected' : ''}>GPT-4 Turbo</option>
@@ -285,7 +327,7 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
 
       <!-- Floating Token Legend -->
       ${tokenizerActive ? `
-      <div id="token-legend" class="fixed bottom-6 left-6 z-[910] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-2xl flex flex-col gap-3">
+      <div id="token-legend" class="fixed bottom-4 left-4 right-4 sm:right-auto sm:max-w-[30rem] z-[910] bg-white/90 dark:bg-slate-900/90 backdrop-blur-md border border-slate-200 dark:border-slate-800 rounded-xl p-4 shadow-2xl flex flex-col gap-3">
         <div class="flex items-center justify-between gap-8">
           <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Tokenizer Legend</span>
           <button id="close-legend" class="text-slate-400 hover:text-slate-600"><span class="material-icons text-sm">close</span></button>
@@ -357,17 +399,16 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
       container.querySelector('#token-legend')?.remove();
     });
 
-    container.querySelector('#btn-save-version')?.addEventListener('click', async () => {
-      const notes = await customPrompt('Version notes:') || 'Manual snapshot';
+    container.querySelector('#btn-save-version')?.addEventListener('click', () => {
       persistDraft();
-      const version = store.saveAssembledVersion(projectId, notes);
+      const version = store.saveCurrentState(projectId);
       const button = container.querySelector<HTMLButtonElement>('#btn-save-version');
       if (!button) return;
       button.innerHTML = version
-        ? '<span class="material-icons text-sm">check</span> Saved!'
+        ? '<span class="material-icons text-sm">check</span> State saved'
         : '<span class="material-icons text-sm">info</span> No changes';
       setTimeout(() => {
-        button.innerHTML = '<span class="material-icons text-sm">save</span> Save Version';
+        button.innerHTML = '<span class="material-icons text-sm">save</span> Save Current State';
       }, 2000);
     });
 
@@ -417,6 +458,8 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
     const propIconPreview = container.querySelector<HTMLElement>('#prop-icon-preview');
     const iconGridToggle = container.querySelector<HTMLButtonElement>('#icon-grid-toggle');
     const iconGridDropdown = container.querySelector<HTMLElement>('#icon-grid-dropdown');
+    const colorInput = container.querySelector<HTMLInputElement>('#prop-node-color');
+    const resetColorButton = container.querySelector<HTMLButtonElement>('#btn-reset-node-color');
 
     const syncIconPreview = (iconName: string): void => {
       if (nodeIconPreview) nodeIconPreview.textContent = iconName;
@@ -429,6 +472,28 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
         btn.classList.toggle('bg-primary/20', isSelected);
         btn.classList.toggle('ring-1', isSelected);
         btn.classList.toggle('ring-primary', isSelected);
+      });
+    };
+
+    const syncColorPreview = (hexColor: string): void => {
+      const normalized = normalizeNodeColor(hexColor) ?? DEFAULT_NODE_COLOR;
+      const nextStyles = buildNodeColorStyles(normalized);
+      currentNodeColor = normalized;
+      if (colorInput) colorInput.value = normalized;
+
+      [nodeIconPreview?.parentElement, propIconPreview?.parentElement].forEach((host) => {
+        if (!host) return;
+        host.style.background = nextStyles.headerBackground;
+        host.style.color = nextStyles.icon;
+        host.style.border = `1px solid ${nextStyles.headerBorder}`;
+      });
+
+      container.querySelectorAll<HTMLElement>('.node-color-swatch').forEach((button) => {
+        const isSelected = button.dataset.color === normalized;
+        button.classList.toggle('border-slate-700', isSelected);
+        button.classList.toggle('dark:border-slate-200', isSelected);
+        button.classList.toggle('border-white', !isSelected);
+        button.classList.toggle('dark:border-slate-800', !isSelected);
       });
     };
 
@@ -464,6 +529,32 @@ export function renderEditor(container: HTMLElement, projectId: string, nodeId: 
       node.icon = nextIcon;
       syncIconPreview(nextIcon);
       store.updateNode(projectId, nodeId, { icon: nextIcon });
+    });
+
+    colorInput?.addEventListener('input', () => {
+      const nextColor = normalizeNodeColor(colorInput.value) ?? DEFAULT_NODE_COLOR;
+      syncColorPreview(nextColor);
+      const nextMeta = withNodeColorMeta(node.meta, nextColor);
+      node.meta = nextMeta;
+      store.updateNode(projectId, nodeId, { meta: nextMeta });
+    });
+
+    container.querySelectorAll<HTMLElement>('.node-color-swatch').forEach((button) => {
+      button.addEventListener('click', () => {
+        const nextColor = normalizeNodeColor(button.dataset.color) ?? DEFAULT_NODE_COLOR;
+        syncColorPreview(nextColor);
+        const nextMeta = withNodeColorMeta(node.meta, nextColor);
+        node.meta = nextMeta;
+        store.updateNode(projectId, nodeId, { meta: nextMeta });
+      });
+    });
+
+    resetColorButton?.addEventListener('click', () => {
+      const nextColor = getAutoNodeColor(0);
+      syncColorPreview(nextColor);
+      const nextMeta = withNodeColorMeta(node.meta, nextColor);
+      node.meta = nextMeta;
+      store.updateNode(projectId, nodeId, { meta: nextMeta });
     });
 
     container.querySelector('#btn-back-canvas')?.addEventListener('click', () => closeToCanvas());

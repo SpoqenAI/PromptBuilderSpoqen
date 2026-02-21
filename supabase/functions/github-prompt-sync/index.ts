@@ -26,18 +26,18 @@ interface InstallationRow {
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders });
+    return new Response('ok', { headers: corsHeaders(req) });
   }
 
   if (req.method !== 'POST') {
-    return jsonResponse(405, { error: 'Method not allowed.' });
+    return jsonResponse(405, { error: 'Method not allowed.' }, req);
   }
 
   try {
     const body = await parseJson<SyncRequestBody>(req);
     const action = body.action;
     if (!action) {
-      return jsonResponse(400, { error: 'Missing action.' });
+      return jsonResponse(400, { error: 'Missing action.' }, req);
     }
 
     const adminClient = createAdminClient();
@@ -49,7 +49,7 @@ serve(async (req: Request) => {
         connected: Boolean(installation),
         accountLogin: installation?.account_login ?? '',
         accountType: installation?.account_type ?? '',
-      });
+      }, req);
     }
 
     if (action === 'disconnect') {
@@ -65,11 +65,11 @@ serve(async (req: Request) => {
 
       return jsonResponse(200, {
         connected: false,
-      });
+      }, req);
     }
 
     if (!installation) {
-      return jsonResponse(400, { error: 'GitHub is not connected for this account.' });
+      return jsonResponse(400, { error: 'GitHub is not connected for this account.' }, req);
     }
 
     const target = normalizePromptTarget(body.target ?? {});
@@ -81,7 +81,7 @@ serve(async (req: Request) => {
         content: file.content,
         path: file.path,
         sha: file.sha,
-      });
+      }, req);
     }
 
     if (action === 'push') {
@@ -89,21 +89,21 @@ serve(async (req: Request) => {
       const commitMessage = typeof body.commitMessage === 'string' ? body.commitMessage : '';
 
       if (!commitMessage.trim()) {
-        return jsonResponse(400, { error: 'Commit message is required.' });
+        return jsonResponse(400, { error: 'Commit message is required.' }, req);
       }
 
       const result = await pushPromptFile(installationToken, target, promptContent, commitMessage);
       return jsonResponse(200, {
         commitSha: result.commitSha,
         commitUrl: result.commitUrl,
-      });
+      }, req);
     }
 
-    return jsonResponse(400, { error: 'Unsupported action.' });
+    return jsonResponse(400, { error: 'Unsupported action.' }, req);
   } catch (err) {
     return jsonResponse(400, {
       error: err instanceof Error ? err.message : String(err),
-    });
+    }, req);
   }
 });
 

@@ -1,0 +1,16 @@
+{
+    "name": "spoqen-mcp-connector",
+    "version": "1.0.0",
+    "description": "Desktop connector for Spoqen AI Prompts Canvas",
+    "main": "index.js",
+    "bin": {
+        "spoqen-mcp-connector": "./index.js"
+    },
+    "scripts": {
+        "start": "node index.js"
+    },
+    "dependencies": {
+        "@modelcontextprotocol/sdk": "^1.5.0",
+        "ws": "^8.18.0"
+    }
+}

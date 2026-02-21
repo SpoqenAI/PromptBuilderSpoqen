@@ -7,6 +7,7 @@ import { BLOCK_PALETTE, PromptNode, uid, CustomNodeTemplate } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas, projectViewTabsHTML, wireProjectViewTabs } from './project-nav';
 import { customPrompt, customConfirm } from '../dialogs';
+import { buildNodeColorStyles, readNodeColorMeta } from '../node-colors';
 
 interface CanvasViewportState {
   zoom: number;
@@ -34,7 +35,20 @@ interface SidebarBlock {
   isCustomTemplate: boolean;
 }
 
+interface McpRelayConfig {
+  enabled: boolean;
+  canvasSyncUrl: string | null;
+  agentRelayUrl: string | null;
+  reason: string | null;
+}
+
 const canvasViewportByProject = new Map<string, CanvasViewportState>();
+const canvasSidebarCollapsedByProject = new Map<string, boolean>();
+const canvasSidebarWidthByProject = new Map<string, number>();
+const MIN_CANVAS_SIDEBAR_WIDTH = 200;
+const MAX_CANVAS_SIDEBAR_WIDTH = 560;
+const sidebarLabelMeasureCanvas = document.createElement('canvas');
+const sidebarLabelMeasureCtx = sidebarLabelMeasureCanvas.getContext('2d');
 
 function clearCanvasViewCleanup(container: HTMLElement): void {
   const host = container as CanvasViewContainer;
@@ -51,6 +65,115 @@ function readCanvasViewportState(projectId: string): CanvasViewportState | null 
 
 function writeCanvasViewportState(projectId: string, state: CanvasViewportState): void {
   canvasViewportByProject.set(projectId, { ...state });
+}
+
+function readCanvasSidebarCollapsedState(projectId: string): boolean {
+  return canvasSidebarCollapsedByProject.get(projectId) ?? false;
+}
+
+function writeCanvasSidebarCollapsedState(projectId: string, collapsed: boolean): void {
+  canvasSidebarCollapsedByProject.set(projectId, collapsed);
+}
+
+function readCanvasSidebarWidthState(projectId: string): number | null {
+  const width = canvasSidebarWidthByProject.get(projectId);
+  if (typeof width !== 'number' || !Number.isFinite(width) || width <= 0) return null;
+  return width;
+}
+
+function writeCanvasSidebarWidthState(projectId: string, width: number): void {
+  if (!Number.isFinite(width) || width <= 0) return;
+  canvasSidebarWidthByProject.set(projectId, width);
+}
+
+function estimateSidebarLabelPixelWidth(label: string): number {
+  const text = label.trim().length > 0 ? label : 'Node';
+  if (!sidebarLabelMeasureCtx) return text.length * 7;
+  sidebarLabelMeasureCtx.font = '500 12px Inter, system-ui, -apple-system, sans-serif';
+  return Math.ceil(sidebarLabelMeasureCtx.measureText(text).width);
+}
+
+function computeRecommendedSidebarWidth(categories: Map<string, SidebarBlock[]>): number {
+  let longestLabelWidth = 0;
+  for (const blocks of categories.values()) {
+    for (const block of blocks) {
+      longestLabelWidth = Math.max(longestLabelWidth, estimateSidebarLabelPixelWidth(block.label));
+    }
+  }
+  const sidebarChromeWidth = 108;
+  const calculated = longestLabelWidth + sidebarChromeWidth;
+  return Math.max(MIN_CANVAS_SIDEBAR_WIDTH, Math.min(MAX_CANVAS_SIDEBAR_WIDTH, calculated));
+}
+
+function parseBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  const normalized = value.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+}
+
+function normalizeRelayBaseUrl(rawValue: string): URL | null {
+  try {
+    const url = new URL(rawValue, window.location.origin);
+    if (!['http:', 'https:', 'ws:', 'wss:'].includes(url.protocol)) return null;
+    return url;
+  } catch {
+    return null;
+  }
+}
+
+function buildRelaySocketUrl(segment: 'canvas-sync' | 'agent-relay', baseUrl: URL | null): string {
+  if (!baseUrl) {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${protocol}//${window.location.host}/${segment}`;
+  }
+
+  const relayUrl = new URL(baseUrl.toString());
+  relayUrl.protocol = relayUrl.protocol === 'https:' || relayUrl.protocol === 'wss:' ? 'wss:' : 'ws:';
+
+  const normalizedPath = relayUrl.pathname.replace(/\/+$/, '');
+  const hasSegmentPath = normalizedPath === `/${segment}` || normalizedPath.endsWith(`/${segment}`);
+  if (hasSegmentPath) {
+    relayUrl.pathname = normalizedPath || `/${segment}`;
+  } else {
+    const pathPrefix = normalizedPath && normalizedPath !== '/' ? normalizedPath : '';
+    relayUrl.pathname = `${pathPrefix}/${segment}`.replace(/\/{2,}/g, '/');
+  }
+
+  relayUrl.search = '';
+  relayUrl.hash = '';
+  return relayUrl.toString();
+}
+
+function resolveMcpRelayConfig(): McpRelayConfig {
+  const enabledByEnv = parseBooleanEnv(import.meta.env.NEXT_PUBLIC_ENABLE_MCP_RELAY, import.meta.env.DEV);
+  if (!enabledByEnv) {
+    return {
+      enabled: false,
+      canvasSyncUrl: null,
+      agentRelayUrl: null,
+      reason: 'MCP relay is disabled. Set NEXT_PUBLIC_ENABLE_MCP_RELAY=true to enable agent sync.',
+    };
+  }
+
+  const rawRelayUrl = import.meta.env.NEXT_PUBLIC_MCP_RELAY_URL?.trim();
+  const relayBaseUrl = rawRelayUrl ? normalizeRelayBaseUrl(rawRelayUrl) : null;
+  if (rawRelayUrl && !relayBaseUrl) {
+    return {
+      enabled: false,
+      canvasSyncUrl: null,
+      agentRelayUrl: null,
+      reason: 'Invalid NEXT_PUBLIC_MCP_RELAY_URL. Use an http(s) or ws(s) URL.',
+    };
+  }
+
+  return {
+    enabled: true,
+    canvasSyncUrl: buildRelaySocketUrl('canvas-sync', relayBaseUrl),
+    agentRelayUrl: buildRelaySocketUrl('agent-relay', relayBaseUrl),
+    reason: null,
+  };
 }
 
 function buildSidebarCategories(customTemplates: CustomNodeTemplate[]): Map<string, SidebarBlock[]> {
@@ -132,53 +255,73 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   clearProjectEscapeToCanvas(container);
 
   const categories = buildSidebarCategories(store.getCustomNodeTemplates());
+  const recommendedSidebarWidth = computeRecommendedSidebarWidth(categories);
+  const mcpRelayConfig = resolveMcpRelayConfig();
+  const relaySetupInstructionHtml = mcpRelayConfig.enabled && mcpRelayConfig.agentRelayUrl
+    ? `
+      <div class="bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-lg p-3 font-mono text-[11px] text-slate-700 dark:text-slate-300 break-all select-all flex flex-col gap-3">
+        <span class="text-slate-500">// 1. Run this connector from your app directory:</span>
+        <span class="text-primary font-medium user-select-all" id="mcp-connect-string">node mcp-connector/index.js --url ${escapeHTML(mcpRelayConfig.agentRelayUrl)}</span>
+      </div>
+    `
+    : `
+      <div class="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-lg p-3 text-[11px] text-amber-800 dark:text-amber-100 leading-relaxed">
+        ${escapeHTML(mcpRelayConfig.reason ?? 'MCP relay is unavailable in this deployment.')}
+      </div>
+    `;
 
   container.innerHTML = `
     <!-- Top Navigation Bar -->
-    <header class="h-14 border-b border-primary/10 relative flex items-center px-4 bg-white dark:bg-background-dark/80 z-20">
-      <div class="flex items-center gap-4">
-        <div class="flex items-center gap-3 shrink-0">
+    <header class="ui-header z-20">
+      <div class="ui-header-left">
+        <div class="flex items-center gap-3 min-w-0">
           <button type="button" class="h-10 w-10 flex items-center justify-center cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
             <img src="/Icon.svg" alt="Spoqen" class="h-10 w-10 object-contain" />
           </button>
-          <div>
-            <h1 class="text-sm font-semibold leading-none">${project.name}</h1>
+          <div class="min-w-0">
+            <h1 class="text-sm font-semibold leading-none truncate max-w-[34ch]" title="${escapeHTML(project.name)}">${project.name}</h1>
             <span class="text-[10px] text-slate-400 uppercase tracking-wider">Visual Prompt Editor</span>
           </div>
         </div>
-        <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-2"></div>
+        <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
         <div class="flex items-center gap-1 text-xs text-slate-500">
           <span class="material-icons text-sm">cloud_done</span>
           <span>Saved</span>
         </div>
       </div>
-      <div class="absolute left-1/2 -translate-x-1/2">
+      <div class="ui-header-center">
         ${projectViewTabsHTML('canvas')}
       </div>
-      <div class="ml-auto flex items-center gap-3">
+      <div class="ui-header-right ui-toolbar">
         ${themeToggleHTML()}
-        <button id="btn-save-snapshot" class="px-4 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors flex items-center gap-2">
-          <span class="material-icons text-sm">save</span> Save Snapshot
+        <button id="btn-save-snapshot" class="ui-btn ui-btn-outline">
+          <span class="material-icons text-sm">save</span> Save Current State
         </button>
-        <button id="btn-copy-runtime" class="px-4 py-1.5 text-xs font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors flex items-center gap-2">
+        <button id="btn-copy-runtime" class="ui-btn ui-btn-primary">
           <span class="material-icons text-sm">content_copy</span> Copy Runtime
         </button>
-        <button id="btn-copy-flow" class="px-3 py-1.5 text-xs font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors flex items-center gap-2">
+        <button id="btn-copy-flow" class="ui-btn ui-btn-outline">
           <span class="material-icons text-sm">account_tree</span> Copy Flow Template
         </button>
       </div>
     </header>
 
-    <main class="flex-1 min-h-0 flex overflow-hidden">
+    <main id="canvas-main" class="ui-main ui-stack-lg">
       <!-- Sidebar -->
-      <aside class="w-64 border-r border-primary/10 bg-white dark:bg-background-dark/50 flex flex-col z-10 shrink-0">
+      <aside id="canvas-sidebar" class="ui-sidebar canvas-sidebar border-r border-primary/10 bg-white dark:bg-background-dark/50 z-10">
         <div class="p-4 border-b border-primary/5">
+          <div class="flex items-center justify-between gap-2 mb-3">
+            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Menu</span>
+            <button id="btn-collapse-canvas-sidebar" class="h-7 w-7 inline-flex items-center justify-center rounded text-slate-500 hover:text-primary hover:bg-primary/10 transition-colors" aria-expanded="true" aria-controls="canvas-sidebar" aria-label="Collapse menu" title="Collapse menu">
+              <span class="material-icons text-sm">chevron_left</span>
+            </button>
+          </div>
           <div class="relative">
             <span class="material-icons absolute left-2.5 top-2.5 text-slate-400 text-sm">search</span>
             <input id="sidebar-search" class="w-full pl-8 pr-3 py-2 text-xs bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded focus:ring-1 focus:ring-primary focus:border-primary outline-none transition-all" placeholder="Search blocks..." type="text" />
           </div>
         </div>
-        <div class="flex-1 overflow-y-auto p-2 space-y-4 custom-scrollbar" id="sidebar-blocks">
+        <div class="ui-scroll p-2 space-y-4 custom-scrollbar" id="sidebar-blocks">
           ${renderSidebarBlocksHTML(categories)}
         </div>
         <div class="p-4 border-t border-primary/5 bg-slate-50 dark:bg-white/5">
@@ -187,15 +330,22 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
             <span class="text-[10px] font-medium text-slate-500 uppercase">${project.nodes.length} Nodes</span>
           </div>
         </div>
+        <div id="canvas-sidebar-resize-handle" class="canvas-sidebar-resize-handle" role="separator" aria-label="Resize menu" aria-orientation="vertical"></div>
       </aside>
 
       <!-- Main Canvas Area -->
-      <div id="canvas-area" class="flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
-        <!-- Breadcrumbs -->
-        <div class="absolute top-4 left-6 flex items-center gap-2 text-xs font-medium text-slate-400 bg-white/80 dark:bg-background-dark/80 px-3 py-1.5 rounded-full border border-primary/10 shadow-sm z-10">
-          <span class="cursor-pointer hover:text-primary" id="crumb-home">Projects</span>
-          <span class="material-icons text-[10px]">chevron_right</span>
-          <span class="text-slate-800 dark:text-slate-200">${project.name}</span>
+      <div id="canvas-area" class="ui-pane flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
+        <!-- Top Left Controls -->
+        <div class="absolute top-4 left-4 max-w-[min(92vw,50rem)] flex items-center gap-2 z-10">
+          <button id="btn-open-canvas-sidebar" class="hidden h-8 px-3 inline-flex items-center gap-1 rounded-full border border-primary/20 bg-white/85 dark:bg-background-dark/85 text-xs font-semibold text-primary shadow-sm backdrop-blur-sm hover:bg-white dark:hover:bg-background-dark transition-colors" aria-expanded="false" aria-controls="canvas-sidebar" aria-label="Expand menu" title="Expand menu">
+            <span class="material-icons text-sm">menu</span>
+            Menu
+          </button>
+          <div class="max-w-[min(80vw,40rem)] flex items-center gap-2 text-xs font-medium text-slate-400 bg-white/80 dark:bg-background-dark/80 px-3 py-1.5 rounded-full border border-primary/10 shadow-sm">
+            <span class="cursor-pointer hover:text-primary" id="crumb-home">Projects</span>
+            <span class="material-icons text-[10px]">chevron_right</span>
+            <span class="text-slate-800 dark:text-slate-200 truncate" title="${escapeHTML(project.name)}">${project.name}</span>
+          </div>
         </div>
 
         <!-- SVG for connections -->
@@ -226,7 +376,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         </div>
 
         <!-- Canvas Help Panel -->
-        <div id="canvas-help-panel" class="hidden absolute bottom-24 right-6 w-80 bg-white/95 dark:bg-slate-900/95 border border-primary/20 rounded-xl shadow-2xl backdrop-blur-sm z-20">
+        <div id="canvas-help-panel" class="hidden absolute bottom-20 right-4 w-[min(22rem,calc(100vw-2rem))] max-h-[min(60vh,26rem)] overflow-y-auto custom-scrollbar bg-white/95 dark:bg-slate-900/95 border border-primary/20 rounded-xl shadow-2xl backdrop-blur-sm z-20">
           <div class="flex items-start justify-between gap-3 px-4 py-3 border-b border-primary/10">
             <div>
               <h3 class="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">Canvas Controls</h3>
@@ -249,7 +399,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         </div>
 
         <!-- Floating Controls -->
-        <div class="absolute bottom-6 right-6 flex items-center gap-2 z-10">
+        <div class="absolute bottom-4 right-4 flex items-center gap-2 z-10">
           <div class="flex flex-col gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-lg border border-primary/10 shadow-lg">
             <button class="w-8 h-8 hover:bg-slate-100 dark:hover:bg-white/5 rounded flex items-center justify-center text-slate-500 hover:text-primary transition-colors" id="btn-zoom-in">
               <span class="material-icons text-lg">add</span>
@@ -262,7 +412,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         </div>
 
         <!-- Mini Map -->
-        <div id="minimap" class="absolute bottom-6 left-6 w-32 h-24 bg-white/65 dark:bg-slate-900/65 border border-primary/15 rounded-lg overflow-hidden backdrop-blur-sm z-10">
+        <div id="minimap" class="hidden md:block absolute bottom-4 left-4 w-32 h-24 bg-white/65 dark:bg-slate-900/65 border border-primary/15 rounded-lg overflow-hidden backdrop-blur-sm z-10">
           <svg id="minimap-svg" class="w-full h-full block">
             <rect id="minimap-bg" x="0" y="0" width="100%" height="100%" fill="transparent"></rect>
             <g id="minimap-nodes"></g>
@@ -270,14 +420,36 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           </svg>
           <div class="pointer-events-none absolute bottom-1 right-1 text-[8px] text-slate-400 uppercase font-bold">MiniMap</div>
         </div>
+
+        <!-- Backend MCP Connector Info Panel -->
+        <div id="terminal-panel" class="hidden absolute bottom-6 right-16 w-[420px] bg-white/95 dark:bg-slate-900/95 border border-primary/20 rounded-xl shadow-2xl backdrop-blur-sm z-30 flex flex-col transition-opacity opacity-0 data-[open=true]:opacity-100 data-[open=true]:flex">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-primary/10">
+            <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+              <span class="material-icons text-[14px] text-primary">hub</span>
+              External Agent Connection
+            </div>
+            <button id="btn-terminal-close" class="w-6 h-6 rounded flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors" title="Close">
+              <span class="material-icons text-[16px]">close</span>
+            </button>
+          </div>
+          <div class="p-4 flex flex-col gap-4 text-xs">
+            <p class="text-slate-600 dark:text-slate-300 leading-relaxed">
+              Connect external AI CLI tools (like Claude Code or Gemini CLI) directly to this canvas. The tool will be able to read your nodes and execute diagram edits.
+            </p>
+            <div class="flex flex-col gap-2">
+              <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Setup Instructions</label>
+              ${relaySetupInstructionHtml}
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- Right Properties Panel (Collapsed) -->
-      <aside class="w-12 border-l border-primary/10 bg-white dark:bg-background-dark/50 flex flex-col items-center py-4 gap-4 shrink-0">
+      <aside class="hidden lg:flex w-12 border-l border-primary/10 bg-white dark:bg-background-dark/50 flex-col items-center py-4 gap-4 shrink-0">
         <button class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Properties">
           <span class="material-icons text-lg">tune</span>
         </button>
-        <button class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Variables">
+        <button id="btn-toggle-terminal" class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Agent Terminal">
           <span class="material-icons text-lg">terminal</span>
         </button>
         <button class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Logs">
@@ -366,8 +538,11 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   const nodeLabelMeasureCanvas = document.createElement('canvas');
   const nodeLabelMeasureCtx = nodeLabelMeasureCanvas.getContext('2d');
   const nodeVisualSizeById = new Map<string, NodeVisualSize>();
+  const initialSidebarCollapsed = readCanvasSidebarCollapsedState(projectId);
+  const storedInitialSidebarWidth = readCanvasSidebarWidthState(projectId) ?? recommendedSidebarWidth;
+  const initialSidebarWidth = Math.max(MIN_CANVAS_SIDEBAR_WIDTH, Math.min(MAX_CANVAS_SIDEBAR_WIDTH, storedInitialSidebarWidth));
   let zoom = 1;
-  let panX = 0;
+  let panX = project.nodes.length > 0 && !initialSidebarCollapsed ? initialSidebarWidth + 24 : 0;
   let panY = 0;
   const savedViewport = readCanvasViewportState(projectId);
   if (savedViewport) {
@@ -673,7 +848,8 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       const y = toMiniY(node.y);
       const width = Math.max(3, size.width * scale);
       const height = Math.max(2, size.height * scale);
-      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="1.5" fill="rgba(35,149,111,0.45)" stroke="rgba(35,149,111,0.85)" stroke-width="0.8"></rect>`;
+      const styles = buildNodeColorStyles(readNodeColorMeta(node.meta));
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="1.5" fill="${styles.minimapFill}" stroke="${styles.minimapStroke}" stroke-width="0.8"></rect>`;
     }).join('');
     miniMapNodesLayer.innerHTML = nodeRects;
 
@@ -683,6 +859,104 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     miniMapViewport.setAttribute('height', String(Math.max(6, viewportWorldHeight * scale)));
   }
 
+  // -- Terminal and Agent Sync Setup --
+  const terminalPanel = container.querySelector<HTMLElement>('#terminal-panel');
+  const toggleTerminalBtn = container.querySelector<HTMLButtonElement>('#btn-toggle-terminal');
+  let syncWs: WebSocket | null = null;
+  let relayReconnectTimer: number | null = null;
+  let relayStopped = false;
+
+  const pushCanvasState = () => {
+    if (syncWs?.readyState === WebSocket.OPEN) {
+      syncWs.send(JSON.stringify({
+        type: 'update_state',
+        state: { nodes: project!.nodes, connections: project!.connections }
+      }));
+    }
+  };
+
+  const scheduleRelayReconnect = (): void => {
+    if (relayStopped || !mcpRelayConfig.enabled) return;
+    if (relayReconnectTimer !== null) return;
+    relayReconnectTimer = window.setTimeout(() => {
+      relayReconnectTimer = null;
+      connectSyncWs();
+    }, 2000);
+  };
+
+  const connectSyncWs = () => {
+    if (relayStopped || !mcpRelayConfig.enabled) return;
+    if (syncWs || !mcpRelayConfig.canvasSyncUrl) return;
+
+    try {
+      syncWs = new WebSocket(mcpRelayConfig.canvasSyncUrl);
+    } catch (err) {
+      console.error('Failed to open MCP relay websocket:', err);
+      syncWs = null;
+      scheduleRelayReconnect();
+      return;
+    }
+
+    syncWs.addEventListener('open', () => pushCanvasState());
+
+    syncWs.addEventListener('message', (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'agent_action') {
+          const payload = msg.payload;
+          if (msg.action === 'add_node') {
+            const newNode: PromptNode = {
+              id: uid(),
+              type: payload.type || 'default',
+              label: payload.label || 'Agent Node',
+              icon: 'auto_awesome',
+              content: payload.content || '',
+              meta: {},
+              x: payload.x || 60,
+              y: payload.y || 60,
+            };
+            store.addNode(projectId, newNode);
+          } else if (msg.action === 'update_node_content') {
+            store.updateNode(projectId, payload.nodeId, { content: payload.content });
+          } else if (msg.action === 'create_connection') {
+            store.addConnection(projectId, payload.fromId, payload.toId, payload.label || '');
+          }
+          renderNodes();
+        }
+      } catch (e) {
+        console.error('Canvas sync message error:', e);
+      }
+    });
+
+    syncWs.addEventListener('close', () => {
+      syncWs = null;
+      scheduleRelayReconnect();
+    });
+
+    syncWs.addEventListener('error', (event) => {
+      console.error('Canvas relay websocket error:', event);
+    });
+  };
+
+  if (!mcpRelayConfig.enabled && toggleTerminalBtn) {
+    toggleTerminalBtn.disabled = true;
+    toggleTerminalBtn.classList.add('opacity-40', 'cursor-not-allowed');
+    toggleTerminalBtn.title = mcpRelayConfig.reason ?? 'MCP relay is disabled.';
+  }
+
+  connectSyncWs();
+  registerTeardown(() => {
+    relayStopped = true;
+    if (relayReconnectTimer !== null) {
+      window.clearTimeout(relayReconnectTimer);
+      relayReconnectTimer = null;
+    }
+    if (syncWs) {
+      syncWs.close();
+      syncWs = null;
+    }
+  });
+
   function renderNodes(): void {
     clearConnectionDraft();
     nodesContainer.querySelectorAll('.canvas-node').forEach(el => el.remove());
@@ -691,16 +965,18 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
     for (const node of project!.nodes) {
       const size = getNodeVisualSize(node);
+      const colorStyles = buildNodeColorStyles(readNodeColorMeta(node.meta));
       const el = document.createElement('div');
-      el.className = 'canvas-node pointer-events-auto bg-white dark:bg-slate-900 border border-primary/40 rounded-lg shadow-xl node-glow';
+      el.className = 'canvas-node pointer-events-auto bg-white dark:bg-slate-900 border rounded-lg shadow-xl node-glow';
       el.dataset.nodeId = node.id;
       el.style.left = `${node.x}px`;
       el.style.top = `${node.y}px`;
       el.style.width = `${size.width}px`;
+      el.style.borderColor = colorStyles.border;
       el.innerHTML = `
-        <div class="node-header bg-primary/10 border-b border-primary/20 p-3 flex items-center justify-between cursor-grab active:cursor-grabbing rounded-t-lg">
+        <div class="node-header p-3 flex items-center justify-between cursor-grab active:cursor-grabbing rounded-t-lg" style="background:${colorStyles.headerBackground}; border-bottom:1px solid ${colorStyles.headerBorder};">
           <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0">
-            <span class="material-icons text-sm text-primary">${node.icon}</span>
+            <span class="material-icons text-sm" style="color:${colorStyles.icon};">${node.icon}</span>
             <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
           </h2>
           <div class="flex items-center gap-1">
@@ -722,8 +998,8 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           <!-- Output port (right side) -->
           <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
         </div>
-        <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center rounded-b-lg border-t border-primary/10">
-          <span class="text-[9px] text-primary/60 font-mono">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
+        <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center rounded-b-lg border-t" style="border-top-color:${colorStyles.footerBorder};">
+          <span class="text-[9px] font-mono" style="color:${colorStyles.tokenText};">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
         </div>
       `;
       nodesContainer.appendChild(el);
@@ -883,6 +1159,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     }
 
     drawConnections();
+    if (typeof pushCanvasState === 'function') pushCanvasState();
   }
 
   // Global mouse handlers for port connection
@@ -1218,10 +1495,6 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     zoomAt(zoom * scaleFactor, focalX, focalY);
   }, { passive: false });
 
-  addManagedListener(window, 'resize', () => {
-    scheduleDrawConnections();
-  });
-
   interface SidebarBlockData {
     type: PromptNode['type'];
     label: string;
@@ -1232,6 +1505,103 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
   const sidebarBlocksHost = container.querySelector<HTMLElement>('#sidebar-blocks');
   const sidebarSearch = container.querySelector<HTMLInputElement>('#sidebar-search');
+  const sidebar = container.querySelector<HTMLElement>('#canvas-sidebar');
+  const sidebarResizeHandle = container.querySelector<HTMLElement>('#canvas-sidebar-resize-handle');
+  const canvasMain = container.querySelector<HTMLElement>('#canvas-main');
+  const collapseSidebarBtn = container.querySelector<HTMLButtonElement>('#btn-collapse-canvas-sidebar');
+  const openSidebarBtn = container.querySelector<HTMLButtonElement>('#btn-open-canvas-sidebar');
+  let sidebarCollapsed = initialSidebarCollapsed;
+  let sidebarWidth = initialSidebarWidth;
+
+  const clampSidebarWidth = (candidateWidth: number): number => {
+    const hostWidth = canvasMain?.clientWidth ?? window.innerWidth;
+    const maxForViewport = Math.max(MIN_CANVAS_SIDEBAR_WIDTH, hostWidth - 140);
+    const maxWidth = Math.min(MAX_CANVAS_SIDEBAR_WIDTH, maxForViewport);
+    return Math.max(MIN_CANVAS_SIDEBAR_WIDTH, Math.min(maxWidth, candidateWidth));
+  };
+
+  const applySidebarWidthState = (): void => {
+    if (!canvasMain) return;
+    const boundedWidth = clampSidebarWidth(sidebarWidth);
+    if (boundedWidth !== sidebarWidth) {
+      sidebarWidth = boundedWidth;
+      writeCanvasSidebarWidthState(projectId, sidebarWidth);
+    }
+    canvasMain.style.setProperty('--canvas-sidebar-current-width', `${Math.round(sidebarWidth)}px`);
+  };
+
+  const applySidebarCollapsedState = (): void => {
+    if (!sidebar) return;
+    sidebar.classList.toggle('is-collapsed', sidebarCollapsed);
+    if (collapseSidebarBtn) {
+      collapseSidebarBtn.classList.toggle('hidden', sidebarCollapsed);
+      collapseSidebarBtn.setAttribute('aria-expanded', String(!sidebarCollapsed));
+    }
+    if (openSidebarBtn) {
+      openSidebarBtn.classList.toggle('hidden', !sidebarCollapsed);
+      openSidebarBtn.setAttribute('aria-expanded', String(!sidebarCollapsed));
+    }
+    requestAnimationFrame(() => {
+      scheduleDrawConnections();
+    });
+  };
+
+  applySidebarWidthState();
+  applySidebarCollapsedState();
+  collapseSidebarBtn?.addEventListener('click', () => {
+    sidebarCollapsed = true;
+    writeCanvasSidebarCollapsedState(projectId, sidebarCollapsed);
+    applySidebarCollapsedState();
+  });
+  openSidebarBtn?.addEventListener('click', () => {
+    sidebarCollapsed = false;
+    writeCanvasSidebarCollapsedState(projectId, sidebarCollapsed);
+    applySidebarCollapsedState();
+  });
+
+  let stopSidebarResizeDrag: (() => void) | null = null;
+  const beginSidebarResizeDrag = (event: MouseEvent): void => {
+    if (event.button !== 0 || sidebarCollapsed) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    document.body.classList.add('canvas-sidebar-resizing');
+
+    const onPointerMove = (moveEvent: MouseEvent): void => {
+      const deltaX = moveEvent.clientX - startX;
+      sidebarWidth = clampSidebarWidth(startWidth + deltaX);
+      writeCanvasSidebarWidthState(projectId, sidebarWidth);
+      applySidebarWidthState();
+      scheduleDrawConnections();
+    };
+
+    const onPointerUp = (): void => {
+      document.removeEventListener('mousemove', onPointerMove);
+      document.removeEventListener('mouseup', onPointerUp);
+      document.body.classList.remove('canvas-sidebar-resizing');
+      stopSidebarResizeDrag = null;
+    };
+
+    stopSidebarResizeDrag = (): void => {
+      document.removeEventListener('mousemove', onPointerMove);
+      document.removeEventListener('mouseup', onPointerUp);
+      document.body.classList.remove('canvas-sidebar-resizing');
+      stopSidebarResizeDrag = null;
+    };
+
+    document.addEventListener('mousemove', onPointerMove);
+    document.addEventListener('mouseup', onPointerUp);
+  };
+  sidebarResizeHandle?.addEventListener('mousedown', beginSidebarResizeDrag);
+  registerTeardown(() => {
+    stopSidebarResizeDrag?.();
+  });
+
+  addManagedListener(window, 'resize', () => {
+    applySidebarWidthState();
+    scheduleDrawConnections();
+  });
 
   function parseSidebarBlockData(block: HTMLElement): SidebarBlockData {
     let parsedMeta: Record<string, string> = {};
@@ -1401,16 +1771,15 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   wireProjectViewTabs(container, projectId, { beforeNavigate: () => clearCanvasViewCleanup(container) });
 
   // -- Save prompt snapshot for diff/history --
-  container.querySelector('#btn-save-snapshot')?.addEventListener('click', async () => {
-    const notes = await customPrompt('Snapshot notes:') || 'Canvas snapshot';
-    const version = store.saveAssembledVersion(projectId, notes);
+  container.querySelector('#btn-save-snapshot')?.addEventListener('click', () => {
+    const version = store.saveCurrentState(projectId);
     const btn = container.querySelector<HTMLButtonElement>('#btn-save-snapshot');
     if (!btn) return;
     btn.innerHTML = version
-      ? '<span class="material-icons text-sm">check</span> Snapshot saved'
+      ? '<span class="material-icons text-sm">check</span> State saved'
       : '<span class="material-icons text-sm">info</span> No changes';
     setTimeout(() => {
-      btn.innerHTML = '<span class="material-icons text-sm">save</span> Save Snapshot';
+      btn.innerHTML = '<span class="material-icons text-sm">save</span> Save Current State';
     }, 2000);
   });
 
@@ -1443,6 +1812,33 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     'flow-template',
     '<span class="material-icons text-sm">account_tree</span> Copy Flow Template',
   );
+
+  // Handle UI opening manually if needed, but the click listener handles it.
+
+  toggleTerminalBtn?.addEventListener('click', (e) => {
+    if (!mcpRelayConfig.enabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const isHidden = terminalPanel?.classList.contains('hidden');
+
+    if (isHidden) {
+      terminalPanel?.classList.remove('hidden');
+      requestAnimationFrame(() => {
+        terminalPanel?.setAttribute('data-open', 'true');
+      });
+    } else {
+      terminalPanel?.removeAttribute('data-open');
+      setTimeout(() => terminalPanel?.classList.add('hidden'), 300);
+    }
+  });
+
+  container.querySelector('#btn-terminal-close')?.addEventListener('click', () => {
+    if (terminalPanel) {
+      terminalPanel.removeAttribute('data-open');
+      setTimeout(() => terminalPanel.classList.add('hidden'), 300);
+    }
+  });
 
   // Theme toggle
   wireThemeToggle(container);
