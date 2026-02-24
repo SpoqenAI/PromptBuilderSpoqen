@@ -2,6 +2,7 @@
  * Dashboard View — Project card grid (matches page1.html mockup)
  */
 import { store, type TranscriptFlowDraft } from '../store';
+import type { Project, PromptNode, Connection } from '../models';
 import { router } from '../router';
 import {
   deleteCurrentUserAccount,
@@ -591,19 +592,14 @@ export function renderDashboard(container: HTMLElement): void {
   });
 }
 
-function renderPromptFlowCard(project: {
-  id: string;
-  icon: string;
-  name: string;
-  description: string;
-  model: string;
-  lastEdited: string;
-}): string {
+function renderPromptFlowCard(project: Project): string {
+  const thumbnailHtml = generateGraphThumbnailSVG(project.nodes, project.connections, project.icon);
+
   return `
     <div class="dashboard-search-card prompt-project-card project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden flex flex-col" data-project-id="${escapeHtml(project.id)}">
       <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
         <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
-        <span class="material-icons-outlined text-slate-300 dark:text-slate-700 text-5xl">${escapeHtml(project.icon)}</span>
+        ${thumbnailHtml}
       </div>
       <div class="project-card-body p-5 flex-1 flex flex-col">
         <div class="flex justify-between items-start mb-2 gap-2">
@@ -638,12 +634,15 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
   const connectionCount = linkedProject?.connections.length ?? latestFlow?.connectionCount ?? 0;
   const updatedAt = linkedProject?.lastEdited || latestFlow?.createdAt || flow.updatedAt;
 
+  // If linked Project exists, use its nodes to render thumbnail, else fallback to latestFlow JSON or smart_toy icon.
+  const thumbnailHtml = generateGraphThumbnailSVG(linkedProject?.nodes, linkedProject?.connections, 'smart_toy');
+
   return `
     <div class="dashboard-search-card ${linkedProjectId ? 'transcript-project-card cursor-pointer' : ''} project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 overflow-hidden flex flex-col"
       data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}">
       <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
         <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
-        <span class="material-icons-outlined text-slate-300 dark:text-slate-700 text-5xl">smart_toy</span>
+        ${thumbnailHtml}
       </div>
       <div class="project-card-body p-5 flex-1 flex flex-col">
         <div class="flex items-start justify-between gap-2 mb-2">
@@ -669,6 +668,80 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
           </div>
         </div>
       </div>
+    </div>
+  `;
+}
+
+function generateGraphThumbnailSVG(
+  nodes: Pick<PromptNode, 'id' | 'x' | 'y'>[] | undefined,
+  connections: Pick<Connection, 'from' | 'to'>[] | undefined,
+  defaultIcon: string
+): string {
+  if (!nodes || nodes.length === 0) {
+    return `<span class="material-icons-outlined text-slate-300 dark:text-slate-700 text-5xl">${escapeHtml(defaultIcon)}</span>`;
+  }
+
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const NODE_WIDTH = 250;
+  const NODE_HEIGHT = 80;
+
+  for (const n of nodes) {
+    if (n.x < minX) minX = n.x;
+    if (n.y < minY) minY = n.y;
+    if (n.x + NODE_WIDTH > maxX) maxX = n.x + NODE_WIDTH;
+    if (n.y + NODE_HEIGHT > maxY) maxY = n.y + NODE_HEIGHT;
+  }
+
+  const paddingX = 60;
+  const paddingY = 60;
+  minX -= paddingX;
+  minY -= paddingY;
+  maxX += paddingX;
+  maxY += paddingY;
+
+  const width = Math.max(maxX - minX, 200);
+  const height = Math.max(maxY - minY, 150);
+
+  let paths = '';
+  if (connections) {
+    for (const conn of connections) {
+      const fromNode = nodes.find(n => n.id === conn.from);
+      const toNode = nodes.find(n => n.id === conn.to);
+      if (!fromNode || !toNode) continue;
+
+      const fx = fromNode.x + NODE_WIDTH;
+      const fy = fromNode.y + NODE_HEIGHT / 2;
+      const tx = toNode.x;
+      const ty = toNode.y + NODE_HEIGHT / 2;
+
+      const dist = Math.abs(tx - fx);
+      // Determine control points based on x-distance (approx curve)
+      const ctrlOffset = Math.max(40, dist * 0.4);
+      const cpX1 = fx + ctrlOffset;
+      const cpX2 = tx - ctrlOffset;
+
+      paths += `<path d="M ${fx} ${fy} C ${cpX1} ${fy}, ${cpX2} ${ty}, ${tx} ${ty}" fill="none" stroke="currentColor" stroke-width="6" class="text-slate-300 dark:text-slate-600 opacity-60" />`;
+    }
+  }
+
+  let rects = '';
+  for (const n of nodes) {
+    rects += `
+      <g transform="translate(${n.x}, ${n.y})">
+        <rect x="0" y="0" width="${NODE_WIDTH}" height="${NODE_HEIGHT}" rx="12" fill="currentColor" stroke="currentColor" stroke-width="4" class="text-white dark:text-slate-800 fill-white dark:fill-slate-800 stroke-slate-200 dark:stroke-slate-700" />
+        <rect x="16" y="24" width="32" height="32" rx="8" fill="currentColor" class="text-slate-200 dark:text-slate-700" />
+        <rect x="64" y="30" width="120" height="8" rx="4" fill="currentColor" class="text-slate-200 dark:text-slate-600 opacity-80" />
+        <rect x="64" y="46" width="80" height="6" rx="3" fill="currentColor" class="text-slate-200 dark:text-slate-600 opacity-80" />
+      </g>
+    `;
+  }
+
+  return `
+    <div class="absolute inset-0 w-full h-full flex items-center justify-center p-4">
+      <svg viewBox="${minX} ${minY} ${width} ${height}" xmlns="http://www.w3.org/2000/svg" class="w-full h-full object-contain opacity-70 group-hover:opacity-100 transition-opacity drop-shadow-sm" preserveAspectRatio="xMidYMid meet">
+        ${paths}
+        ${rects}
+      </svg>
     </div>
   `;
 }
@@ -1062,7 +1135,7 @@ function setAccountMessage(container: HTMLElement, message: { kind: MessageKind;
 }
 
 function renderSelectOptions(options: readonly string[]): string {
-  return options.map(option => `<option value="${option}">${option}</option>`).join('');
+  return options.map(option => `< option value = "${option}" > ${option} </option>`).join('');
 }
 
 function computeInitials(displayName: string): string {
