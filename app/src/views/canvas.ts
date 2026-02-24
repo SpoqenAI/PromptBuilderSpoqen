@@ -45,6 +45,7 @@ interface McpRelayConfig {
 const canvasViewportByProject = new Map<string, CanvasViewportState>();
 const canvasSidebarCollapsedByProject = new Map<string, boolean>();
 const canvasSidebarWidthByProject = new Map<string, number>();
+const canvasSidebarCategoryCollapsed = new Set<string>();
 const MIN_CANVAS_SIDEBAR_WIDTH = 200;
 const MAX_CANVAS_SIDEBAR_WIDTH = 560;
 const sidebarLabelMeasureCanvas = document.createElement('canvas');
@@ -213,10 +214,15 @@ function renderSidebarBlocksHTML(categories: Map<string, SidebarBlock[]>): strin
       ? `<p class="px-2 py-2 text-[11px] text-slate-400">Save any canvas node as a template to reuse it here.</p>`
       : '';
 
+    const isCollapsed = canvasSidebarCategoryCollapsed.has(category);
+
     return `
-      <section data-category="${escapeHTML(category)}">
-        <h3 class="px-2 mb-2 text-[10px] font-bold text-slate-400 uppercase tracking-widest">${escapeHTML(category)}</h3>
-        <div class="space-y-1">
+      <section data-category="${escapeHTML(category)}" class="group/category" data-collapsed="${isCollapsed ? 'true' : 'false'}">
+        <button type="button" class="sidebar-category-toggle w-full flex items-center justify-between px-2 py-1 mb-1.5 -mx-2 text-left rounded hover:bg-slate-100 dark:hover:bg-white/5 transition-colors focus:outline-none" aria-expanded="${!isCollapsed}">
+          <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">${escapeHTML(category)}</span>
+          <span class="material-icons text-sm text-slate-400 transition-transform duration-200 group-data-[collapsed=true]/category:-rotate-90">expand_more</span>
+        </button>
+        <div class="space-y-1 overflow-hidden group-data-[collapsed=true]/category:hidden">
           ${blocks.map((block) => {
       const encodedMeta = encodeURIComponent(JSON.stringify(block.meta));
       return `
@@ -1504,6 +1510,29 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   }
 
   const sidebarBlocksHost = container.querySelector<HTMLElement>('#sidebar-blocks');
+
+  sidebarBlocksHost?.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+    const toggleBtn = target.closest('.sidebar-category-toggle');
+    if (toggleBtn) {
+      const section = toggleBtn.closest('section');
+      if (section) {
+        const category = section.dataset.category;
+        if (category) {
+          const isCollapsed = section.dataset.collapsed === 'true';
+          const nextCollapsed = !isCollapsed;
+          section.dataset.collapsed = String(nextCollapsed);
+          toggleBtn.setAttribute('aria-expanded', String(!nextCollapsed));
+          if (nextCollapsed) {
+            canvasSidebarCategoryCollapsed.add(category);
+          } else {
+            canvasSidebarCategoryCollapsed.delete(category);
+          }
+        }
+      }
+    }
+  });
+
   const sidebarSearch = container.querySelector<HTMLInputElement>('#sidebar-search');
   const sidebar = container.querySelector<HTMLElement>('#canvas-sidebar');
   const sidebarResizeHandle = container.querySelector<HTMLElement>('#canvas-sidebar-resize-handle');
