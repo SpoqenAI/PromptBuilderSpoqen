@@ -61,7 +61,7 @@ export async function signUpWithPassword(
   captchaToken?: string,
 ): Promise<SignUpResult> {
   const signUpOptions = {
-    emailRedirectTo: `${window.location.origin}/#/auth/sign-in`,
+    emailRedirectTo: `${window.location.origin}${window.location.pathname}#/auth/sign-in`,
     data: {
       full_name: fullName,
     },
@@ -217,7 +217,7 @@ export async function sendPasswordResetEmail(email: string): Promise<void> {
   }
 
   const resetRes = await supabase.auth.resetPasswordForEmail(normalizedEmail, {
-    redirectTo: `${window.location.origin}/#/auth/sign-in`,
+    redirectTo: `${window.location.origin}${window.location.pathname}#/auth/sign-in`,
   });
   if (resetRes.error) {
     throw new Error(`password reset failed: ${resetRes.error.message}`);
