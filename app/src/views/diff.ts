@@ -186,7 +186,7 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
       <header class="ui-header z-30">
         <div class="ui-header-left">
           <button type="button" class="w-8 h-8 flex items-center justify-center cursor-pointer rounded" id="nav-home" aria-label="Go to dashboard">
-            <img src="/Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
+            <img src="${import.meta.env.BASE_URL}Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
           </button>
           <div class="min-w-0">
             <h1 class="text-sm font-semibold leading-none truncate max-w-[30ch]">${escapeHtml(project.name)}</h1>
@@ -280,8 +280,8 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                 <header class="px-3 py-2 border-b border-slate-200 dark:border-slate-700 bg-white/80 dark:bg-slate-900/80 flex items-center justify-between">
                   <div class="text-xs font-semibold text-slate-700 dark:text-slate-200">
                     ${selectedNodeId
-          ? `Node Diff: ${escapeHtml(selectedNodeId)}`
-          : 'Node Diff'}
+            ? `Node Diff: ${escapeHtml(selectedNodeId)}`
+            : 'Node Diff'}
                   </div>
                   <div class="flex items-center gap-3">
                     <button id="btn-toggle-node-diff-inline" class="px-2 py-1 text-[11px] font-medium border border-slate-200 dark:border-slate-700 rounded hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
@@ -315,8 +315,8 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                     </div>
                   </div>
                   ${(selectedOldNode && selectedNewNode && selectedOldNode.content === selectedNewNode.content)
-          ? '<p class="px-3 py-2 border-t border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">Node content is unchanged. Highlighting is from label/type/icon/meta/connection changes.</p>'
-          : ''}
+              ? '<p class="px-3 py-2 border-t border-slate-200 dark:border-slate-700 text-xs text-slate-500 dark:text-slate-400">Node content is unchanged. Highlighting is from label/type/icon/meta/connection changes.</p>'
+              : ''}
                 ` : `
                   <div class="h-[min(32vh,16rem)] min-h-[10rem] flex items-center justify-center text-center px-6">
                     <p class="text-sm text-slate-500 dark:text-slate-400">Select a highlighted node in either graph to compare node content side-by-side.</p>
@@ -375,19 +375,19 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                   </div>
                   <div class="space-y-2 max-h-56 overflow-y-auto custom-scrollbar pr-1">
                     ${graphDiff.changedNodeIds.map((nodeId) => {
-          const oldNode = oldSnapshot ? findNode(oldSnapshot, nodeId) : null;
-          const newNode = newSnapshot ? findNode(newSnapshot, nodeId) : null;
-          const label = newNode?.label ?? oldNode?.label ?? nodeId;
-          const oldStatus = graphDiff.oldStatusById.get(nodeId) ?? 'n/a';
-          const newStatus = graphDiff.newStatusById.get(nodeId) ?? 'n/a';
-          const active = selectedNodeId === nodeId;
-          return `
+                const oldNode = oldSnapshot ? findNode(oldSnapshot, nodeId) : null;
+                const newNode = newSnapshot ? findNode(newSnapshot, nodeId) : null;
+                const label = newNode?.label ?? oldNode?.label ?? nodeId;
+                const oldStatus = graphDiff.oldStatusById.get(nodeId) ?? 'n/a';
+                const newStatus = graphDiff.newStatusById.get(nodeId) ?? 'n/a';
+                const active = selectedNodeId === nodeId;
+                return `
                         <button class="changed-node-jump w-full text-left rounded border px-2 py-1.5 text-[11px] ${active ? 'border-primary bg-primary/5 text-primary' : 'border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800'}" data-node-id="${escapeHtml(nodeId)}">
                           <div class="font-medium">${escapeHtml(label)}</div>
                           <div class="mt-0.5 text-[10px] opacity-80">old=${escapeHtml(oldStatus)} | new=${escapeHtml(newStatus)}</div>
                         </button>
                       `;
-        }).join('')}
+              }).join('')}
                   </div>
                 </section>
               ` : ''}
@@ -714,7 +714,7 @@ function wireGraphViewport(
   state: GraphViewportState,
 ): () => void {
   const panel = container.querySelector<HTMLElement>(`#graph-panel-${side}`);
-  if (!panel) return () => {};
+  if (!panel) return () => { };
 
   applyGraphViewportTransform(container, side, state);
 
@@ -1079,8 +1079,8 @@ function renderPromptAlignmentSection(args: PromptAlignmentSectionArgs): string 
           ${args.transcriptSetOptions.length === 0 || args.transcriptSetsBusy ? 'disabled' : ''}
         >
           ${args.transcriptSetOptions.length === 0
-            ? '<option value="">No transcript sets</option>'
-            : args.transcriptSetOptions.map((option) => `
+      ? '<option value="">No transcript sets</option>'
+      : args.transcriptSetOptions.map((option) => `
               <option value="${escapeHtml(option.id)}" ${option.id === args.selectedTranscriptSetId ? 'selected' : ''}>
                 ${escapeHtml(option.name)}
               </option>

@@ -107,7 +107,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
         <header class="ui-header z-20">
           <div class="ui-header-left">
             <button type="button" class="w-8 h-8 flex items-center justify-center cursor-pointer rounded" id="nav-home" aria-label="Go to dashboard">
-              <img src="/Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
+              <img src="${import.meta.env.BASE_URL}Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
             </button>
             <div class="min-w-0">
               <h1 class="text-sm font-semibold leading-none">Import Transcript (AI)</h1>

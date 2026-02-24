@@ -276,7 +276,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       <div class="ui-header-left">
         <div class="flex items-center gap-3 min-w-0">
           <button type="button" class="h-10 w-10 flex items-center justify-center cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
-            <img src="/Icon.svg" alt="Spoqen" class="h-10 w-10 object-contain" />
+            <img src="${import.meta.env.BASE_URL}Icon.svg" alt="Spoqen" class="h-10 w-10 object-contain" />
           </button>
           <div class="min-w-0">
             <h1 class="text-sm font-semibold leading-none truncate max-w-[34ch]" title="${escapeHTML(project.name)}">${project.name}</h1>

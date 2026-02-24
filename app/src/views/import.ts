@@ -343,7 +343,7 @@ export function renderImport(container: HTMLElement): void {
       <header class="h-14 border-b border-primary/10 flex items-center justify-between px-6 bg-white dark:bg-background-dark/80 z-20">
         <div class="flex items-center gap-3">
           <button type="button" class="w-8 h-8 flex items-center justify-center cursor-pointer rounded" id="nav-home" aria-label="Go to dashboard">
-            <img src="/Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
+            <img src="${import.meta.env.BASE_URL}Icon.svg" alt="Spoqen" class="w-8 h-8 object-contain" />
           </button>
           <div>
             <h1 class="text-sm font-semibold leading-none">Import Prompt</h1>
