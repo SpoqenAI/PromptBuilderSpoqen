@@ -55,7 +55,7 @@ interface SpeakerTurn {
 }
 
 const MIN_TRANSCRIPT_LENGTH = 20;
-const MAX_TRANSCRIPT_LENGTH = 50_000;
+const MAX_TRANSCRIPT_LENGTH = 120_000;
 const DEFAULT_MAX_NODES = 18;
 const MAX_ALLOWED_NODES = 40;
 

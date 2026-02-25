@@ -48,6 +48,7 @@ interface TranscriptFlowApiResponse {
 
 const DEFAULT_MAX_NODES = 18;
 const MIN_TRANSCRIPT_LENGTH = 20;
+const MAX_BATCH_CHARS = 40_000; // stay under Edge Function's 120K limit with headroom for existingGraph JSON
 const SUPABASE_URL = import.meta.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ?? '';
 
@@ -78,12 +79,13 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
     throw new Error('Supabase environment is not configured for transcript generation.');
   }
 
-  let currentFlow: TranscriptFlowResult | null = null;
-  const batchSize = 3;
+  // Split any oversized transcripts into chunks that fit the budget
+  const chunks = buildCharacterBudgetBatches(transcripts, MAX_BATCH_CHARS);
 
-  for (let i = 0; i < transcripts.length; i += batchSize) {
-    const batch = transcripts.slice(i, i + batchSize);
-    const combinedTranscript = batch.join('\\n\\n---\\n\\n');
+  let currentFlow: TranscriptFlowResult | null = null;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const combinedTranscript = chunks[i];
     const accessToken = await resolveAccessToken();
 
     const payload = {
@@ -118,7 +120,7 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
     }
 
     currentFlow = toTranscriptFlowResult(data);
-    request.onProgress?.(Math.min(i + batchSize, transcripts.length), transcripts.length);
+    request.onProgress?.(i + 1, chunks.length);
   }
 
   if (!currentFlow) {
@@ -126,6 +128,55 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
   }
 
   return currentFlow;
+}
+
+/**
+ * Splits transcripts into batches that fit under `maxChars`.
+ * If a single transcript exceeds the budget it is split at line boundaries.
+ */
+function buildCharacterBudgetBatches(transcripts: string[], maxChars: number): string[] {
+  const separator = '\n\n---\n\n';
+  const batches: string[] = [];
+  let current = '';
+
+  for (const transcript of transcripts) {
+    // If a single transcript is larger than the budget, split it into sub-chunks
+    if (transcript.length > maxChars) {
+      // Flush anything accumulated so far
+      if (current.length > 0) {
+        batches.push(current);
+        current = '';
+      }
+      // Split at line boundaries
+      const lines = transcript.split('\n');
+      let chunk = '';
+      for (const line of lines) {
+        if (chunk.length + line.length + 1 > maxChars && chunk.length > 0) {
+          batches.push(chunk);
+          chunk = '';
+        }
+        chunk += (chunk.length > 0 ? '\n' : '') + line;
+      }
+      if (chunk.length > 0) {
+        batches.push(chunk);
+      }
+      continue;
+    }
+
+    const addition = current.length > 0 ? separator + transcript : transcript;
+    if (current.length + addition.length > maxChars && current.length > 0) {
+      batches.push(current);
+      current = transcript;
+    } else {
+      current += addition;
+    }
+  }
+
+  if (current.length > 0) {
+    batches.push(current);
+  }
+
+  return batches;
 }
 
 function toTranscriptFlowResult(value: TranscriptFlowApiResponse): TranscriptFlowResult {
