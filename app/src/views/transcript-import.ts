@@ -61,15 +61,19 @@ const nodeLabelMeasureContext = nodeLabelMeasureCanvas.getContext('2d');
 export function renderTranscriptImport(container: HTMLElement): void {
   let projectName = DEFAULT_PROJECT_NAME;
   let projectModel = DEFAULT_PROJECT_MODEL;
-  let transcriptText = '';
-  let transcriptFileName = '';
+  interface TranscriptFile {
+    id: string;
+    name: string;
+    content: string;
+  }
+  let transcripts: TranscriptFile[] = [];
   let assistantName = 'Assistant';
   let userName = 'User';
 
   let generatedFlow: TranscriptFlowResult | null = null;
   let generationError = '';
   let isGenerating = false;
-  let selectedNodeId: string | null = null;
+  let processingProgress: { processed: number; total: number } | null = null;
   let flowRevision = 0;
   let approvedRevision = -1;
   let approvedAt: string | null = null;
@@ -91,11 +95,8 @@ export function renderTranscriptImport(container: HTMLElement): void {
     cleanupFlowViewport?.();
     cleanupFlowViewport = null;
 
-    const canGenerate = transcriptText.trim().length >= MIN_TRANSCRIPT_LENGTH && !isGenerating;
+    const canGenerate = transcripts.length > 0 && !isGenerating;
     const flowApproved = isCurrentFlowApproved();
-    const selectedNode = selectedNodeId && generatedFlow
-      ? generatedFlow.nodes.find((n) => n.id === selectedNodeId) ?? null
-      : null;
     const flowRenderState = generatedFlow
       ? buildFlowRenderState(generatedFlow, nodePositionOverrides)
       : null;
@@ -163,17 +164,34 @@ export function renderTranscriptImport(container: HTMLElement): void {
               </div>
               <div>
                 <div class="flex items-center justify-between gap-2 mb-1">
-                  <label for="transcript-text" class="text-xs font-medium text-slate-500">Transcript</label>
-                  <span id="transcript-char-count" class="text-[11px] text-slate-400">${transcriptText.length} chars</span>
+                  <label class="text-xs font-medium text-slate-500">Transcript Corpus</label>
+                  <span id="transcript-corpus-count" class="text-[11px] text-slate-400">${transcripts.length} files</span>
                 </div>
-                <textarea id="transcript-text" rows="10" class="ui-textarea font-mono leading-relaxed custom-scrollbar" placeholder="Example:\nUser: I need to change my reservation.\nAssistant: Sure, I can help with that...">${esc(transcriptText)}</textarea>
-                <div class="mt-2 flex flex-wrap items-center gap-2">
-                  <input id="transcript-file" type="file" accept=".txt,.md,.log,.json,.csv,.srt,.vtt" class="hidden" />
-                  <button id="btn-upload-transcript" type="button" class="ui-btn ui-btn-ghost">
-                    Upload file
-                  </button>
-                  ${transcriptFileName ? `<span class="text-[11px] text-slate-500 truncate max-w-[min(12rem,45vw)]" title="${esc(transcriptFileName)}">${esc(transcriptFileName)}</span>` : '<span class="text-[11px] text-slate-400">No file</span>'}
+                
+                <div id="transcript-drop-zone" class="border-2 border-dashed border-slate-300 dark:border-slate-700 rounded-lg p-4 text-center hover:border-primary/50 hover:bg-primary/5 transition-colors cursor-pointer">
+                  <div class="flex flex-col items-center gap-2 pointer-events-none">
+                    <span class="material-icons text-slate-400">cloud_upload</span>
+                    <p class="text-[11px] text-slate-500">Drag & drop files here, or <span class="text-primary cursor-pointer hover:underline pointer-events-auto" id="btn-upload-transcript">browse</span></p>
+                    <p class="text-[9px] text-slate-400">Supports .txt, .srt, .vtt, .csv (up to 100 files)</p>
+                  </div>
+                  <input id="transcript-file" type="file" multiple accept=".txt,.md,.log,.json,.csv,.srt,.vtt" class="hidden" />
                 </div>
+
+                ${transcripts.length > 0 ? `
+                  <div class="mt-3 max-h-48 overflow-y-auto custom-scrollbar space-y-1 pr-1" id="transcript-list">
+                    ${transcripts.map(t => `
+                      <div class="flex items-center justify-between gap-2 p-2 bg-slate-50 dark:bg-slate-900 rounded border border-slate-200 dark:border-slate-800">
+                        <div class="min-w-0 flex-1">
+                          <p class="text-[11px] font-medium text-slate-700 dark:text-slate-300 truncate" title="${esc(t.name)}">${esc(t.name)}</p>
+                          <p class="text-[9px] text-slate-400">${(t.content.length / 1024).toFixed(1)} KB</p>
+                        </div>
+                        <button type="button" class="text-slate-400 hover:text-red-500 transition-colors p-1" data-remove-transcript="${esc(t.id)}">
+                          <span class="material-icons text-[14px]">close</span>
+                        </button>
+                      </div>
+                    `).join('')}
+                  </div>
+                ` : ''}
               </div>
 
               ${generationError ? `<p id="transcript-generate-error" class="rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs text-red-700 dark:text-red-200">${esc(generationError)}</p>` : ''}
@@ -181,7 +199,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
 
               <div class="flex flex-wrap gap-2 pt-1">
                 <button id="btn-generate-flow" class="flex-1 ui-btn ui-btn-primary !text-sm !py-2 disabled:opacity-50 disabled:cursor-not-allowed" ${canGenerate ? '' : 'disabled'}>
-                  ${isGenerating ? 'Generating...' : 'Generate Flow'}
+                  ${isGenerating ? (processingProgress ? `Generating (${processingProgress.processed}/${processingProgress.total})...` : 'Generating...') : 'Generate Flow'}
                 </button>
                 <button id="btn-clear-transcript" type="button" class="ui-btn ui-btn-ghost !text-sm !py-2">
                   Clear
@@ -201,7 +219,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
           <!-- Main Canvas Area -->
           <div class="ui-pane flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
             ${generatedFlow
-          ? renderFlowCanvas(generatedFlow, selectedNode, flowApproved, isGenerating, flowRenderState as FlowRenderState)
+          ? renderFlowCanvas(generatedFlow, flowApproved, isGenerating, flowRenderState as FlowRenderState)
           : renderEmptyCanvas(isGenerating, generatingThoughts)}
             ${isGenerating && generatedFlow ? renderGeneratingOverlay(generatingThoughts) : ''}
           </div>
@@ -238,9 +256,9 @@ export function renderTranscriptImport(container: HTMLElement): void {
       const ww = parseFloat(world.style.width) || 760;
       const wh = parseFloat(world.style.height) || 420;
       const fitScale = Math.min(vw / ww, vh / wh, 1);
-      zoom = Math.max(MIN_ZOOM, Math.min(fitScale * 0.9, MAX_ZOOM));
-      panX = (vw - ww * zoom) / 2;
-      panY = (vh - wh * zoom) / 2;
+      zoom = Math.max(MIN_ZOOM, Math.min(fitScale * 0.85, MAX_ZOOM));
+      panX = Math.max(20, (vw - ww * zoom) / 2);
+      panY = Math.max(40, (vh - wh * zoom) / 2);
     }
 
     function applyTransform(): void {
@@ -473,50 +491,78 @@ export function renderTranscriptImport(container: HTMLElement): void {
       userName = userNameInput.value;
     });
 
-    const transcriptTextArea = container.querySelector<HTMLTextAreaElement>('#transcript-text');
-    transcriptTextArea?.addEventListener('input', () => {
-      transcriptText = transcriptTextArea.value;
-      generationError = '';
-      persistenceMessage = null;
-      clearFlowApproval();
-      container.querySelector('#transcript-generate-error')?.remove();
-      syncTranscriptControls();
-    });
-
+    const dropZone = container.querySelector<HTMLElement>('#transcript-drop-zone');
     const fileInput = container.querySelector<HTMLInputElement>('#transcript-file');
-    container.querySelector<HTMLButtonElement>('#btn-upload-transcript')?.addEventListener('click', () => {
+
+    container.querySelector<HTMLElement>('#btn-upload-transcript')?.addEventListener('click', (e) => {
+      e.stopPropagation();
       fileInput?.click();
     });
 
-    fileInput?.addEventListener('change', () => {
-      const file = fileInput.files?.[0];
-      if (!file) return;
+    dropZone?.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('border-primary', 'bg-primary/5');
+    });
 
-      void (async () => {
-        try {
-          const text = await file.text();
-          transcriptText = normalizeLineEndings(text);
-          transcriptFileName = file.name;
-          generationError = '';
-          persistenceMessage = null;
-          clearFlowApproval();
-          render();
-        } catch {
-          generationError = 'Unable to read transcript file.';
-          render();
-        }
-      })();
+    dropZone?.addEventListener('dragleave', () => {
+      dropZone.classList.remove('border-primary', 'bg-primary/5');
+    });
+
+    dropZone?.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('border-primary', 'bg-primary/5');
+      if (e.dataTransfer?.files) {
+        handleFiles(Array.from(e.dataTransfer.files));
+      }
+    });
+
+    fileInput?.addEventListener('change', () => {
+      if (fileInput.files) {
+        handleFiles(Array.from(fileInput.files));
+        fileInput.value = '';
+      }
+    });
+
+    function handleFiles(files: File[]) {
+      let processed = 0;
+      for (const file of files) {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+          const content = e.target?.result as string;
+          transcripts.push({
+            id: uid(),
+            name: file.name,
+            content: normalizeLineEndings(content)
+          });
+          processed++;
+          if (processed === files.length) {
+            generationError = '';
+            persistenceMessage = null;
+            clearFlowApproval();
+            render();
+          }
+        };
+        reader.readAsText(file);
+      }
+    }
+
+    container.querySelectorAll<HTMLButtonElement>('[data-remove-transcript]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const id = btn.dataset.removeTranscript;
+        transcripts = transcripts.filter(t => t.id !== id);
+        render();
+      });
     });
 
     container.querySelector<HTMLButtonElement>('#btn-clear-transcript')?.addEventListener('click', () => {
-      transcriptText = '';
-      transcriptFileName = '';
+      transcripts = [];
       generationError = '';
+      processingProgress = null;
       generatedFlow = null;
       nodePositionOverrides = {};
       latestRenderedLayout = {};
       latestRenderedNodeSizes = {};
-      selectedNodeId = null;
       flowRevision = 0;
       approvedRevision = -1;
       approvedAt = null;
@@ -548,28 +594,22 @@ export function renderTranscriptImport(container: HTMLElement): void {
       void generateFlow();
     });
 
-    container.querySelector<HTMLButtonElement>('#btn-close-detail')?.addEventListener('click', () => {
-      selectedNodeId = null;
-      render();
-    });
-
-    // Wire clickable nodes
+    // Wire clickable nodes — open editable modal
     container.querySelectorAll<HTMLElement>('[data-flow-node-id]').forEach((el) => {
       el.addEventListener('click', (e) => {
         if (suppressNextNodeClick) return;
         e.stopPropagation();
-        selectedNodeId = el.dataset.flowNodeId ?? null;
-        render();
+        const nodeId = el.dataset.flowNodeId ?? null;
+        if (!nodeId || !generatedFlow) return;
+        const node = generatedFlow.nodes.find((n) => n.id === nodeId);
+        if (node) openNodeEditorModal(node);
       });
     });
 
     // Click canvas background to deselect
     container.querySelector<HTMLElement>('#flow-viewport')?.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).id === 'flow-viewport' || (e.target as HTMLElement).closest('svg')) {
-        if (selectedNodeId) {
-          selectedNodeId = null;
-          render();
-        }
+        // no-op, modal handles its own close now
       }
     });
   }
@@ -577,9 +617,8 @@ export function renderTranscriptImport(container: HTMLElement): void {
   async function generateFlow(): Promise<void> {
     if (isGenerating) return;
 
-    const transcript = normalizeLineEndings(transcriptText).trim();
-    if (transcript.length < MIN_TRANSCRIPT_LENGTH) {
-      generationError = `Transcript must be at least ${MIN_TRANSCRIPT_LENGTH} characters.`;
+    if (transcripts.length === 0) {
+      generationError = 'Please upload at least one transcript.';
       render();
       return;
     }
@@ -588,13 +627,18 @@ export function renderTranscriptImport(container: HTMLElement): void {
     generatingThoughts = buildGeneratingThoughtSequence();
     generationError = '';
     persistenceMessage = null;
+    processingProgress = null;
     render();
 
     try {
       const flow = await generateTranscriptFlow({
-        transcript,
+        transcripts: transcripts.map(t => t.content),
         assistantName: assistantName.trim() || undefined,
         userName: userName.trim() || undefined,
+        onProgress: (processed, total) => {
+          processingProgress = { processed, total };
+          render();
+        }
       });
 
       generatedFlow = flow;
@@ -606,14 +650,14 @@ export function renderTranscriptImport(container: HTMLElement): void {
       savedPanY = null;
       flowRevision += 1;
       clearFlowApproval();
-      transcriptText = transcript;
+
       if (projectName.trim().length === 0 || projectName === DEFAULT_PROJECT_NAME) {
         projectName = flow.title;
       }
 
       try {
         const persisted = await persistTranscriptFlowArtifacts({
-          transcript,
+          transcript: transcripts.map(t => t.content).join('\\n\\n---\\n\\n'),
           flow,
           projectName: projectName.trim() || flow.title || DEFAULT_PROJECT_NAME,
           transcriptSetId,
@@ -622,7 +666,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
             userName: userName.trim() || 'User',
             projectModel,
             nodeCountStrategy: 'ai-decides',
-            transcriptFileName: transcriptFileName || null,
+            transcriptCount: transcripts.length,
           },
         });
         transcriptSetId = persisted.transcriptSetId;
@@ -651,14 +695,14 @@ export function renderTranscriptImport(container: HTMLElement): void {
   }
 
   function syncTranscriptControls(): void {
-    const charCount = container.querySelector<HTMLElement>('#transcript-char-count');
-    if (charCount) {
-      charCount.textContent = `${transcriptText.length} chars`;
+    const corpusCount = container.querySelector<HTMLElement>('#transcript-corpus-count');
+    if (corpusCount) {
+      corpusCount.textContent = `${transcripts.length} files`;
     }
 
     const generateButton = container.querySelector<HTMLButtonElement>('#btn-generate-flow');
     if (generateButton) {
-      generateButton.disabled = transcriptText.trim().length < MIN_TRANSCRIPT_LENGTH || isGenerating;
+      generateButton.disabled = transcripts.length === 0 || isGenerating;
     }
   }
 
@@ -723,6 +767,96 @@ export function renderTranscriptImport(container: HTMLElement): void {
     approvedAt = null;
   }
 
+  function openNodeEditorModal(node: TranscriptFlowNode): void {
+    const overlay = document.createElement('div');
+    overlay.className = 'fixed inset-0 z-[100] flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-200';
+
+    const dialog = document.createElement('div');
+    dialog.className = 'bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-xl shadow-2xl w-full max-w-xl p-0 animate-in zoom-in-95 duration-200 flex flex-col max-h-[85vh]';
+
+    const safeIcon = resolveNodeIcon(node.icon, node.type);
+
+    dialog.innerHTML = `
+      <div class="flex items-center justify-between px-5 py-3 border-b border-zinc-200 dark:border-zinc-800">
+        <div class="flex items-center gap-2 min-w-0">
+          <span class="material-icons text-base text-primary shrink-0">${safeIcon}</span>
+          <span class="text-sm font-bold text-zinc-900 dark:text-zinc-100 truncate">Edit Node</span>
+        </div>
+        <button id="modal-close-btn" class="text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-200 p-1 cursor-pointer" title="Close">
+          <span class="material-icons text-lg">close</span>
+        </button>
+      </div>
+      <div class="flex-1 overflow-y-auto custom-scrollbar px-5 py-4 space-y-4">
+        <div>
+          <label class="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">Label</label>
+          <input id="node-edit-label" type="text" value="${esc(node.label)}" class="w-full px-3 py-2 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg focus:ring-2 focus:ring-primary/50 focus:outline-none text-sm text-zinc-900 dark:text-zinc-100" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">Type</label>
+          <input id="node-edit-type" type="text" value="${esc(node.type)}" class="w-full px-3 py-2 bg-zinc-50 dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg text-sm text-zinc-600 dark:text-zinc-400" />
+        </div>
+        <div>
+          <label class="block text-xs font-medium text-zinc-500 dark:text-zinc-400 mb-1">Content</label>
+          <textarea id="node-edit-content" rows="12" class="w-full px-3 py-2 bg-white dark:bg-zinc-950 border border-zinc-200 dark:border-zinc-800 rounded-lg font-mono text-xs leading-relaxed focus:ring-2 focus:ring-primary/50 focus:outline-none text-zinc-900 dark:text-zinc-100 custom-scrollbar resize-y">${esc(node.content)}</textarea>
+        </div>
+        ${Object.keys(node.meta).length > 0 ? `
+        <div>
+          <span class="block text-[9px] uppercase tracking-wider text-zinc-400 mb-1">Metadata</span>
+          ${Object.entries(node.meta).map(([k, v]) => `<div class="text-[11px] text-zinc-500"><span class="font-medium">${esc(k)}:</span> ${esc(v)}</div>`).join('')}
+        </div>
+        ` : ''}
+      </div>
+      <div class="flex justify-end gap-2 px-5 py-3 border-t border-zinc-200 dark:border-zinc-800">
+        <button id="modal-cancel-btn" class="px-4 py-2 bg-zinc-100 dark:bg-zinc-800 text-zinc-900 dark:text-zinc-100 rounded-lg font-medium hover:bg-zinc-200 dark:hover:bg-zinc-700 transition-colors text-sm">Cancel</button>
+        <button id="modal-save-btn" class="px-4 py-2 bg-black dark:bg-white text-white dark:text-black rounded-lg font-medium hover:bg-zinc-800 dark:hover:bg-zinc-200 transition-colors text-sm">Save Changes</button>
+      </div>
+    `;
+
+    overlay.appendChild(dialog);
+    document.body.appendChild(overlay);
+
+    const labelInput = dialog.querySelector<HTMLInputElement>('#node-edit-label')!;
+    const contentArea = dialog.querySelector<HTMLTextAreaElement>('#node-edit-content')!;
+    const typeInput = dialog.querySelector<HTMLInputElement>('#node-edit-type')!;
+
+    labelInput.focus({ preventScroll: true });
+    labelInput.select();
+
+    const cleanup = () => {
+      document.body.removeChild(overlay);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+
+    const save = () => {
+      node.label = labelInput.value.trim() || node.label;
+      node.content = contentArea.value;
+      node.type = (typeInput.value.trim() || node.type) as typeof node.type;
+      flowRevision += 1;
+      clearFlowApproval();
+      cleanup();
+      render();
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cleanup();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        save();
+      }
+    };
+
+    dialog.querySelector('#modal-close-btn')!.addEventListener('click', cleanup);
+    dialog.querySelector('#modal-cancel-btn')!.addEventListener('click', cleanup);
+    dialog.querySelector('#modal-save-btn')!.addEventListener('click', save);
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay) cleanup();
+    });
+    document.addEventListener('keydown', handleKeyDown);
+  }
+
   render();
 }
 
@@ -763,7 +897,6 @@ function renderEmptyCanvas(isGenerating: boolean, generatingThoughts: string[]):
 
 function renderFlowCanvas(
   flow: TranscriptFlowResult,
-  selectedNode: TranscriptFlowNode | null,
   isApproved: boolean,
   isGenerating: boolean,
   flowRenderState: FlowRenderState,
@@ -796,19 +929,17 @@ function renderFlowCanvas(
   const nodes = flow.nodes
     .map((node, index) => {
       const position = layout[node.id] ?? { x: 80, y: 80 };
-      const isSelected = node.id === selectedNode?.id;
       const safeIcon = resolveNodeIcon(node.icon, node.type);
       const displayLabel = node.label.trim().length > 0 ? node.label.trim() : `Step ${shortId(node.id)}`;
       const contentPreview = esc(trimForPreview(node.content, 120));
       const nodeSize = nodeSizes[node.id] ?? defaultNodeSize();
       const nodeColor = readNodeColorMeta(node.meta) ?? getAutoNodeColor(index);
       const styles = buildNodeColorStyles(nodeColor);
-      const selectionOutline = isSelected ? `0 0 0 2px ${styles.ring}` : 'none';
 
       return `
         <div class="canvas-node pointer-events-auto bg-white dark:bg-slate-900 border rounded-lg shadow-xl node-glow cursor-pointer"
              data-flow-node-id="${esc(node.id)}"
-             style="left:${position.x}px; top:${position.y}px; width:${nodeSize.width}px; border-color:${styles.border}; box-shadow:${selectionOutline};">
+             style="left:${position.x}px; top:${position.y}px; width:${nodeSize.width}px; border-color:${styles.border};">
           <div class="node-header p-3 flex items-center justify-between rounded-t-lg cursor-move" style="background:${styles.headerBackground}; border-bottom:1px solid ${styles.headerBorder};">
             <h2 class="text-xs font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2 select-none min-w-0">
               <span class="material-icons text-sm shrink-0 w-4 overflow-hidden text-center" style="color:${styles.icon};">${safeIcon}</span>
@@ -828,28 +959,8 @@ function renderFlowCanvas(
     })
     .join('');
 
-  const detailPanel = selectedNode ? `
-    <div class="absolute top-4 right-4 w-[min(22rem,calc(100vw-2rem))] bg-white dark:bg-slate-900 border border-primary/20 rounded-xl shadow-2xl z-20 max-h-[calc(100%-2rem)] flex flex-col">
-      <div class="flex items-center justify-between p-3 border-b border-primary/10">
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="material-icons text-sm text-primary shrink-0 w-4 overflow-hidden text-center">${resolveNodeIcon(selectedNode.icon, selectedNode.type)}</span>
-          <span class="text-xs font-bold truncate">${esc(selectedNode.label)}</span>
-        </div>
-        <button id="btn-close-detail" class="text-slate-400 hover:text-slate-600 p-0.5 shrink-0 cursor-pointer" title="Close">
-          <span class="material-icons text-sm">close</span>
-        </button>
-      </div>
-      <div class="p-3 overflow-y-auto custom-scrollbar space-y-2">
-        <div class="text-xs text-slate-700 dark:text-slate-300 font-mono whitespace-pre-wrap leading-relaxed">${esc(selectedNode.content)}</div>
-        ${Object.keys(selectedNode.meta).length > 0 ? `
-          <div class="border-t border-primary/10 pt-2 mt-2">
-            <span class="text-[9px] text-slate-400 uppercase tracking-wider">Metadata</span>
-            ${Object.entries(selectedNode.meta).map(([k, v]) => `<div class="text-[11px] text-slate-500 mt-1"><span class="font-medium">${esc(k)}:</span> ${esc(v)}</div>`).join('')}
-          </div>
-        ` : ''}
-      </div>
-    </div>
-  ` : '';
+  // Detail panel is now a full-screen modal — see openNodeEditorModal()
+  const detailPanel = '';
 
   const infoBar = `
     <div class="absolute top-4 left-4 right-4 sm:right-auto sm:max-w-[min(90vw,60rem)] flex items-center gap-2 overflow-x-auto whitespace-nowrap custom-scrollbar text-xs font-medium text-slate-400 bg-white/80 dark:bg-background-dark/80 px-3 py-1.5 rounded-full border border-primary/10 shadow-sm z-10">
@@ -1074,18 +1185,28 @@ function computeFlowLayout(flow: TranscriptFlowResult, nodeSizes: NodeSizeMap): 
   const ySpacing = TRANSCRIPT_NODE_Y_GAP;
   let currentX = startX;
 
+  const maxNodesInAPillar = Math.max(...levels.map((level) => (groups.get(level) ?? []).length));
+  const expectedMaxHeight = maxNodesInAPillar * ySpacing;
+  const viewportCenterY = startY + expectedMaxHeight / 2;
+
   for (const level of levels) {
     const nodesAtLevel = groups.get(level) ?? [];
     const levelWidth = Math.max(
       TRANSCRIPT_NODE_MIN_WIDTH,
       ...nodesAtLevel.map((node) => (nodeSizes[node.id] ?? defaultNodeSize()).width),
     );
-    nodesAtLevel.forEach((node, index) => {
+
+    const pillarHeight = Math.max(0, (nodesAtLevel.length - 1) * ySpacing);
+    let currentY = viewportCenterY - pillarHeight / 2;
+
+    nodesAtLevel.forEach((node) => {
       layout[node.id] = {
         x: currentX,
-        y: startY + index * ySpacing,
+        y: currentY,
       };
+      currentY += ySpacing;
     });
+
     currentX += levelWidth + TRANSCRIPT_NODE_X_GAP;
   }
 

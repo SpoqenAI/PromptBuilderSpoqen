@@ -21,6 +21,7 @@ type FlowNodeType =
 
 interface TranscriptFlowRequestBody {
   transcript?: unknown;
+  existingGraph?: unknown;
   maxNodes?: unknown;
   assistantName?: unknown;
   userName?: unknown;
@@ -208,6 +209,7 @@ serve(async (req: Request) => {
     const maxNodes = normalizeMaxNodes(body.maxNodes);
     const assistantName = normalizeSpeakerName(body.assistantName, 'Assistant');
     const userName = normalizeSpeakerName(body.userName, 'User');
+    const existingGraph = body.existingGraph as { nodes?: FlowNode[]; connections?: FlowConnection[] } | undefined;
 
     const adminClient = createAdminClient();
     await requireUser(req, adminClient);
@@ -224,6 +226,7 @@ serve(async (req: Request) => {
       try {
         const aiResponse = await generateFlowWithOpenAI({
           transcript,
+          existingGraph,
           maxNodes,
           assistantName,
           userName,
@@ -307,6 +310,7 @@ function normalizeSpeakerName(value: unknown, fallback: string): string {
 
 async function generateFlowWithOpenAI(args: {
   transcript: string;
+  existingGraph?: { nodes?: FlowNode[]; connections?: FlowConnection[] };
   maxNodes: number | undefined;
   assistantName: string;
   userName: string;
@@ -322,8 +326,9 @@ async function generateFlowWithOpenAI(args: {
     messages: [
       {
         role: 'system',
-        content:
-          'You map assistant/user transcripts into a hypothetical call-flow graph. Return concise nodes that represent major states, decisions, and outcomes.',
+        content: args.existingGraph
+          ? 'You map transcripts into an EXISTING call-flow graph context. You will receive the current JSON graph. Your job is to return the UNIFIED graph incorporating any new branches or edge cases found in the new transcript.'
+          : 'You map assistant/user transcripts into a hypothetical call-flow graph. Return concise nodes that represent major states, decisions, and outcomes.',
       },
       {
         role: 'user',
@@ -339,9 +344,24 @@ async function generateFlowWithOpenAI(args: {
           '- Node ids should be stable identifiers like n1, n2, etc.',
           '- Connections should represent possible transitions.',
           '- Use type "custom" if unsure.',
+          '- IMPORTANT VISUALS: For normal, common paths ("golden path"), do not dictate colors.',
+          '- If a node represents a rare edge case, an exception, or an escalation path, add `nodeColor: "#F59E0B"` (amber) or `"#EF4444"` (red) to its `meta` object.',
+          ...(args.existingGraph
+            ? [
+              '--------------------------------',
+              'EXISTING GRAPH STATE:',
+              JSON.stringify(args.existingGraph),
+              '--------------------------------',
+              'INSTRUCTIONS FOR EXISTING GRAPH:',
+              '- Output the ENTIRE unified graph (existing nodes + new nodes).',
+              '- Do NOT delete existing nodes or connections unless necessary for flow integrity.',
+              '- Add new branching paths if the transcript introduces a new scenario or edge case.',
+            ]
+            : []),
+          '--------------------------------',
           'Transcript:',
           args.transcript,
-        ].join('\n'),
+        ].join('\\n'),
       },
     ],
     response_format: {

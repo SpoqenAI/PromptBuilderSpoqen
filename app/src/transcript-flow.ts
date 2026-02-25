@@ -3,10 +3,11 @@ import type { NodeType } from './models';
 import { resolveNodeIcon } from './node-icons';
 
 export interface TranscriptFlowRequest {
-  transcript: string;
+  transcripts: string[];
   maxNodes?: number;
   assistantName?: string;
   userName?: string;
+  onProgress?: (processed: number, total: number) => void;
 }
 
 export interface TranscriptFlowNode {
@@ -69,46 +70,62 @@ const NODE_TYPES: readonly NodeType[] = [
 ] as const;
 
 export async function generateTranscriptFlow(request: TranscriptFlowRequest): Promise<TranscriptFlowResult> {
-  const transcript = request.transcript.trim();
-  if (transcript.length < MIN_TRANSCRIPT_LENGTH) {
-    throw new Error(`Transcript must be at least ${MIN_TRANSCRIPT_LENGTH} characters.`);
+  const transcripts = request.transcripts.map((t) => t.trim()).filter((t) => t.length >= MIN_TRANSCRIPT_LENGTH);
+  if (transcripts.length === 0) {
+    throw new Error(`At least one transcript must be ${MIN_TRANSCRIPT_LENGTH} characters.`);
   }
   if (!SUPABASE_URL || !SUPABASE_PUBLISHABLE_KEY) {
     throw new Error('Supabase environment is not configured for transcript generation.');
   }
-  const accessToken = await resolveAccessToken();
 
-  const payload = {
-    transcript,
-    maxNodes: normalizeMaxNodes(request.maxNodes),
-    assistantName: normalizeOptionalText(request.assistantName),
-    userName: normalizeOptionalText(request.userName),
-  };
+  let currentFlow: TranscriptFlowResult | null = null;
+  const batchSize = 3;
 
-  const response = await fetch(transcriptFunctionUrl(), {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      apikey: SUPABASE_PUBLISHABLE_KEY,
-      Authorization: `Bearer ${accessToken}`,
-    },
-    body: JSON.stringify(payload),
-  });
+  for (let i = 0; i < transcripts.length; i += batchSize) {
+    const batch = transcripts.slice(i, i + batchSize);
+    const combinedTranscript = batch.join('\\n\\n---\\n\\n');
+    const accessToken = await resolveAccessToken();
 
-  if (!response.ok) {
-    throw new Error(await resolveFetchErrorMessage(response, accessToken));
+    const payload = {
+      transcript: combinedTranscript,
+      existingGraph: currentFlow ? { nodes: currentFlow.nodes, connections: currentFlow.connections } : undefined,
+      maxNodes: normalizeMaxNodes(request.maxNodes),
+      assistantName: normalizeOptionalText(request.assistantName),
+      userName: normalizeOptionalText(request.userName),
+    };
+
+    const response = await fetch(transcriptFunctionUrl(), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        apikey: SUPABASE_PUBLISHABLE_KEY,
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      throw new Error(await resolveFetchErrorMessage(response, accessToken));
+    }
+
+    const data = await response.json() as TranscriptFlowApiResponse;
+    if (!data) {
+      throw new Error('Transcript flow generation returned an empty response.');
+    }
+
+    if (typeof data.error === 'string' && data.error.trim().length > 0) {
+      throw new Error(data.error);
+    }
+
+    currentFlow = toTranscriptFlowResult(data);
+    request.onProgress?.(Math.min(i + batchSize, transcripts.length), transcripts.length);
   }
 
-  const data = await response.json() as TranscriptFlowApiResponse;
-  if (!data) {
-    throw new Error('Transcript flow generation returned an empty response.');
+  if (!currentFlow) {
+    throw new Error('Failed to generate any flow.');
   }
 
-  if (typeof data.error === 'string' && data.error.trim().length > 0) {
-    throw new Error(data.error);
-  }
-
-  return toTranscriptFlowResult(data);
+  return currentFlow;
 }
 
 function toTranscriptFlowResult(value: TranscriptFlowApiResponse): TranscriptFlowResult {
