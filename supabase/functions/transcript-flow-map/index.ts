@@ -3,6 +3,15 @@ import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
 import { createAdminClient, requireUser } from '../_shared/supabase.ts';
 
 type FlowNodeType =
+  | 'start'
+  | 'end'
+  | 'process'
+  | 'decision'
+  | 'subprocess'
+  | 'escalation'
+  | 'data-lookup'
+  | 'wait'
+  | 'notification'
   | 'core-persona'
   | 'mission-objective'
   | 'tone-guidelines'
@@ -60,30 +69,36 @@ const DEFAULT_MAX_NODES = 18;
 const MAX_ALLOWED_NODES = 40;
 
 const FLOW_NODE_TYPES: readonly FlowNodeType[] = [
-  'core-persona',
-  'mission-objective',
-  'tone-guidelines',
-  'language-model',
+  'start',
+  'end',
+  'process',
+  'decision',
+  'subprocess',
+  'escalation',
+  'data-lookup',
+  'wait',
+  'notification',
   'logic-branch',
   'termination',
-  'vector-db',
-  'static-context',
-  'memory-buffer',
-  'webhook',
-  'transcriber',
-  'llm-brain',
-  'voice-synth',
-  'style-module',
   'custom',
 ] as const;
 
 const DEFAULT_ICON_BY_TYPE: Readonly<Record<FlowNodeType, string>> = {
+  'start': 'play_circle',
+  'end': 'stop_circle',
+  'process': 'task_alt',
+  'decision': 'alt_route',
+  'subprocess': 'account_tree',
+  'escalation': 'support_agent',
+  'data-lookup': 'search',
+  'wait': 'hourglass_empty',
+  'notification': 'notifications',
+  'logic-branch': 'alt_route',
+  'termination': 'call_end',
   'core-persona': 'psychology',
   'mission-objective': 'flag',
   'tone-guidelines': 'record_voice_over',
   'language-model': 'translate',
-  'logic-branch': 'alt_route',
-  'termination': 'call_end',
   'vector-db': 'storage',
   'static-context': 'article',
   'memory-buffer': 'history',
@@ -96,6 +111,14 @@ const DEFAULT_ICON_BY_TYPE: Readonly<Record<FlowNodeType, string>> = {
 };
 
 const CURATED_MATERIAL_ICONS = [
+  'play_circle',
+  'stop_circle',
+  'task_alt',
+  'account_tree',
+  'support_agent',
+  'search',
+  'hourglass_empty',
+  'notifications',
   'psychology',
   'flag',
   'record_voice_over',
@@ -168,13 +191,17 @@ const FLOW_JSON_SCHEMA: Record<string, unknown> = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['id', 'label', 'type', 'icon', 'content'],
+        required: ['id', 'label', 'type', 'icon', 'content', 'meta'],
         properties: {
           id: { type: 'string' },
           label: { type: 'string' },
           type: { type: 'string' },
           icon: { type: 'string' },
           content: { type: 'string' },
+          meta: {
+            type: 'object',
+            additionalProperties: { type: 'string' },
+          },
         },
       },
     },
@@ -327,8 +354,15 @@ async function generateFlowWithOpenAI(args: {
       {
         role: 'system',
         content: args.existingGraph
-          ? 'You map transcripts into an EXISTING call-flow graph context. You will receive the current JSON graph. Your job is to return the UNIFIED graph incorporating any new branches or edge cases found in the new transcript.'
-          : 'You map assistant/user transcripts into a hypothetical call-flow graph. Return concise nodes that represent major states, decisions, and outcomes.',
+          ? [
+            'You are a process flow diagram specialist. You map call transcripts into EXISTING flow diagrams using BPMN / ISO 5807 conventions.',
+            'You will receive an existing JSON graph. Return the UNIFIED graph incorporating any new branches or edge cases found in the new transcript.',
+            'Preserve the existing graph structure. Add new paths only when the transcript reveals scenarios not already covered.',
+          ].join(' ')
+          : [
+            'You are a process flow diagram specialist. You map call center / assistant transcripts into structured process flow diagrams using BPMN / ISO 5807 conventions.',
+            'Return a clean, hierarchical flow graph with concise nodes representing major states, decisions, and outcomes.',
+          ].join(' '),
       },
       {
         role: 'user',
@@ -336,32 +370,62 @@ async function generateFlowWithOpenAI(args: {
           `Assistant speaker label: ${args.assistantName}`,
           `User speaker label: ${args.userName}`,
           maxNodeLine,
+          '',
+          '=== FLOW DIAGRAM CONVENTIONS (MUST FOLLOW) ===',
+          '',
           `Allowed node types: ${FLOW_NODE_TYPES.join(', ')}`,
-          'Rules:',
-          '- Build a plausible call flow from the transcript (not a verbatim line-by-line dump).',
-          '- Include decision and branch points where the assistant chooses paths.',
-          '- Keep node content practical for prompt/call design.',
-          '- Node ids should be stable identifiers like n1, n2, etc.',
-          '- Connections should represent possible transitions.',
-          '- Use type "custom" if unsure.',
-          '- IMPORTANT VISUALS: For normal, common paths ("golden path"), do not dictate colors.',
-          '- If a node represents a rare edge case, an exception, or an escalation path, add `nodeColor: "#F59E0B"` (amber) or `"#EF4444"` (red) to its `meta` object.',
+          '',
+          'TYPE DEFINITIONS:',
+          '- "start"  → Entry point. Every flow MUST begin with exactly ONE start node (icon: play_circle).',
+          '- "end"    → Terminal point. Use one or more end nodes for each way the call can conclude (icon: stop_circle).',
+          '- "process"→ A standard action step: verify identity, look up account, process payment, etc. (icon: task_alt).',
+          '- "decision"→ A branching gateway. The node label should be a Yes/No question or condition. Outgoing connections MUST have descriptive labels in the "reason" field (e.g. "Yes", "No", "After hours", "VIP customer") (icon: alt_route).',
+          '- "subprocess" → A grouped sub-flow or complex procedure (icon: account_tree).',
+          '- "escalation" → Transfer to a human agent, supervisor, or specialist (icon: support_agent).',
+          '- "data-lookup" → CRM lookup, database query, API call, or knowledge base search (icon: search).',
+          '- "wait"   → Hold, delay, callback scheduling, or async wait (icon: hourglass_empty).',
+          '- "notification" → Send SMS, email, confirmation, or alert to the caller (icon: notifications).',
+          '- "custom" → Use ONLY if none of the above fit.',
+          '',
+          'STRUCTURAL RULES:',
+          '- The flow MUST start with a "start" node and terminate at "end" node(s).',
+          '- Use "decision" nodes for ALL branching logic. Do NOT branch from "process" nodes.',
+          '- Every "decision" node must have 2+ outgoing connections with clear condition labels in the "reason" field.',
+          '- The "golden path" (most common happy path) should form the main vertical spine of the graph.',
+          '- Edge cases, exceptions, and escalations should branch OFF the main spine.',
+          '- Prefer DEPTH (detailed steps along the path) over BREADTH (many parallel paths).',
+          '- Node ids should be stable identifiers: n1, n2, n3, etc.',
+          '- Node labels should be SHORT action phrases (3-6 words): "Verify Caller Identity", "Check Account Status".',
+          '- Node content should contain the detailed description or prompt text for that step.',
+          '- Every node content MUST include both sides of the interaction using short sections like "Agent:" and "User:".',
+          '- For open-ended user replies, bucket likely categories (for example: "Yes / No / Unclear" or "Ready / Not ready / Needs details").',
+          '',
+          'VISUAL COLORING:',
+          '- Normal/golden-path nodes: do NOT set nodeColor in meta.',
+          '- Edge case or exception nodes: set meta.nodeColor to "#F59E0B" (amber).',
+          '- Escalation or error nodes: set meta.nodeColor to "#EF4444" (red).',
+          '',
+          'CONNECTION LABELS:',
+          '- Every connection\'s "reason" field should be a concise condition or transition label.',
+          '- For decision branches: use "Yes", "No", "Condition met", "Caller verified", etc.',
+          '- For sequential steps: use brief descriptions like "Next", "Proceed", "After greeting".',
           ...(args.existingGraph
             ? [
-              '--------------------------------',
-              'EXISTING GRAPH STATE:',
+              '',
+              '=== EXISTING GRAPH STATE ===',
               JSON.stringify(args.existingGraph),
-              '--------------------------------',
-              'INSTRUCTIONS FOR EXISTING GRAPH:',
-              '- Output the ENTIRE unified graph (existing nodes + new nodes).',
-              '- Do NOT delete existing nodes or connections unless necessary for flow integrity.',
-              '- Add new branching paths if the transcript introduces a new scenario or edge case.',
+              '',
+              '=== MERGE INSTRUCTIONS ===',
+              '- Output the ENTIRE unified graph (existing nodes + any new nodes).',
+              '- Do NOT delete existing nodes or connections unless absolutely necessary for flow integrity.',
+              '- Add new branching paths only if the transcript introduces a scenario not already covered.',
+              '- Reuse existing node IDs when a step maps to an already-existing node.',
             ]
             : []),
-          '--------------------------------',
-          'Transcript:',
+          '',
+          '=== TRANSCRIPT ===',
           args.transcript,
-        ].join('\\n'),
+        ].join('\n'),
       },
     ],
     response_format: {

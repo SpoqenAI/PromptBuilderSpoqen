@@ -699,6 +699,40 @@ html.dark .modal-flow-card[data-active="true"] {
   filter: drop-shadow(0 0 8px rgba(14, 165, 233, 0.65));
 }
 
+.flow-edge-label {
+  font-size: 9px;
+  font-weight: 700;
+  fill: #1f2937;
+  paint-order: stroke;
+  stroke: rgba(255, 255, 255, 0.92);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+html.dark .flow-edge-label {
+  fill: #d1fae5;
+  stroke: rgba(2, 6, 23, 0.9);
+}
+
+.flow-decision-node {
+  border-style: dashed;
+  border-width: 2px;
+}
+
+.flow-decision-node .node-header {
+  background-image: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(245, 158, 11, 0.03));
+}
+
+.flow-decision-diamond {
+  width: 8px;
+  height: 8px;
+  border: 1px solid currentColor;
+  transform: rotate(45deg);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+
 /* ── Diff classes ──────────────────────────────── */
 .diff-line {
   display: flex;

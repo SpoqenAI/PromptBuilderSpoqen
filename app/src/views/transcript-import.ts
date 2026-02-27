@@ -635,8 +635,11 @@ export function renderTranscriptImport(container: HTMLElement): void {
         transcripts: transcripts.map(t => t.content),
         assistantName: assistantName.trim() || undefined,
         userName: userName.trim() || undefined,
-        onProgress: (processed, total) => {
+        onProgress: (processed, total, partialFlow) => {
           processingProgress = { processed, total };
+          if (partialFlow) {
+            generatedFlow = partialFlow;
+          }
           render();
         }
       });
@@ -1006,21 +1009,19 @@ function renderFlowCanvas(
 
 function renderGeneratingOverlay(generatingThoughts: string[]): string {
   return `
-    <div class="absolute inset-0 z-30 pointer-events-none">
-      <div class="absolute inset-0 bg-white/28 dark:bg-slate-950/38 backdrop-blur-[1px]"></div>
-      <div class="absolute inset-0 flex items-center justify-center p-6">
-        <div class="w-[22rem] max-w-full rounded-xl border border-primary/25 bg-white/92 dark:bg-slate-900/92 shadow-xl px-4 py-4">
-          <div class="flex flex-col items-center gap-2 text-center">
-            <span class="relative inline-flex h-14 w-14 items-center justify-center">
-              <span class="absolute inset-0 rounded-full border-2 border-primary/25"></span>
-              <span class="absolute inset-1 rounded-full border-2 border-primary border-t-transparent animate-spin"></span>
-              <span class="absolute h-2.5 w-2.5 rounded-full bg-primary/80 animate-pulse"></span>
-            </span>
-            <div class="text-xs text-slate-700 dark:text-slate-200">
-              <div class="font-semibold">Generating flow...</div>
-              <div class="text-[11px] text-slate-500 dark:text-slate-400">AI is updating your graph from the transcript.</div>
-            </div>
-            ${renderThinkingMessages(generatingThoughts)}
+    <div class="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-none animate-in slide-in-from-bottom-4">
+      <div class="w-[22rem] max-w-full rounded-2xl border border-primary/25 bg-white/95 dark:bg-slate-900/95 shadow-2xl px-4 py-3 backdrop-blur-md flex items-center gap-4">
+        <span class="relative inline-flex h-8 w-8 items-center justify-center shrink-0">
+          <span class="absolute inset-0 rounded-full border-2 border-primary/25"></span>
+          <span class="absolute inset-0 rounded-full border-2 border-primary border-t-transparent animate-spin"></span>
+          <span class="absolute h-2 w-2 rounded-full bg-primary/80 animate-pulse"></span>
+        </span>
+        <div class="flex-1 min-w-0">
+          <div class="text-xs font-bold text-slate-800 dark:text-slate-100">Iterating on graph...</div>
+          <div class="h-4 overflow-hidden relative w-full -mt-0.5">
+             <div class="absolute inset-0 scale-[0.9] origin-left -ml-2">
+               ${renderThinkingMessages(generatingThoughts)}
+             </div>
           </div>
         </div>
       </div>

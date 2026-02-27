@@ -10,6 +10,11 @@ vi.mock('./supabase', () => ({
 }));
 
 type TestUtils = {
+  buildTranscriptBatches: (
+    transcripts: string[],
+    maxChars: number,
+    maxTranscriptsPerBatch: number,
+  ) => string[];
   normalizeMaxNodes: (value: number | undefined) => number | undefined;
   normalizeNodeType: (value: unknown) => string;
   toTranscriptConnections: (
@@ -26,6 +31,15 @@ beforeAll(async () => {
 });
 
 describe('transcript flow normalization', () => {
+  it('batches transcripts by both char and transcript-count limits', () => {
+    const transcripts = Array.from({ length: 12 }, (_, index) => `Transcript ${index + 1}: hello world`);
+    const batches = utils.buildTranscriptBatches(transcripts, 4_000, 5);
+    expect(batches).toHaveLength(3);
+    expect(batches[0].split('\n\n---\n\n')).toHaveLength(5);
+    expect(batches[1].split('\n\n---\n\n')).toHaveLength(5);
+    expect(batches[2].split('\n\n---\n\n')).toHaveLength(2);
+  });
+
   it('normalizes max node values to allowed bounds', () => {
     expect(utils.normalizeMaxNodes(undefined)).toBeUndefined();
     expect(utils.normalizeMaxNodes(Number.NaN)).toBe(18);

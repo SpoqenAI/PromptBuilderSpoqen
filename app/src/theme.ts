@@ -47,11 +47,23 @@ export function themeToggleHTML(): string {
   `;
 }
 
-/** Wire up the toggle button event after inserting HTML. */
 export function wireThemeToggle(container: HTMLElement): void {
-  container.querySelector('#theme-toggle')?.addEventListener('click', () => {
+  const toggleBtn = container.querySelector<HTMLButtonElement>('#theme-toggle');
+  if (!toggleBtn) return;
+
+  toggleBtn.addEventListener('click', () => {
     toggleTheme();
-    // Re-render the current route by triggering hashchange
-    window.dispatchEvent(new HashChangeEvent('hashchange'));
+
+    // Update button text and icon without re-rendering the whole route
+    const isDark = getTheme() === 'dark';
+    const srSpan = toggleBtn.querySelector('.sr-only');
+    if (srSpan) {
+      srSpan.textContent = isDark ? 'Switch to light mode' : 'Switch to dark mode';
+    }
+
+    const iconSpan = toggleBtn.nextElementSibling;
+    if (iconSpan && iconSpan.classList.contains('material-icons')) {
+      iconSpan.textContent = isDark ? 'dark_mode' : 'light_mode';
+    }
   });
 }

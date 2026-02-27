@@ -7,7 +7,7 @@ export interface TranscriptFlowRequest {
   maxNodes?: number;
   assistantName?: string;
   userName?: string;
-  onProgress?: (processed: number, total: number) => void;
+  onProgress?: (processed: number, total: number, partialFlow?: TranscriptFlowResult) => void;
 }
 
 export interface TranscriptFlowNode {
@@ -23,6 +23,8 @@ export interface TranscriptFlowConnection {
   from: string;
   to: string;
   reason: string;
+  supportCount?: number;
+  supportRate?: number;
 }
 
 export interface TranscriptFlowResult {
@@ -49,8 +51,17 @@ interface TranscriptFlowApiResponse {
 const DEFAULT_MAX_NODES = 18;
 const MIN_TRANSCRIPT_LENGTH = 20;
 const MAX_BATCH_CHARS = 40_000; // stay under Edge Function's 120K limit with headroom for existingGraph JSON
+const MAX_TRANSCRIPTS_PER_BATCH = 5;
 const SUPABASE_URL = import.meta.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
 const SUPABASE_PUBLISHABLE_KEY = import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ?? '';
+const COVERAGE_TOKEN_MIN_LENGTH = 3;
+const COVERAGE_OVERLAP_RATIO = 0.24;
+const COVERAGE_MAX_TOKEN_SAMPLE = 14;
+const COVERAGE_STOP_WORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'had', 'has', 'have', 'if', 'in', 'is',
+  'it', 'its', 'of', 'on', 'or', 'so', 'that', 'the', 'their', 'there', 'then', 'they', 'this', 'to', 'was',
+  'were', 'will', 'with', 'you', 'your',
+]);
 
 const NODE_TYPES: readonly NodeType[] = [
   'core-persona',
@@ -79,8 +90,8 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
     throw new Error('Supabase environment is not configured for transcript generation.');
   }
 
-  // Split any oversized transcripts into chunks that fit the budget
-  const chunks = buildCharacterBudgetBatches(transcripts, MAX_BATCH_CHARS);
+  // Process at most five transcripts per iteration and respect character budget.
+  const chunks = buildTranscriptBatches(transcripts, MAX_BATCH_CHARS, MAX_TRANSCRIPTS_PER_BATCH);
 
   let currentFlow: TranscriptFlowResult | null = null;
 
@@ -120,62 +131,72 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
     }
 
     currentFlow = toTranscriptFlowResult(data);
-    request.onProgress?.(i + 1, chunks.length);
+    request.onProgress?.(i + 1, chunks.length, currentFlow);
   }
 
   if (!currentFlow) {
     throw new Error('Failed to generate any flow.');
   }
 
-  return currentFlow;
+  return addFlowCoverageMetrics(currentFlow, transcripts);
 }
 
 /**
  * Splits transcripts into batches that fit under `maxChars`.
  * If a single transcript exceeds the budget it is split at line boundaries.
  */
-function buildCharacterBudgetBatches(transcripts: string[], maxChars: number): string[] {
+function buildTranscriptBatches(transcripts: string[], maxChars: number, maxTranscriptsPerBatch: number): string[] {
   const separator = '\n\n---\n\n';
   const batches: string[] = [];
-  let current = '';
+  let currentParts: string[] = [];
+  let currentChars = 0;
+
+  const flushBatch = (): void => {
+    if (currentParts.length === 0) return;
+    batches.push(currentParts.join(separator));
+    currentParts = [];
+    currentChars = 0;
+  };
+
+  const addPart = (part: string): void => {
+    const separatorCost = currentParts.length > 0 ? separator.length : 0;
+    const nextChars = currentChars + separatorCost + part.length;
+    const hitBatchCountLimit = currentParts.length >= maxTranscriptsPerBatch;
+    const hitCharLimit = currentParts.length > 0 && nextChars > maxChars;
+    if (hitBatchCountLimit || hitCharLimit) {
+      flushBatch();
+    }
+
+    const nextSeparatorCost = currentParts.length > 0 ? separator.length : 0;
+    currentChars += nextSeparatorCost + part.length;
+    currentParts.push(part);
+  };
 
   for (const transcript of transcripts) {
-    // If a single transcript is larger than the budget, split it into sub-chunks
+    // If a single transcript is larger than the budget, split it into sub-chunks.
     if (transcript.length > maxChars) {
-      // Flush anything accumulated so far
-      if (current.length > 0) {
-        batches.push(current);
-        current = '';
-      }
-      // Split at line boundaries
+      flushBatch();
       const lines = transcript.split('\n');
-      let chunk = '';
+      let oversizeChunk = '';
       for (const line of lines) {
-        if (chunk.length + line.length + 1 > maxChars && chunk.length > 0) {
-          batches.push(chunk);
-          chunk = '';
+        if (oversizeChunk.length + line.length + 1 > maxChars && oversizeChunk.length > 0) {
+          addPart(oversizeChunk);
+          flushBatch();
+          oversizeChunk = '';
         }
-        chunk += (chunk.length > 0 ? '\n' : '') + line;
+        oversizeChunk += (oversizeChunk.length > 0 ? '\n' : '') + line;
       }
-      if (chunk.length > 0) {
-        batches.push(chunk);
+      if (oversizeChunk.length > 0) {
+        addPart(oversizeChunk);
+        flushBatch();
       }
       continue;
     }
 
-    const addition = current.length > 0 ? separator + transcript : transcript;
-    if (current.length + addition.length > maxChars && current.length > 0) {
-      batches.push(current);
-      current = transcript;
-    } else {
-      current += addition;
-    }
+    addPart(transcript);
   }
 
-  if (current.length > 0) {
-    batches.push(current);
-  }
-
+  flushBatch();
   return batches;
 }
 
@@ -267,10 +288,25 @@ function toTranscriptConnections(
       from,
       to,
       reason: sanitizeText(rawConnection.reason, ''),
+      ...normalizeConnectionSupport(rawConnection),
     });
   }
 
   return normalized;
+}
+
+function normalizeConnectionSupport(rawConnection: Record<string, unknown>): Pick<TranscriptFlowConnection, 'supportCount' | 'supportRate'> {
+  const supportCount = typeof rawConnection.supportCount === 'number' && Number.isFinite(rawConnection.supportCount)
+    ? Math.max(0, Math.trunc(rawConnection.supportCount))
+    : null;
+  const supportRate = typeof rawConnection.supportRate === 'number' && Number.isFinite(rawConnection.supportRate)
+    ? Math.max(0, Math.min(1, rawConnection.supportRate))
+    : null;
+
+  return {
+    ...(supportCount !== null ? { supportCount } : {}),
+    ...(supportRate !== null ? { supportRate } : {}),
+  };
 }
 
 function normalizeMaxNodes(value: number | undefined): number | undefined {
@@ -294,19 +330,46 @@ function normalizeNodeType(value: unknown): NodeType {
   }
 
   switch (normalized) {
+    // Flow-diagram types → closest prompt-builder equivalents
+    case 'start':
+      return 'core-persona';
+    case 'end':
+    case 'stop':
+      return 'termination';
+    case 'process':
+    case 'action':
+    case 'step':
+      return 'static-context';
     case 'decision':
     case 'branch':
     case 'condition':
+    case 'gateway':
       return 'logic-branch';
+    case 'subprocess':
+    case 'sub-process':
+      return 'mission-objective';
+    case 'escalation':
+    case 'transfer':
+    case 'handoff':
+      return 'webhook';
+    case 'data-lookup':
+    case 'lookup':
+    case 'query':
+      return 'vector-db';
+    case 'wait':
+    case 'hold':
+    case 'delay':
+      return 'memory-buffer';
+    case 'notification':
+    case 'alert':
+    case 'message':
+      return 'style-module';
     case 'assistant':
     case 'llm':
       return 'llm-brain';
     case 'user':
     case 'input':
       return 'transcriber';
-    case 'end':
-    case 'stop':
-      return 'termination';
     default:
       return 'custom';
   }
@@ -324,6 +387,113 @@ function normalizeMeta(value: unknown): Record<string, string> {
     .filter(([, entry]) => entry.length > 0);
 
   return Object.fromEntries(entries);
+}
+
+function addFlowCoverageMetrics(flow: TranscriptFlowResult, transcripts: string[]): TranscriptFlowResult {
+  const totalCalls = transcripts.length;
+  if (totalCalls === 0 || flow.nodes.length === 0) return flow;
+
+  const transcriptTokenSets = transcripts.map((transcript) => new Set(tokenizeForCoverage(transcript)));
+  const transcriptLower = transcripts.map((transcript) => transcript.toLowerCase());
+  const tokensByNodeId = new Map<string, string[]>();
+  const nodeSupport = new Map<string, number>();
+  const edgeSupport = new Map<string, number>();
+
+  for (const node of flow.nodes) {
+    tokensByNodeId.set(node.id, tokensForNodeCoverage(node));
+    nodeSupport.set(node.id, 0);
+  }
+
+  for (const connection of flow.connections) {
+    edgeSupport.set(edgeSupportKey(connection.from, connection.to), 0);
+  }
+
+  for (let transcriptIndex = 0; transcriptIndex < transcripts.length; transcriptIndex += 1) {
+    const callMatches = new Set<string>();
+    const transcriptTokens = transcriptTokenSets[transcriptIndex];
+    const transcriptText = transcriptLower[transcriptIndex];
+
+    for (const node of flow.nodes) {
+      const nodeTokens = tokensByNodeId.get(node.id) ?? [];
+      if (!isNodeCoveredByTranscript(node, nodeTokens, transcriptTokens, transcriptText)) continue;
+      callMatches.add(node.id);
+      nodeSupport.set(node.id, (nodeSupport.get(node.id) ?? 0) + 1);
+    }
+
+    for (const connection of flow.connections) {
+      if (!callMatches.has(connection.from) || !callMatches.has(connection.to)) continue;
+      const key = edgeSupportKey(connection.from, connection.to);
+      edgeSupport.set(key, (edgeSupport.get(key) ?? 0) + 1);
+    }
+  }
+
+  const nodes = flow.nodes.map((node) => {
+    const supportCount = nodeSupport.get(node.id) ?? 0;
+    const supportRate = supportCount / totalCalls;
+    return {
+      ...node,
+      meta: {
+        ...node.meta,
+        callSupport: `${supportCount}/${totalCalls}`,
+        callSupportPercent: formatPercent(supportRate),
+      },
+    };
+  });
+
+  const connections = flow.connections.map((connection) => {
+    const supportCount = edgeSupport.get(edgeSupportKey(connection.from, connection.to)) ?? 0;
+    const supportRate = supportCount / totalCalls;
+    return {
+      ...connection,
+      supportCount,
+      supportRate,
+    };
+  });
+
+  return {
+    ...flow,
+    nodes,
+    connections,
+  };
+}
+
+function tokensForNodeCoverage(node: TranscriptFlowNode): string[] {
+  const tokens = tokenizeForCoverage(`${node.label} ${node.content}`);
+  const unique = Array.from(new Set(tokens)).filter((token) => !COVERAGE_STOP_WORDS.has(token));
+  unique.sort((left, right) => right.length - left.length);
+  return unique.slice(0, COVERAGE_MAX_TOKEN_SAMPLE);
+}
+
+function tokenizeForCoverage(text: string): string[] {
+  return text
+    .toLowerCase()
+    .match(/[a-z0-9]{2,}/g)
+    ?.filter((token) => token.length >= COVERAGE_TOKEN_MIN_LENGTH) ?? [];
+}
+
+function isNodeCoveredByTranscript(
+  node: TranscriptFlowNode,
+  nodeTokens: string[],
+  transcriptTokens: ReadonlySet<string>,
+  transcriptLowerText: string,
+): boolean {
+  const normalizedLabel = node.label.trim().toLowerCase();
+  if (normalizedLabel.length >= 6 && transcriptLowerText.includes(normalizedLabel)) {
+    return true;
+  }
+
+  if (nodeTokens.length === 0) return false;
+  const overlap = nodeTokens.reduce((count, token) => count + (transcriptTokens.has(token) ? 1 : 0), 0);
+  const minHits = Math.max(1, Math.min(3, Math.ceil(nodeTokens.length * COVERAGE_OVERLAP_RATIO)));
+  return overlap >= minHits;
+}
+
+function edgeSupportKey(from: string, to: string): string {
+  return `${from}->${to}`;
+}
+
+function formatPercent(value: number): string {
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`;
 }
 
 function ensureUniqueId(id: string, usedIds: ReadonlySet<string>, fallbackBase: string): string {
@@ -445,6 +615,7 @@ function decodeJwtPayload(segment: string): Record<string, unknown> | null {
 }
 
 export const transcriptFlowTestUtils = {
+  buildTranscriptBatches,
   normalizeMaxNodes,
   normalizeNodeType,
   toTranscriptConnections,

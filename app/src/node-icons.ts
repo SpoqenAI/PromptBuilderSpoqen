@@ -19,6 +19,14 @@ export const DEFAULT_NODE_ICON_BY_TYPE: Readonly<Record<NodeType, string>> = {
 };
 
 const CURATED_NODE_ICONS: readonly string[] = [
+  'play_circle',
+  'stop_circle',
+  'task_alt',
+  'account_tree',
+  'support_agent',
+  'search',
+  'hourglass_empty',
+  'notifications',
   'psychology',
   'flag',
   'record_voice_over',
