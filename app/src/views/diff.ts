@@ -13,6 +13,12 @@ import {
   type PromptFlowAlignmentResult,
   type TranscriptSetOption,
 } from '../prompt-flow-alignment';
+import {
+  applyPromptRepair,
+  runPromptRepair,
+  type PromptRepairPatch,
+  type PromptRepairRunResult,
+} from '../prompt-repair';
 
 type BannerTone = 'success' | 'error' | 'info';
 type NodeDiffStatus = 'unchanged' | 'modified' | 'added' | 'removed';
@@ -82,6 +88,10 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
   let alignmentBusy = false;
   let alignmentMessage: BannerMessage | null = null;
   let alignmentResult: PromptFlowAlignmentResult | null = null;
+  let repairBusy = false;
+  let repairMessage: BannerMessage | null = null;
+  let repairResult: PromptRepairRunResult | null = null;
+  let selectedPatchIds = new Set<string>();
   let sidebarCollapsed = loadSidebarCollapsedState();
   let nodeDiffCollapsed = true;
   const graphViewportState: Record<'old' | 'new', GraphViewportState> = {
@@ -115,8 +125,12 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
       if (sets.length === 0) {
         selectedTranscriptSetId = '';
         alignmentResult = null;
+        repairResult = null;
+        selectedPatchIds = new Set();
       } else if (!sets.some((option) => option.id === selectedTranscriptSetId)) {
         selectedTranscriptSetId = sets[0].id;
+        repairResult = null;
+        selectedPatchIds = new Set();
       }
     } catch (err) {
       transcriptSetsLoaded = true;
@@ -170,9 +184,11 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
     const graphPaneHeightClass = nodeDiffCollapsed ? 'min-h-[clamp(24rem,52vh,45rem)]' : 'min-h-[clamp(20rem,42vh,35rem)]';
     const selectedTranscriptSet = transcriptSetOptions.find((option) => option.id === selectedTranscriptSetId) ?? null;
     const alignmentRunDisabled = alignmentBusy || transcriptSetsBusy || !selectedTranscriptSetId;
+    const repairRunDisabled = repairBusy || transcriptSetsBusy || !selectedTranscriptSetId;
     const scopedAlignmentResult = alignmentResult && alignmentResult.transcriptSetId === selectedTranscriptSetId
       ? alignmentResult
       : null;
+    const scopedRepairResult = repairResult;
 
     const disposeViewportListeners = (): void => {
       graphViewportCleanup.old?.();
@@ -403,6 +419,16 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
                 alignmentMessage,
                 alignmentResult: scopedAlignmentResult,
               })}
+
+              ${renderPromptRepairSection({
+                transcriptSetName: selectedTranscriptSet?.name ?? '',
+                selectedTranscriptSetId,
+                repairBusy,
+                repairRunDisabled,
+                repairMessage,
+                repairResult: scopedRepairResult,
+                selectedPatchIds,
+              })}
           </div>
         </aside>
         `}
@@ -530,6 +556,9 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
       selectedTranscriptSetId = (event.target as HTMLSelectElement).value;
       alignmentResult = null;
       alignmentMessage = null;
+      repairResult = null;
+      repairMessage = null;
+      selectedPatchIds = new Set();
       render();
     });
 
@@ -559,6 +588,90 @@ export function renderDiff(container: HTMLElement, projectId: string): void {
           alignmentMessage = { tone: 'error', text: toErrorMessage(err) };
         } finally {
           alignmentBusy = false;
+          render();
+        }
+      })();
+    });
+
+    container.querySelector('#btn-run-repair')?.addEventListener('click', () => {
+      if (!selectedTranscriptSetId) return;
+
+      void (async () => {
+        repairBusy = true;
+        repairMessage = null;
+        render();
+
+        try {
+          const result = await runPromptRepair({
+            projectId,
+            transcriptSetId: selectedTranscriptSetId,
+            applyMode: 'manual',
+          });
+          repairResult = result;
+          selectedPatchIds = new Set(result.patches.map((patch) => patch.patchId));
+          repairMessage = {
+            tone: 'success',
+            text: `Repair run created ${result.summary.proposedPatches} patch(es) from ${result.summary.deviations} deviation(s).`,
+          };
+        } catch (err) {
+          repairMessage = { tone: 'error', text: toErrorMessage(err) };
+        } finally {
+          repairBusy = false;
+          render();
+        }
+      })();
+    });
+
+    container.querySelectorAll<HTMLInputElement>('[data-repair-patch-id]').forEach((checkbox) => {
+      checkbox.addEventListener('change', () => {
+        const patchId = checkbox.dataset.repairPatchId;
+        if (!patchId) return;
+        if (checkbox.checked) {
+          selectedPatchIds.add(patchId);
+        } else {
+          selectedPatchIds.delete(patchId);
+        }
+        render();
+      });
+    });
+
+    container.querySelector('#btn-apply-repair')?.addEventListener('click', () => {
+      if (!repairResult) return;
+
+      const acceptedPatchIds = repairResult.patches
+        .filter((patch) => selectedPatchIds.has(patch.patchId))
+        .map((patch) => patch.patchId);
+      const rejectedPatchIds = repairResult.patches
+        .filter((patch) => !selectedPatchIds.has(patch.patchId))
+        .map((patch) => patch.patchId);
+
+      void (async () => {
+        repairBusy = true;
+        repairMessage = null;
+        render();
+
+        try {
+          const applyResult = await applyPromptRepair({
+            runId: repairResult.runId,
+            acceptedPatchIds,
+            rejectedPatchIds,
+          });
+
+          // Keep local canvas model aligned with applied server-side patches.
+          for (const patch of repairResult.patches) {
+            if (!selectedPatchIds.has(patch.patchId)) continue;
+            store.updateNode(projectId, patch.promptNodeId, { content: patch.newContent });
+          }
+          store.saveAssembledVersion(projectId, `Applied repair run ${repairResult.runId}`);
+
+          repairMessage = {
+            tone: 'success',
+            text: `Applied ${applyResult.applied} patch(es). New prompt version: ${applyResult.newPromptVersionId}.`,
+          };
+        } catch (err) {
+          repairMessage = { tone: 'error', text: toErrorMessage(err) };
+        } finally {
+          repairBusy = false;
           render();
         }
       })();
@@ -1029,6 +1142,16 @@ interface PromptAlignmentSectionArgs {
   alignmentResult: PromptFlowAlignmentResult | null;
 }
 
+interface PromptRepairSectionArgs {
+  transcriptSetName: string;
+  selectedTranscriptSetId: string;
+  repairBusy: boolean;
+  repairRunDisabled: boolean;
+  repairMessage: BannerMessage | null;
+  repairResult: PromptRepairRunResult | null;
+  selectedPatchIds: Set<string>;
+}
+
 function renderPromptAlignmentSection(args: PromptAlignmentSectionArgs): string {
   const loadingText = args.transcriptSetsBusy
     ? 'Loading transcript sets...'
@@ -1113,6 +1236,81 @@ function renderPromptAlignmentSection(args: PromptAlignmentSectionArgs): string 
         ${summary}
         <div class="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-1">
           ${itemRows}
+        </div>
+      ` : ''}
+    </section>
+  `;
+}
+
+function renderPromptRepairSection(args: PromptRepairSectionArgs): string {
+  const summary = args.repairResult
+    ? `<div class="rounded border border-slate-200 dark:border-slate-700 p-2 text-[10px] text-slate-500 dark:text-slate-300">
+        Deviations: <span class="font-semibold">${args.repairResult.summary.deviations}</span> |
+        Proposed patches: <span class="font-semibold">${args.repairResult.summary.proposedPatches}</span>
+      </div>`
+    : '';
+
+  const patchRows = args.repairResult
+    ? args.repairResult.patches.map((patch) => {
+      const checked = args.selectedPatchIds.has(patch.patchId);
+      return `
+        <div class="rounded-lg border border-slate-200 dark:border-slate-700 p-2 space-y-1.5">
+          <label class="flex items-center gap-2 text-[11px] font-medium text-slate-700 dark:text-slate-200">
+            <input type="checkbox" data-repair-patch-id="${escapeHtml(patch.patchId)}" ${checked ? 'checked' : ''} />
+            <span class="truncate" title="${escapeHtml(patch.promptNodeId)}">${escapeHtml(patch.promptNodeId)}</span>
+          </label>
+          <p class="text-[10px] text-slate-500 dark:text-slate-400 line-clamp-2" title="${escapeHtml(patch.rationale)}">${escapeHtml(patch.rationale)}</p>
+          <details class="text-[10px]">
+            <summary class="cursor-pointer text-primary">Preview patch</summary>
+            <div class="mt-1 space-y-1">
+              <p class="font-semibold text-red-600 dark:text-red-300">Old</p>
+              <pre class="whitespace-pre-wrap rounded bg-slate-50 dark:bg-slate-800 p-2">${escapeHtml(trimForPreview(patch.oldContent))}</pre>
+              <p class="font-semibold text-emerald-600 dark:text-emerald-300">New</p>
+              <pre class="whitespace-pre-wrap rounded bg-slate-50 dark:bg-slate-800 p-2">${escapeHtml(trimForPreview(patch.newContent))}</pre>
+            </div>
+          </details>
+        </div>
+      `;
+    }).join('')
+    : '';
+
+  const applyDisabled = args.repairBusy || !args.repairResult || args.selectedPatchIds.size === 0;
+
+  return `
+    <section class="space-y-3 pt-2 border-t border-slate-200 dark:border-slate-800">
+      <div>
+        <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Prompt Repair</h2>
+        <p class="text-xs text-slate-500 dark:text-slate-400">Run transcript-driven node patches and apply after review.</p>
+      </div>
+
+      ${renderBanner(args.repairMessage)}
+
+      <div class="text-[10px] text-slate-500 dark:text-slate-400">
+        ${args.selectedTranscriptSetId ? `Transcript set: <span class="font-medium">${escapeHtml(args.transcriptSetName)}</span>` : 'Select a transcript set above.'}
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <button
+          id="btn-run-repair"
+          class="px-2 py-1.5 text-xs rounded bg-slate-900 text-white hover:bg-slate-800 transition-colors disabled:opacity-60"
+          ${args.repairRunDisabled ? 'disabled' : ''}
+        >
+          ${args.repairBusy ? 'Running...' : 'Run Repair'}
+        </button>
+        <button
+          id="btn-apply-repair"
+          class="px-2 py-1.5 text-xs rounded border border-primary/40 text-primary hover:bg-primary/5 transition-colors disabled:opacity-60"
+          ${applyDisabled ? 'disabled' : ''}
+        >
+          ${args.repairBusy ? 'Applying...' : `Apply Selected (${args.selectedPatchIds.size})`}
+        </button>
+      </div>
+
+      ${summary}
+
+      ${args.repairResult ? `
+        <div class="space-y-2 max-h-64 overflow-y-auto custom-scrollbar pr-1">
+          ${patchRows || '<p class="text-[11px] text-slate-400">No patch proposals returned.</p>'}
         </div>
       ` : ''}
     </section>

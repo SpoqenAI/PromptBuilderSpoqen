@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
+import { generateStructuredJson, resolveDefaultGroqModel, resolveDefaultOpenAiModel } from '../_shared/llm-provider.ts';
 import { createAdminClient, requireUser } from '../_shared/supabase.ts';
 
 type FlowNodeType =
@@ -200,7 +201,14 @@ const FLOW_JSON_SCHEMA: Record<string, unknown> = {
           content: { type: 'string' },
           meta: {
             type: 'object',
-            additionalProperties: { type: 'string' },
+            additionalProperties: false,
+            required: ['nodeColor', 'speaker', 'intent', 'tag'],
+            properties: {
+              nodeColor: { type: ['string', 'null'] },
+              speaker: { type: ['string', 'null'] },
+              intent: { type: ['string', 'null'] },
+              tag: { type: ['string', 'null'] },
+            },
           },
         },
       },
@@ -241,7 +249,6 @@ serve(async (req: Request) => {
     const adminClient = createAdminClient();
     await requireUser(req, adminClient);
 
-    const openAiKey = (Deno.env.get('OPENAI_API_KEY') ?? '').trim();
     const configuredModel = resolveTranscriptModel();
 
     let flow: FlowResult;
@@ -249,15 +256,14 @@ serve(async (req: Request) => {
     let warning: string | null = null;
     let model = configuredModel;
 
-    if (openAiKey) {
+    if (hasConfiguredLlmProvider()) {
       try {
-        const aiResponse = await generateFlowWithOpenAI({
+        const aiResponse = await generateFlowWithLlm({
           transcript,
           existingGraph,
           maxNodes,
           assistantName,
           userName,
-          openAiKey,
           model: configuredModel,
         });
         flow = normalizeFlowResult(aiResponse, transcript, maxNodes, assistantName, userName);
@@ -273,7 +279,7 @@ serve(async (req: Request) => {
     } else {
       usedFallback = true;
       model = 'deterministic-fallback';
-      warning = 'OPENAI_API_KEY is not configured. Using deterministic fallback mapping.';
+      warning = 'No GROQ_API_KEY or OPENAI_API_KEY is configured. Using deterministic fallback mapping.';
       flow = buildFallbackFlow(transcript, maxNodes ?? MAX_ALLOWED_NODES, assistantName, userName);
     }
 
@@ -335,13 +341,12 @@ function normalizeSpeakerName(value: unknown, fallback: string): string {
   return trimmed.slice(0, 40);
 }
 
-async function generateFlowWithOpenAI(args: {
+async function generateFlowWithLlm(args: {
   transcript: string;
   existingGraph?: { nodes?: FlowNode[]; connections?: FlowConnection[] };
   maxNodes: number | undefined;
   assistantName: string;
   userName: string;
-  openAiKey: string;
   model: string;
 }): Promise<unknown> {
   const temperature = resolveOptionalTemperature();
@@ -401,7 +406,9 @@ async function generateFlowWithOpenAI(args: {
           '- For open-ended user replies, bucket likely categories (for example: "Yes / No / Unclear" or "Ready / Not ready / Needs details").',
           '',
           'VISUAL COLORING:',
-          '- Normal/golden-path nodes: do NOT set nodeColor in meta.',
+          '- Every node MUST include a "meta" object with exactly these keys: nodeColor, speaker, intent, tag.',
+          '- Use null for any unknown/unused meta field.',
+          '- Normal/golden-path nodes: set meta.nodeColor to null.',
           '- Edge case or exception nodes: set meta.nodeColor to "#F59E0B" (amber).',
           '- Escalation or error nodes: set meta.nodeColor to "#EF4444" (red).',
           '',
@@ -441,31 +448,20 @@ async function generateFlowWithOpenAI(args: {
     requestBody.temperature = temperature;
   }
 
-  const response = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${args.openAiKey}`,
-    },
-    body: JSON.stringify(requestBody),
+  const messages = Array.isArray(requestBody.messages)
+    ? requestBody.messages
+    : [];
+
+  const response = await generateStructuredJson({
+    messages: messages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
+    schema: FLOW_JSON_SCHEMA,
+    schemaName: 'transcript_flow_graph',
+    temperature,
+    groqModel: args.model,
+    openAiModel: args.model,
   });
 
-  const payload: unknown = await response.json();
-
-  if (!response.ok) {
-    throw new Error(extractOpenAIError(payload) ?? `OpenAI request failed with status ${response.status}.`);
-  }
-
-  const content = extractOpenAIContent(payload);
-  if (!content) {
-    throw new Error('OpenAI did not return structured transcript flow content.');
-  }
-
-  try {
-    return JSON.parse(content) as unknown;
-  } catch {
-    throw new Error('OpenAI returned invalid JSON for transcript flow mapping.');
-  }
+  return response.payload;
 }
 
 function resolveOptionalTemperature(): number | null {
@@ -486,51 +482,15 @@ function resolveOptionalTemperature(): number | null {
 }
 
 function resolveTranscriptModel(): string {
-  return (Deno.env.get('OPENAI_TRANSCRIPT_MODEL') ?? 'gpt-5-nano').trim() || 'gpt-5-nano';
+  if ((Deno.env.get('GROQ_API_KEY') ?? '').trim().length > 0) {
+    return resolveDefaultGroqModel();
+  }
+  return resolveDefaultOpenAiModel();
 }
 
-function extractOpenAIError(payload: unknown): string | null {
-  if (!isRecord(payload)) return null;
-
-  const directError = payload.error;
-  if (isRecord(directError) && typeof directError.message === 'string' && directError.message.trim().length > 0) {
-    return directError.message;
-  }
-
-  if (typeof payload.message === 'string' && payload.message.trim().length > 0) {
-    return payload.message;
-  }
-
-  return null;
-}
-
-function extractOpenAIContent(payload: unknown): string | null {
-  if (!isRecord(payload) || !Array.isArray(payload.choices) || payload.choices.length === 0) {
-    return null;
-  }
-
-  const firstChoice = payload.choices[0];
-  if (!isRecord(firstChoice) || !isRecord(firstChoice.message)) {
-    return null;
-  }
-
-  const content = firstChoice.message.content;
-  if (typeof content === 'string' && content.trim().length > 0) {
-    return content;
-  }
-
-  if (!Array.isArray(content)) return null;
-
-  const textParts: string[] = [];
-  for (const part of content) {
-    if (!isRecord(part)) continue;
-    const text = typeof part.text === 'string' ? part.text : '';
-    if (text.trim().length > 0) {
-      textParts.push(text);
-    }
-  }
-
-  return textParts.length > 0 ? textParts.join('') : null;
+function hasConfiguredLlmProvider(): boolean {
+  return (Deno.env.get('GROQ_API_KEY') ?? '').trim().length > 0
+    || (Deno.env.get('OPENAI_API_KEY') ?? '').trim().length > 0;
 }
 
 function normalizeFlowResult(

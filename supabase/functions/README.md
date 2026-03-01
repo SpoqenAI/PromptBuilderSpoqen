@@ -42,6 +42,9 @@ supabase secrets set APP_PUBLIC_URL=<your-frontend-origin>
 supabase functions deploy github-connect-url
 supabase functions deploy github-app-callback
 supabase functions deploy github-prompt-sync
+supabase functions deploy flow-to-prompt
+supabase functions deploy prompt-repair-run
+supabase functions deploy apply-prompt-repair
 # IMPORTANT: use the script below for transcript-flow-map.
 # On some CLI versions, update deploys can re-enable legacy JWT verification.
 pwsh ./supabase/functions/deploy-transcript-flow-map.ps1
@@ -57,9 +60,11 @@ Set function secrets:
 supabase secrets set OPENAI_API_KEY=<your-openai-api-key>
 supabase secrets set OPENAI_TRANSCRIPT_MODEL=gpt-5-nano
 supabase secrets set OPENAI_TRANSCRIPT_TEMPERATURE=default
+supabase secrets set GROQ_API_KEY=<your-groq-api-key>
+supabase secrets set GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
-If `OPENAI_API_KEY` is not configured, the function falls back to deterministic mapping.
+The function uses Groq first when `GROQ_API_KEY` is configured, then OpenAI when `OPENAI_API_KEY` is configured, then deterministic mapping.
 
 `transcript-flow-map` is deployed with `--no-verify-jwt` because it performs explicit token verification in-function using `requireUser(...)`. This avoids gateway-side JWT rejection while preserving authenticated access control.
 
@@ -77,13 +82,30 @@ What this script does:
 2. Deploys with `--no-verify-jwt`
 3. Runs a smoke test to confirm gateway JWT verification is not intercepting requests
 
+### Smoke test all edge functions
+
+After deploy, run:
+
+- `pwsh ./supabase/functions/test-edge-functions.ps1`
+
+This performs unauthenticated reachability checks against every deployed function (including CORS OPTIONS), which is useful when JWT gateway behavior is unstable.
+
+For authenticated checks (recommended once you have a stable test user), provide either:
+
+- `-AccessToken <jwt>`
+- or environment vars `SUPABASE_TEST_EMAIL` and `SUPABASE_TEST_PASSWORD` (script will mint a token via `/auth/v1/token`), then run:
+  - `pwsh ./supabase/functions/test-edge-functions.ps1 -RequireAuth`
+
 ## 4. Apply Database Migration
 
 Run migrations so these tables exist:
 
 - `public.github_app_oauth_states`
 - `public.github_installations`
+- `public.optimization_run_patches`
+- `public.prompt_node_sync_meta`
 
 The migration file is:
 
 - `supabase/migrations/20260217103000_add_github_app_integrations.sql`
+- `supabase/migrations/20260228103000_add_prompt_repair_tables.sql`

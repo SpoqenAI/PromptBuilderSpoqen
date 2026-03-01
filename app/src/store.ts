@@ -799,6 +799,7 @@ class Store {
         sort_order: p.nodes.length - 1,
       });
       this.assertNoError(nodeInsertRes, 'insert prompt_node');
+      await this.upsertPromptNodeSyncMeta(node);
       const projectUpdateRes = await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
       this.assertNoError(projectUpdateRes, 'touch project last_edited');
     });
@@ -834,6 +835,7 @@ class Store {
         const nodeUpdateRes = await supabase.from('prompt_nodes').update(dbUpdates).eq('id', nodeId);
         this.assertNoError(nodeUpdateRes, 'update prompt_node');
       }
+      await this.upsertPromptNodeSyncMeta(n);
       const projectUpdateRes = await supabase.from('projects').update({ last_edited: 'Just now' }).eq('id', projectId);
       this.assertNoError(projectUpdateRes, 'touch project last_edited');
     });
@@ -847,6 +849,7 @@ class Store {
     p.lastEdited = 'Just now';
     this.syncTranscriptDraftCacheFromProject(p);
     this.bg(async () => {
+      await this.deletePromptNodeSyncMeta(nodeId);
       // Connections cascade via FK on delete
       const nodeDeleteRes = await supabase.from('prompt_nodes').delete().eq('id', nodeId);
       this.assertNoError(nodeDeleteRes, 'delete prompt_node');
@@ -1067,6 +1070,32 @@ class Store {
       return;
     }
     this.assertNoError(flowInsertRes, 'insert transcript_flow snapshot');
+  }
+
+  private async upsertPromptNodeSyncMeta(node: PromptNode): Promise<void> {
+    const syncRes = await supabase
+      .from('prompt_node_sync_meta')
+      .upsert({
+        prompt_node_id: node.id,
+        section_hash: buildPromptNodeSectionHash(node),
+        last_assembled_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      });
+    if (syncRes.error && isPromptNodeSyncMetaTableMissing(syncRes.error.message)) {
+      return;
+    }
+    this.assertNoError(syncRes, 'upsert prompt_node_sync_meta');
+  }
+
+  private async deletePromptNodeSyncMeta(nodeId: string): Promise<void> {
+    const deleteRes = await supabase
+      .from('prompt_node_sync_meta')
+      .delete()
+      .eq('prompt_node_id', nodeId);
+    if (deleteRes.error && isPromptNodeSyncMetaTableMissing(deleteRes.error.message)) {
+      return;
+    }
+    this.assertNoError(deleteRes, 'delete prompt_node_sync_meta');
   }
 
   private async insertCustomNodeRemote(template: CustomNodeTemplate): Promise<void> {
@@ -1790,6 +1819,22 @@ function isTranscriptTableMissing(message: string, tableName: string): boolean {
   const normalized = message.toLowerCase();
   if (!normalized.includes(tableName.toLowerCase())) return false;
   return normalized.includes('does not exist') || normalized.includes('schema cache');
+}
+
+function isPromptNodeSyncMetaTableMissing(message: string): boolean {
+  const normalized = message.toLowerCase();
+  if (!normalized.includes('prompt_node_sync_meta')) return false;
+  return normalized.includes('does not exist') || normalized.includes('schema cache');
+}
+
+function buildPromptNodeSectionHash(node: Pick<PromptNode, 'id' | 'type' | 'label' | 'icon' | 'content'>): string {
+  const payload = `${node.id}|${node.type}|${node.label}|${node.icon}|${node.content}`;
+  let hash = 2166136261;
+  for (let i = 0; i < payload.length; i += 1) {
+    hash ^= payload.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a_${(hash >>> 0).toString(16)}`;
 }
 
 function delay(ms: number): Promise<void> {

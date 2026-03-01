@@ -585,6 +585,72 @@ export interface Database {
         };
         Relationships: [];
       };
+      optimization_run_patches: {
+        Row: {
+          id: string;
+          optimization_run_id: string;
+          project_id: string;
+          prompt_node_id: string;
+          old_content: string;
+          new_content: string;
+          rationale: string;
+          evidence: unknown[];
+          confidence: number;
+          status: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          optimization_run_id: string;
+          project_id: string;
+          prompt_node_id: string;
+          old_content?: string;
+          new_content?: string;
+          rationale?: string;
+          evidence?: unknown[];
+          confidence?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          optimization_run_id?: string;
+          project_id?: string;
+          prompt_node_id?: string;
+          old_content?: string;
+          new_content?: string;
+          rationale?: string;
+          evidence?: unknown[];
+          confidence?: number;
+          status?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      prompt_node_sync_meta: {
+        Row: {
+          prompt_node_id: string;
+          section_hash: string;
+          last_assembled_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          prompt_node_id: string;
+          section_hash: string;
+          last_assembled_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          prompt_node_id?: string;
+          section_hash?: string;
+          last_assembled_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
