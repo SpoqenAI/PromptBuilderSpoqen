@@ -20,7 +20,7 @@ type TestUtils = {
   toTranscriptConnections: (
     rawConnections: unknown,
     validNodeIds: ReadonlySet<string>,
-  ) => Array<{ from: string; to: string; reason: string }>;
+  ) => Array<{ from: string; to: string; reason: string; isInferred?: boolean; inferenceType?: string }>;
 };
 
 let utils: TestUtils;
@@ -60,7 +60,8 @@ describe('transcript flow normalization', () => {
     const validIds = new Set(['n1', 'n2', 'n3']);
     const raw = [
       { from: 'n1', to: 'n2', reason: 'handoff' },
-      { from: 'n1', to: 'n2', reason: 'duplicate should drop' },
+      { from: 'n1', to: 'n2', reason: 'handoff' },
+      { from: 'n1', to: 'n2', reason: 'alternate' },
       { from: 'n2', to: 'n2', reason: 'self loop drop' },
       { from: 'n2', to: 'missing', reason: 'unknown target drop' },
       { from: 'n2', to: 'n3', reason: 42 },
@@ -69,7 +70,22 @@ describe('transcript flow normalization', () => {
 
     expect(utils.toTranscriptConnections(raw, validIds)).toEqual([
       { from: 'n1', to: 'n2', reason: 'handoff' },
+      { from: 'n1', to: 'n2', reason: 'alternate' },
       { from: 'n2', to: 'n3', reason: '' },
+    ]);
+  });
+
+  it('normalizes inferred branch metadata on connections', () => {
+    const validIds = new Set(['n1', 'n2']);
+    const raw = [
+      { from: 'n1', to: 'n2', reason: 'No', isInferred: true, inferenceType: '  Missing Info  ' },
+      { from: 'n1', to: 'n2', reason: 'No', isInferred: true, inferenceType: 'missing-info' },
+      { from: 'n1', to: 'n2', reason: 'Yes', inferenceType: 'affirmative-path' },
+    ];
+
+    expect(utils.toTranscriptConnections(raw, validIds)).toEqual([
+      { from: 'n1', to: 'n2', reason: 'No', isInferred: true, inferenceType: 'missing-info' },
+      { from: 'n1', to: 'n2', reason: 'Yes', isInferred: true, inferenceType: 'affirmative-path' },
     ]);
   });
 });

@@ -21,6 +21,7 @@ export type FlowRenderState = {
 };
 
 export type MessageTone = 'info' | 'success' | 'error';
+export type WorkspaceSaveStatus = 'idle' | 'saving' | 'saved' | 'error';
 
 export interface TranscriptFile {
   id: string;
@@ -37,12 +38,14 @@ export interface TranscriptImportState {
   generatedFlow: TranscriptFlowResult | null;
   generationError: string;
   isGenerating: boolean;
+  isHydratingWorkspace: boolean;
   processingProgress: { processed: number; total: number } | null;
   flowRevision: number;
-  approvedRevision: number;
-  approvedAt: string | null;
   transcriptSetId: string | null;
   persistenceMessage: { tone: MessageTone; text: string } | null;
+  workspaceSaveStatus: WorkspaceSaveStatus;
+  workspaceSaveMessage: string | null;
+  workspaceSavedAt: string | null;
   generatedPromptMarkdown: string;
   promptGenerationMessage: { tone: MessageTone; text: string } | null;
   isGeneratingPrompt: boolean;
@@ -54,5 +57,10 @@ export interface TranscriptImportState {
     zoom: number | null;
     panX: number | null;
     panY: number | null;
+  };
+  sidebar: {
+    inputCollapsed: boolean;
+    nodesCollapsed: boolean;
+    nodeSearchQuery: string;
   };
 }

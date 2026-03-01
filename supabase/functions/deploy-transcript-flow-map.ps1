@@ -33,8 +33,16 @@ Write-Host "Project ref: $ProjectRef"
 Write-Host 'Deleting transcript-flow-map to force settings refresh...'
 
 # Delete may fail if function does not exist yet; keep going in that case.
+if (Get-Variable -Name PSNativeCommandUseErrorActionPreference -ErrorAction SilentlyContinue) {
+  $previousNativeCommandPreference = $PSNativeCommandUseErrorActionPreference
+  $PSNativeCommandUseErrorActionPreference = $false
+}
 $deleteOutput = & supabase functions delete transcript-flow-map --project-ref $ProjectRef --yes 2>&1
-if ($LASTEXITCODE -ne 0) {
+$deleteExitCode = $LASTEXITCODE
+if (Get-Variable -Name previousNativeCommandPreference -ErrorAction SilentlyContinue) {
+  $PSNativeCommandUseErrorActionPreference = $previousNativeCommandPreference
+}
+if ($deleteExitCode -ne 0) {
   $deleteText = ($deleteOutput | Out-String)
   if ($deleteText -match 'not found' -or $deleteText -match 'does not exist') {
     Write-Host 'Function does not exist yet; continuing.'

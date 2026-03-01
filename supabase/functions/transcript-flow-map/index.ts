@@ -50,6 +50,8 @@ interface FlowConnection {
   from: string;
   to: string;
   reason: string;
+  isInferred?: boolean;
+  inferenceType?: string;
 }
 
 interface FlowResult {
@@ -64,10 +66,61 @@ interface SpeakerTurn {
   text: string;
 }
 
+type BranchCategory = 'affirmative' | 'negative' | 'unclear' | 'other';
+
+interface InferredBranchPlan {
+  reason: string;
+  inferenceType: string;
+  category: BranchCategory;
+}
+
 const MIN_TRANSCRIPT_LENGTH = 20;
 const MAX_TRANSCRIPT_LENGTH = 120_000;
 const DEFAULT_MAX_NODES = 18;
 const MAX_ALLOWED_NODES = 40;
+const MIN_DECISION_BRANCH_COUNT = 2;
+const INFERRED_BRANCH_REASON_CANDIDATES = [
+  'No',
+  'Needs clarification',
+  'Escalate to support',
+  'Alternative outcome',
+] as const;
+const AFFIRMATIVE_REASON_TOKENS = [
+  'yes',
+  'affirmative',
+  'confirmed',
+  'condition met',
+  'verified',
+  'approved',
+  'proceed',
+  'ready',
+  'eligible',
+  'success',
+] as const;
+const NEGATIVE_REASON_TOKENS = [
+  'no',
+  'declined',
+  'decline',
+  'not met',
+  'not ready',
+  'ineligible',
+  'failed',
+  'cannot',
+  'unable',
+  'rejected',
+  'denied',
+] as const;
+const UNCLEAR_REASON_TOKENS = [
+  'unclear',
+  'unsure',
+  'not sure',
+  'maybe',
+  'unknown',
+  'needs clarification',
+  'missing info',
+  'missing details',
+  'incomplete',
+] as const;
 
 const FLOW_NODE_TYPES: readonly FlowNodeType[] = [
   'start',
@@ -218,11 +271,13 @@ const FLOW_JSON_SCHEMA: Record<string, unknown> = {
       items: {
         type: 'object',
         additionalProperties: false,
-        required: ['from', 'to', 'reason'],
+        required: ['from', 'to', 'reason', 'isInferred', 'inferenceType'],
         properties: {
           from: { type: 'string' },
           to: { type: 'string' },
           reason: { type: 'string' },
+          isInferred: { type: 'boolean' },
+          inferenceType: { type: ['string', 'null'] },
         },
       },
     },
@@ -266,7 +321,15 @@ serve(async (req: Request) => {
           userName,
           model: configuredModel,
         });
-        flow = normalizeFlowResult(aiResponse, transcript, maxNodes, assistantName, userName);
+        flow = normalizeFlowResult(aiResponse.payload, transcript, maxNodes, assistantName, userName);
+        model = `${aiResponse.provider}:${aiResponse.model}`;
+        if (aiResponse.fallbackFailures.length > 0) {
+          const fallbackNote = `Recovered via provider fallback. ${sanitizeText(
+            aiResponse.fallbackFailures.join(' | '),
+            'Unknown provider failure.',
+          )}`;
+          warning = warning ? `${warning} ${fallbackNote}` : fallbackNote;
+        }
       } catch (err) {
         usedFallback = true;
         model = 'deterministic-fallback';
@@ -281,6 +344,13 @@ serve(async (req: Request) => {
       model = 'deterministic-fallback';
       warning = 'No GROQ_API_KEY or OPENAI_API_KEY is configured. Using deterministic fallback mapping.';
       flow = buildFallbackFlow(transcript, maxNodes ?? MAX_ALLOWED_NODES, assistantName, userName);
+    }
+
+    const branchCompletion = ensureDecisionBranchCompleteness(flow, maxNodes ?? MAX_ALLOWED_NODES);
+    flow = branchCompletion.flow;
+    if (branchCompletion.addedInferredBranches > 0) {
+      const completionWarning = `Added ${branchCompletion.addedInferredBranches} inferred branch${branchCompletion.addedInferredBranches === 1 ? '' : 'es'} to keep decision coverage complete.`;
+      warning = warning ? `${warning} ${completionWarning}` : completionWarning;
     }
 
     return jsonResponse(200, {
@@ -348,7 +418,7 @@ async function generateFlowWithLlm(args: {
   assistantName: string;
   userName: string;
   model: string;
-}): Promise<unknown> {
+}): Promise<{ payload: unknown; provider: 'groq' | 'openai'; model: string; fallbackFailures: string[] }> {
   const temperature = resolveOptionalTemperature();
   const maxNodeLine = args.maxNodes !== undefined
     ? `Maximum node count: ${args.maxNodes}`
@@ -362,11 +432,13 @@ async function generateFlowWithLlm(args: {
           ? [
             'You are a process flow diagram specialist. You map call transcripts into EXISTING flow diagrams using BPMN / ISO 5807 conventions.',
             'You will receive an existing JSON graph. Return the UNIFIED graph incorporating any new branches or edge cases found in the new transcript.',
-            'Preserve the existing graph structure. Add new paths only when the transcript reveals scenarios not already covered.',
+            'Preserve the existing graph structure while backfilling missing plausible alternatives on decision points across the unified graph.',
+            'Use your professional judgment to infer realistic branch outcomes even when they are implied instead of explicitly spoken.',
           ].join(' ')
           : [
             'You are a process flow diagram specialist. You map call center / assistant transcripts into structured process flow diagrams using BPMN / ISO 5807 conventions.',
             'Return a clean, hierarchical flow graph with concise nodes representing major states, decisions, and outcomes.',
+            'Use your professional judgment to infer realistic branch outcomes beyond literal transcript wording.',
           ].join(' '),
       },
       {
@@ -405,6 +477,16 @@ async function generateFlowWithLlm(args: {
           '- Every node content MUST include both sides of the interaction using short sections like "Agent:" and "User:".',
           '- For open-ended user replies, bucket likely categories (for example: "Yes / No / Unclear" or "Ready / Not ready / Needs details").',
           '',
+          'INFERENCE RULES (IMPORTANT):',
+          '- Use model judgment to infer likely alternative outcomes at each decision, even when not explicitly spoken in the transcript.',
+          '- This is a comprehensive branch pass: prefer broad but realistic decision coverage over narrow literal extraction.',
+          '- Keep inferred branches plausible for the question/context; do NOT invent impossible domain facts.',
+          '- If a decision question is binary (yes/no style) and only one side is observed, add the opposite side plus an "Unclear/Needs clarification" side.',
+          '- Inferred decision branches should lead to distinct handling nodes (reuse existing compatible nodes when possible; otherwise create new inferred handling nodes).',
+          '- Mark inferred branches with "isInferred": true and a concise "inferenceType" label (for example: "negative", "unclear", "missing-info", "eligibility-fail").',
+          '- Every connection must include both "isInferred" and "inferenceType". For observed branches use "isInferred": false and "inferenceType": null.',
+          '- Keep explicit/observed branches as-is. Inferred branches should extend coverage, not replace observed transitions.',
+          '',
           'VISUAL COLORING:',
           '- Every node MUST include a "meta" object with exactly these keys: nodeColor, speaker, intent, tag.',
           '- Use null for any unknown/unused meta field.',
@@ -425,8 +507,10 @@ async function generateFlowWithLlm(args: {
               '=== MERGE INSTRUCTIONS ===',
               '- Output the ENTIRE unified graph (existing nodes + any new nodes).',
               '- Do NOT delete existing nodes or connections unless absolutely necessary for flow integrity.',
-              '- Add new branching paths only if the transcript introduces a scenario not already covered.',
+              '- Backfill missing plausible alternatives on existing decision nodes as needed for complete decision coverage.',
+              '- Do not limit branch completion to only newly introduced nodes.',
               '- Reuse existing node IDs when a step maps to an already-existing node.',
+              '- Reuse existing nodes when semantically compatible before introducing new nodes.',
             ]
             : []),
           '',
@@ -456,12 +540,13 @@ async function generateFlowWithLlm(args: {
     messages: messages as Array<{ role: 'system' | 'user' | 'assistant'; content: string }>,
     schema: FLOW_JSON_SCHEMA,
     schemaName: 'transcript_flow_graph',
+    validateSchema: false,
     temperature,
     groqModel: args.model,
-    openAiModel: args.model,
+    openAiModel: resolveDefaultOpenAiModel(),
   });
 
-  return response.payload;
+  return response;
 }
 
 function resolveOptionalTemperature(): number | null {
@@ -578,18 +663,453 @@ function normalizeFlowConnections(raw: unknown, validNodeIds: ReadonlySet<string
     if (!validNodeIds.has(from) || !validNodeIds.has(to)) continue;
     if (from === to) continue;
 
-    const key = `${from}->${to}`;
+    const reason = sanitizeText(candidate.reason, '');
+    const inferenceType = normalizeInferenceType(candidate.inferenceType);
+    const isInferred = normalizeInferredFlag(candidate.isInferred, inferenceType);
+    const key = connectionDedupeKey({
+      from,
+      to,
+      reason,
+      ...(isInferred !== undefined ? { isInferred } : {}),
+      ...(inferenceType ? { inferenceType } : {}),
+    });
     if (seen.has(key)) continue;
 
     seen.add(key);
-    connections.push({
+    const normalized: FlowConnection = {
       from,
       to,
-      reason: sanitizeText(candidate.reason, ''),
-    });
+      reason,
+      ...(isInferred !== undefined ? { isInferred } : {}),
+      ...(inferenceType ? { inferenceType } : {}),
+    };
+    connections.push(normalized);
   }
 
   return connections;
+}
+
+function normalizeInferenceType(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/--+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  if (!normalized) return undefined;
+  return normalized.slice(0, 40);
+}
+
+function normalizeInferredFlag(value: unknown, inferenceType: string | undefined): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (inferenceType) return true;
+  return undefined;
+}
+
+function connectionDedupeKey(connection: Pick<FlowConnection, 'from' | 'to' | 'reason' | 'isInferred' | 'inferenceType'>): string {
+  const reasonKey = connection.reason.trim().toLowerCase();
+  const inferenceTypeKey = (connection.inferenceType ?? '').trim().toLowerCase();
+  const inferredKey = connection.isInferred === true ? '1' : connection.isInferred === false ? '0' : '';
+  return `${connection.from}->${connection.to}->${reasonKey}->${inferenceTypeKey}->${inferredKey}`;
+}
+
+function ensureDecisionBranchCompleteness(
+  flow: FlowResult,
+  maxNodes: number,
+): { flow: FlowResult; addedInferredBranches: number } {
+  if (flow.nodes.length === 0) {
+    return { flow, addedInferredBranches: 0 };
+  }
+
+  const nodes = [...flow.nodes];
+  const connections = [...flow.connections];
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const seenConnections = new Set(connections.map((connection) => connectionDedupeKey(connection)));
+  let addedInferredBranches = 0;
+
+  for (const node of nodes) {
+    if (!isDecisionLikeNode(node)) continue;
+
+    let outgoing = connections.filter((connection) => connection.from === node.id);
+    const desiredCount = isLikelyBinaryDecisionNode(node, outgoing)
+      ? 3
+      : MIN_DECISION_BRANCH_COUNT;
+
+    const plannedCoverage = inferMissingBranchPlans(node, outgoing);
+    for (const plan of plannedCoverage) {
+      if (hasReasonCategory(outgoing, plan.category)) continue;
+
+      const targetId = resolveInferredTargetNodeId({
+        decisionNode: node,
+        decisionNodeId: node.id,
+        plan,
+        nodes,
+        connections,
+        nodeIds,
+        maxNodes,
+      });
+      if (!targetId) continue;
+
+      const coverageConnection: FlowConnection = {
+        from: node.id,
+        to: targetId,
+        reason: plan.reason,
+        isInferred: true,
+        inferenceType: plan.inferenceType,
+      };
+      const dedupeKey = connectionDedupeKey(coverageConnection);
+      if (seenConnections.has(dedupeKey)) {
+        continue;
+      }
+
+      connections.push(coverageConnection);
+      seenConnections.add(dedupeKey);
+      addedInferredBranches += 1;
+      outgoing = connections.filter((connection) => connection.from === node.id);
+    }
+
+    while (outgoing.length < desiredCount) {
+      const plan = nextInferredBranchPlan(node, outgoing);
+      const targetId = resolveInferredTargetNodeId({
+        decisionNode: node,
+        decisionNodeId: node.id,
+        plan,
+        nodes,
+        connections,
+        nodeIds,
+        maxNodes,
+      });
+      if (!targetId) break;
+
+      const inferredConnection: FlowConnection = {
+        from: node.id,
+        to: targetId,
+        reason: plan.reason,
+        isInferred: true,
+        inferenceType: plan.inferenceType,
+      };
+      const dedupeKey = connectionDedupeKey(inferredConnection);
+      if (seenConnections.has(dedupeKey)) {
+        break;
+      }
+
+      connections.push(inferredConnection);
+      seenConnections.add(dedupeKey);
+      addedInferredBranches += 1;
+      outgoing = connections.filter((connection) => connection.from === node.id);
+    }
+  }
+
+  return {
+    flow: {
+      ...flow,
+      nodes,
+      connections,
+    },
+    addedInferredBranches,
+  };
+}
+
+function isDecisionLikeNode(node: FlowNode): boolean {
+  return node.type === 'decision' || node.type === 'logic-branch';
+}
+
+function nextInferredBranchPlan(decisionNode: FlowNode, outgoing: FlowConnection[]): InferredBranchPlan {
+  const binaryDecision = isLikelyBinaryDecisionNode(decisionNode, outgoing);
+  if (binaryDecision && !hasReasonCategory(outgoing, 'affirmative')) {
+    return {
+      reason: 'Yes',
+      inferenceType: 'affirmative',
+      category: 'affirmative',
+    };
+  }
+  if (binaryDecision && !hasReasonCategory(outgoing, 'negative')) {
+    return {
+      reason: 'No',
+      inferenceType: 'negative',
+      category: 'negative',
+    };
+  }
+  if (binaryDecision && !hasReasonCategory(outgoing, 'unclear')) {
+    return {
+      reason: 'Unclear',
+      inferenceType: 'unclear',
+      category: 'unclear',
+    };
+  }
+
+  const reason = nextInferredBranchReason(outgoing);
+  return {
+    reason,
+    inferenceType: toInferenceTypeLabel(reason),
+    category: branchReasonCategory(reason),
+  };
+}
+
+function inferMissingBranchPlans(decisionNode: FlowNode, outgoing: FlowConnection[]): InferredBranchPlan[] {
+  const plans: InferredBranchPlan[] = [];
+
+  if (isLikelyBinaryDecisionNode(decisionNode, outgoing)) {
+    if (!hasReasonCategory(outgoing, 'affirmative')) {
+      plans.push({
+        reason: 'Yes',
+        inferenceType: 'affirmative',
+        category: 'affirmative',
+      });
+    }
+    if (!hasReasonCategory(outgoing, 'negative')) {
+      plans.push({
+        reason: 'No',
+        inferenceType: 'negative',
+        category: 'negative',
+      });
+    }
+    if (!hasReasonCategory(outgoing, 'unclear')) {
+      plans.push({
+        reason: 'Unclear / needs clarification',
+        inferenceType: 'unclear',
+        category: 'unclear',
+      });
+    }
+    return plans;
+  }
+
+  if (hasReasonCategory(outgoing, 'affirmative') && !hasReasonCategory(outgoing, 'negative')) {
+    plans.push({
+      reason: 'Condition not met',
+      inferenceType: 'negative',
+      category: 'negative',
+    });
+  } else if (hasReasonCategory(outgoing, 'negative') && !hasReasonCategory(outgoing, 'affirmative')) {
+    plans.push({
+      reason: 'Condition met',
+      inferenceType: 'affirmative',
+      category: 'affirmative',
+    });
+  }
+
+  if (outgoing.length < MIN_DECISION_BRANCH_COUNT && !hasReasonCategory(outgoing, 'unclear')) {
+    plans.push({
+      reason: 'Needs clarification',
+      inferenceType: 'unclear',
+      category: 'unclear',
+    });
+  }
+
+  return plans;
+}
+
+function hasReasonCategory(outgoing: FlowConnection[], category: BranchCategory): boolean {
+  return outgoing.some((connection) => branchReasonCategory(connection.reason) === category);
+}
+
+function nextInferredBranchReason(outgoing: FlowConnection[]): string {
+  const usedReasons = new Set(
+    outgoing
+      .map((connection) => connection.reason.trim().toLowerCase())
+      .filter((reason) => reason.length > 0),
+  );
+
+  for (const candidate of INFERRED_BRANCH_REASON_CANDIDATES) {
+    const normalized = candidate.toLowerCase();
+    if (!usedReasons.has(normalized)) return candidate;
+  }
+
+  return `Alternative outcome ${outgoing.length + 1}`;
+}
+
+function branchReasonCategory(reason: string): BranchCategory {
+  const normalized = normalizeDecisionHintText(reason);
+  if (!normalized) return 'other';
+
+  if (containsAnyToken(normalized, NEGATIVE_REASON_TOKENS)) {
+    return 'negative';
+  }
+  if (containsAnyToken(normalized, UNCLEAR_REASON_TOKENS)) {
+    return 'unclear';
+  }
+  if (containsAnyToken(normalized, AFFIRMATIVE_REASON_TOKENS)) {
+    return 'affirmative';
+  }
+  return 'other';
+}
+
+function normalizeDecisionHintText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function containsAnyToken(normalizedText: string, tokens: readonly string[]): boolean {
+  return tokens.some((token) => {
+    const normalizedToken = normalizeDecisionHintText(token);
+    return normalizedToken.length > 0 && normalizedText.includes(normalizedToken);
+  });
+}
+
+function isLikelyBinaryDecisionNode(node: FlowNode, outgoing: FlowConnection[]): boolean {
+  const rawText = `${node.label} ${node.content}`;
+  if (/\?/.test(rawText)) return true;
+
+  const normalized = normalizeDecisionHintText(rawText);
+  const hasQuestionStyleVerb = /\b(is|are|am|do|does|did|can|could|will|would|should|have|has|had|want|agree|confirm)\b/.test(normalized);
+  const hasBinaryHint = /\b(yes no|yes|no|true false|accept decline|ready not ready|eligible ineligible)\b/.test(normalized);
+  if (hasQuestionStyleVerb || hasBinaryHint) return true;
+
+  const existingCategories = new Set(outgoing.map((connection) => branchReasonCategory(connection.reason)));
+  return existingCategories.has('affirmative') || existingCategories.has('negative');
+}
+
+function toInferenceTypeLabel(reason: string): string {
+  const normalized = reason
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+  return normalized.length > 0 ? normalized.slice(0, 40) : 'alternative';
+}
+
+function resolveInferredTargetNodeId(args: {
+  decisionNode: FlowNode;
+  decisionNodeId: string;
+  plan: InferredBranchPlan;
+  nodes: FlowNode[];
+  connections: FlowConnection[];
+  nodeIds: Set<string>;
+  maxNodes: number;
+}): string | null {
+  if (args.nodes.length < args.maxNodes) {
+    const syntheticNode = createInferredHandlingNode(args.decisionNode, args.plan, args.nodeIds);
+    args.nodes.push(syntheticNode);
+    args.nodeIds.add(syntheticNode.id);
+    return syntheticNode.id;
+  }
+
+  const existingOutgoing = args.connections.filter((connection) => connection.from === args.decisionNodeId);
+  const categoryMatchedTarget = existingOutgoing.find((connection) => (
+    connection.to !== args.decisionNodeId
+    && branchReasonCategory(connection.reason) === args.plan.category
+  ))?.to ?? null;
+  if (categoryMatchedTarget) {
+    return categoryMatchedTarget;
+  }
+
+  const reusableTarget = findReusableInferredTargetNode(args.nodes, args.decisionNodeId, args.plan.category);
+  if (reusableTarget) {
+    return reusableTarget;
+  }
+
+  const existingTarget = existingOutgoing.find((connection) => connection.to !== args.decisionNodeId)?.to ?? null;
+  if (existingTarget) {
+    return existingTarget;
+  }
+
+  const terminalTarget = args.nodes.find((node) => isTerminalNode(node) && node.id !== args.decisionNodeId)?.id ?? null;
+  if (terminalTarget) {
+    return terminalTarget;
+  }
+
+  const anyTarget = args.nodes.find((node) => (
+    node.id !== args.decisionNodeId
+    && node.type !== 'start'
+    && node.type !== 'decision'
+    && node.type !== 'logic-branch'
+  ))?.id ?? null;
+  if (anyTarget) {
+    return anyTarget;
+  }
+
+  return null;
+}
+
+function findReusableInferredTargetNode(
+  nodes: FlowNode[],
+  decisionNodeId: string,
+  category: BranchCategory,
+): string | null {
+  const candidates = nodes.filter((node) => (
+    node.id !== decisionNodeId
+    && node.type !== 'start'
+    && !isDecisionLikeNode(node)
+  ));
+
+  if (category === 'negative' || category === 'unclear') {
+    const escalationTarget = candidates.find((node) => node.type === 'escalation')?.id ?? null;
+    if (escalationTarget) return escalationTarget;
+
+    const terminalTarget = candidates.find((node) => isTerminalNode(node))?.id ?? null;
+    if (terminalTarget) return terminalTarget;
+
+    const coloredTarget = candidates.find((node) => {
+      const color = (node.meta.nodeColor ?? '').toLowerCase();
+      return color === '#ef4444' || color === '#f59e0b';
+    })?.id ?? null;
+    if (coloredTarget) return coloredTarget;
+  }
+
+  if (category === 'affirmative') {
+    const processTarget = candidates.find((node) => (
+      node.type === 'process'
+      || node.type === 'subprocess'
+      || node.type === 'data-lookup'
+      || node.type === 'notification'
+    ))?.id ?? null;
+    if (processTarget) return processTarget;
+  }
+
+  return candidates[0]?.id ?? null;
+}
+
+function createInferredHandlingNode(
+  decisionNode: FlowNode,
+  plan: InferredBranchPlan,
+  usedIds: ReadonlySet<string>,
+): FlowNode {
+  const id = ensureUniqueId(`${decisionNode.id}_${plan.inferenceType}`, usedIds, 'inferred_path');
+  return {
+    id,
+    label: inferredNodeLabel(plan),
+    type: 'process',
+    icon: DEFAULT_ICON_BY_TYPE.process,
+    content: inferredNodeContent(decisionNode, plan),
+    meta: {
+      nodeColor: '#F59E0B',
+      speaker: 'Agent',
+      intent: 'inferred-alternative',
+      tag: 'inferred',
+    },
+  };
+}
+
+function inferredNodeLabel(plan: InferredBranchPlan): string {
+  if (plan.category === 'negative') return 'Handle Negative Response';
+  if (plan.category === 'unclear') return 'Clarify Caller Response';
+  if (plan.category === 'affirmative') return 'Proceed After Confirmation';
+  return 'Handle Alternate Outcome';
+}
+
+function inferredNodeContent(decisionNode: FlowNode, plan: InferredBranchPlan): string {
+  const decisionLabel = sanitizeText(decisionNode.label, 'this decision point');
+  const userDescriptor = plan.category === 'negative'
+    ? 'a negative or declining response'
+    : plan.category === 'unclear'
+      ? 'an unclear or incomplete response'
+      : plan.category === 'affirmative'
+        ? 'a positive/confirming response'
+        : 'an alternate response';
+
+  return [
+    `Agent: For "${decisionLabel}", handle the "${plan.reason}" branch with an appropriate follow-up and next-step guidance.`,
+    `User: Provides ${userDescriptor} that requires branch-specific handling.`,
+  ].join('\n');
+}
+
+function isTerminalNode(node: FlowNode): boolean {
+  return node.type === 'end' || node.type === 'termination';
 }
 
 function normalizeFlowNodeType(value: unknown): FlowNodeType {

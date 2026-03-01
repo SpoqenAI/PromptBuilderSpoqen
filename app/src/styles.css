@@ -37,6 +37,9 @@ body {
   min-height: 100%;
   overflow: hidden;
   font-family: var(--font-display);
+  line-height: var(--ui-text-line-height, 1.42);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
   background-color: var(--color-background-light);
   background-image: radial-gradient(rgba(35, 149, 111, 0.08) 1px, transparent 1px);
   background-size: 24px 24px;
@@ -73,6 +76,8 @@ html.dark body::before {
   --ui-gap-sm: clamp(0.5rem, 0.35rem + 0.45vw, 0.875rem);
   --ui-gap-md: clamp(0.75rem, 0.5rem + 0.65vw, 1.125rem);
   --ui-gap-lg: clamp(1rem, 0.7rem + 1vw, 1.5rem);
+  --ui-text-line-height: 1.42;
+  --ui-control-line-height: 1.34;
   --ui-header-min-height: 3.5rem;
   --ui-sidebar-width: clamp(16rem, 24vw, 22rem);
   --ui-sidebar-wide-width: clamp(18rem, 28vw, 25rem);
@@ -101,6 +106,35 @@ h4,
 p,
 label {
   overflow-wrap: anywhere;
+}
+
+/* Global anti-clipping guardrails for compact text-heavy UI. */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  line-height: var(--ui-control-line-height);
+}
+
+[class*="text-[9px]"],
+[class*="text-[10px]"],
+[class*="text-[11px]"] {
+  line-height: 1.35;
+}
+
+.leading-none {
+  line-height: 1.15 !important;
+}
+
+.material-icons,
+.material-icons-outlined {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: middle;
+  line-height: 1;
+  overflow: visible;
 }
 
 .ui-shell {
@@ -328,8 +362,9 @@ html.dark .ui-card {
   border: 1px solid var(--color-card-border);
   background: white;
   padding: 0.5rem 0.75rem;
+  min-height: 2.25rem;
   font-size: 0.875rem;
-  line-height: 1.35;
+  line-height: 1.4;
   color: #1f2937;
 }
 
@@ -355,14 +390,16 @@ html.dark .ui-textarea {
   justify-content: center;
   gap: 0.4rem;
   border-radius: 0.5rem;
+  min-height: 2rem;
   padding: 0.4rem 0.75rem;
   font-size: 0.75rem;
   font-weight: 600;
-  line-height: 1.2;
+  line-height: 1.3;
   border: 1px solid transparent;
   cursor: pointer;
   white-space: normal;
   text-wrap: balance;
+  overflow: visible;
 }
 
 .ui-btn:disabled {
@@ -688,6 +725,11 @@ html.dark .modal-flow-card[data-active="true"] {
 }
 
 /* ── Connector SVG path glow ──────────────────── */
+.flow-connections-layer,
+#connection-svg {
+  overflow: visible;
+}
+
 .connector-path {
   filter: drop-shadow(0 0 4px rgba(35, 149, 111, 0.5));
 }

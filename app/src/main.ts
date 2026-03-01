@@ -152,6 +152,9 @@ router
   .on('/import/transcript', () => {
     void runProtectedRoute(() => renderTranscriptImport(app));
   })
+  .on('/import/transcript/:transcriptSetId', (params) => {
+    void runProtectedRoute(() => renderTranscriptImport(app, params.transcriptSetId));
+  })
   .otherwise(() => {
     router.navigate('/');
   })

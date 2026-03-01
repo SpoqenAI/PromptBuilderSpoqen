@@ -166,7 +166,7 @@ export function renderDashboard(container: HTMLElement): void {
         <div class="flex items-center justify-between gap-3">
           <div>
             <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Transcript Flows</h2>
-            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Stored transcript mappings that can be opened or converted into editable canvas projects.</p>
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Persistent transcript workspaces that can be reopened, edited, and optionally copied into Canvas.</p>
           </div>
           <span class="text-[11px] text-slate-400">${transcriptFlows.length} transcript sets</span>
         </div>
@@ -364,11 +364,30 @@ export function renderDashboard(container: HTMLElement): void {
 
     // ── Event Wiring ──────────────────────
     // Click on project card → open canvas
-    container.querySelectorAll<HTMLElement>('.prompt-project-card, .transcript-project-card').forEach((card) => {
+    container.querySelectorAll<HTMLElement>('.prompt-project-card').forEach((card) => {
       card.addEventListener('click', (event) => {
-        if ((event.target as HTMLElement).closest('.delete-project,.create-transcript-project,.open-transcript-project')) return;
+        if ((event.target as HTMLElement).closest('.delete-project')) return;
         const projectId = card.dataset.projectId;
         if (projectId) router.navigate(`/project/${projectId}`);
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('.transcript-project-card').forEach((card) => {
+      card.addEventListener('click', (event) => {
+        if ((event.target as HTMLElement).closest('.delete-transcript-flow,.create-transcript-project,.open-transcript-project,.open-transcript-workspace')) return;
+        const transcriptSetId = card.dataset.transcriptSetId;
+        if (!transcriptSetId) return;
+        router.navigate(`/import/transcript/${transcriptSetId}`);
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.open-transcript-workspace').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const transcriptSetId = button.dataset.transcriptSetId;
+        if (!transcriptSetId) return;
+        router.navigate(`/import/transcript/${transcriptSetId}`);
       });
     });
 
@@ -638,8 +657,9 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
   const thumbnailHtml = generateGraphThumbnailSVG(linkedProject?.nodes, linkedProject?.connections, 'smart_toy');
 
   return `
-    <div class="dashboard-search-card ${linkedProjectId ? 'transcript-project-card cursor-pointer' : ''} project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 overflow-hidden flex flex-col"
-      data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}">
+    <div class="dashboard-search-card transcript-project-card cursor-pointer project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 overflow-hidden flex flex-col"
+      data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}"
+      data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">
       <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
         <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
         ${thumbnailHtml}
@@ -662,9 +682,12 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
           </div>
           <div class="flex items-center justify-between gap-2">
             <span class="text-[11px] text-slate-400">Updated ${escapeHtml(formatDashboardTimestamp(updatedAt))}</span>
-            ${linkedProjectId
+            <div class="flex items-center gap-1.5">
+              <button class="open-transcript-workspace px-2.5 py-1 text-[11px] font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">Open Workspace</button>
+              ${linkedProjectId
       ? `<button class="open-transcript-project px-2.5 py-1 text-[11px] font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors" data-project-id="${escapeHtml(linkedProjectId)}">Open in Canvas</button>`
-      : `<button class="create-transcript-project px-2.5 py-1 text-[11px] font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">Create Editable Flow</button>`}
+      : `<button class="create-transcript-project px-2.5 py-1 text-[11px] font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">Create Prompt Project</button>`}
+            </div>
           </div>
         </div>
       </div>

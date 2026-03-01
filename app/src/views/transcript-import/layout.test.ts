@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { TranscriptFlowResult } from '../../transcript-flow';
 import {
   buildFlowRenderState,
+  computeCanvasGeometry,
   computeFlowLayout,
   defaultNodeSize,
   edgeGeometry,
@@ -57,5 +58,24 @@ describe('transcript import layout', () => {
     expect(geometry.fromX).toBe(10 + fromSize.width);
     expect(geometry.toX).toBe(300);
     expect(geometry.curve.startsWith('M ')).toBe(true);
+  });
+
+  it('expands geometry bounds for reverse-direction bezier edges', () => {
+    const size = defaultNodeSize();
+    const layout = {
+      left: { x: 60, y: 80 },
+      right: { x: 420, y: 80 },
+    };
+    const nodeSizes = {
+      left: size,
+      right: size,
+    };
+
+    const naiveWidth = layout.right.x + size.width + 120;
+    const geometry = computeCanvasGeometry(layout, nodeSizes, [
+      { from: 'right', to: 'left' },
+    ]);
+
+    expect(geometry.width).toBeGreaterThan(naiveWidth);
   });
 });

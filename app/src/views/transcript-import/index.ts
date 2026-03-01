@@ -1,33 +1,67 @@
+import { loadTranscriptWorkspace, upsertTranscriptWorkspaceFlow } from '../../transcript-workspace';
 import { router } from '../../router';
+import { store } from '../../store';
 import { wireThemeToggle } from '../../theme';
 import { preserveScrollDuringRender } from '../../view-state';
-import { createProjectFromGeneratedFlow, generateFlow, generatePromptFromCurrentFlow } from './actions';
+import {
+  createProjectFromGeneratedFlow,
+  generateFlow,
+  generatePromptFromCurrentFlow,
+} from './actions';
 import { wireTranscriptImportEvents } from './events';
 import { buildFlowRenderState, cloneLayout } from './layout';
 import { openNodeEditorModal } from './node-editor-modal';
-import {
-  clearFlowApproval,
-  createTranscriptImportState,
-  isCurrentFlowApproved,
-} from './state';
+import { createTranscriptImportState } from './state';
 import { renderTranscriptImportShell } from './template';
 import { wireFlowViewport } from './viewport';
 
-export function renderTranscriptImport(container: HTMLElement): void {
+const WORKSPACE_AUTOSAVE_DEBOUNCE_MS = 800;
+
+export function renderTranscriptImport(
+  container: HTMLElement,
+  transcriptSetIdParam?: string,
+): void {
   const state = createTranscriptImportState();
   const suppressNextNodeClick = { value: false };
   let cleanupFlowViewport: (() => void) | null = null;
+  let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let autosaveSerial = 0;
+  let workspaceSaveInFlight = false;
+  let workspaceSaveQueued = false;
 
-  const cleanupViewport = () => {
+  const routeTranscriptSetId = normalizeOptionalId(transcriptSetIdParam);
+  if (routeTranscriptSetId) {
+    state.transcriptSetId = routeTranscriptSetId;
+    state.isHydratingWorkspace = true;
+  }
+
+  const clearAutosaveTimer = (): void => {
+    if (!autosaveTimer) return;
+    clearTimeout(autosaveTimer);
+    autosaveTimer = null;
+  };
+
+  const cleanupViewport = (): void => {
     cleanupFlowViewport?.();
     cleanupFlowViewport = null;
+  };
+
+  const cleanup = (): void => {
+    clearAutosaveTimer();
+    cleanupViewport();
+    autosaveSerial += 1;
+    workspaceSaveInFlight = false;
+    workspaceSaveQueued = false;
   };
 
   const render = (): void => {
     cleanupViewport();
 
-    const canGenerate = state.transcripts.length > 0 && !state.isGenerating;
-    const flowApproved = isCurrentFlowApproved(state);
+    const canGenerate =
+      state.transcripts.length > 0 &&
+      !state.isGenerating &&
+      !state.isHydratingWorkspace;
+    const linkedProjectId = resolveLinkedProjectId(state.transcriptSetId);
     const flowRenderState = state.generatedFlow
       ? buildFlowRenderState(state.generatedFlow, state.nodePositionOverrides)
       : null;
@@ -44,6 +78,7 @@ export function renderTranscriptImport(container: HTMLElement): void {
         baseUrl: import.meta.env.BASE_URL,
         projectName: state.projectName,
         projectModel: state.projectModel,
+        linkedProjectId,
         assistantName: state.assistantName,
         userName: state.userName,
         transcripts: state.transcripts,
@@ -54,12 +89,18 @@ export function renderTranscriptImport(container: HTMLElement): void {
         isGeneratingPrompt: state.isGeneratingPrompt,
         canGenerate,
         isGenerating: state.isGenerating,
+        isHydratingWorkspace: state.isHydratingWorkspace,
         processingProgress: state.processingProgress,
         generatedFlow: state.generatedFlow,
-        flowApproved,
-        approvedAt: state.approvedAt,
+        transcriptSetId: state.transcriptSetId,
+        workspaceSaveStatus: state.workspaceSaveStatus,
+        workspaceSaveMessage: state.workspaceSaveMessage,
+        workspaceSavedAt: state.workspaceSavedAt,
         generatingThoughts: state.generatingThoughts,
         flowRenderState,
+        inputSectionCollapsed: state.sidebar.inputCollapsed,
+        nodesSectionCollapsed: state.sidebar.nodesCollapsed,
+        nodeSearchQuery: state.sidebar.nodeSearchQuery,
       });
     });
 
@@ -70,24 +111,42 @@ export function renderTranscriptImport(container: HTMLElement): void {
       suppressNextNodeClick,
       render,
       onNavigateHome: () => {
-        cleanupViewport();
+        cleanup();
         router.navigate('/');
       },
       onNavigateBack: () => {
-        cleanupViewport();
+        cleanup();
         router.navigate('/import');
       },
       onGenerateFlow: () => {
-        void generateFlow(state, { render });
+        void generateFlow(state, {
+          render,
+          onFlowGenerated: () => {
+            scheduleWorkspaceAutosave();
+          },
+        });
       },
       onGeneratePromptFromFlow: () => {
         void generatePromptFromCurrentFlow(state, { render });
+      },
+      onOpenLinkedProject: () => {
+        const projectId = resolveLinkedProjectId(state.transcriptSetId);
+        if (!projectId) return;
+        cleanup();
+        router.navigate(`/project/${projectId}`);
       },
       onCreateProjectFromFlow: () => {
         createProjectFromGeneratedFlow(state, {
           render,
           cleanupViewportAndNavigate: cleanupViewport,
         });
+      },
+      onFlowMutated: () => {
+        state.flowRevision += 1;
+        state.generatedPromptMarkdown = '';
+        state.promptGenerationMessage = null;
+        render();
+        scheduleWorkspaceAutosave();
       },
       onCopyGeneratedPrompt: async () => {
         const prompt = state.generatedPromptMarkdown.trim();
@@ -112,13 +171,18 @@ export function renderTranscriptImport(container: HTMLElement): void {
             node.label = next.label;
             node.content = next.content;
             node.type = next.type;
+            node.icon = next.icon;
+            node.meta = { ...next.meta };
             state.flowRevision += 1;
             state.generatedPromptMarkdown = '';
             state.promptGenerationMessage = null;
-            clearFlowApproval(state);
             render();
+            scheduleWorkspaceAutosave();
           },
         });
+      },
+      onWorkspaceMetadataChanged: () => {
+        scheduleWorkspaceAutosave();
       },
     });
 
@@ -126,12 +190,136 @@ export function renderTranscriptImport(container: HTMLElement): void {
       container,
       latestRenderedLayout: state.latestRenderedLayout,
       latestRenderedNodeSizes: state.latestRenderedNodeSizes,
+      latestRenderedConnections: state.generatedFlow?.connections ?? [],
       nodePositionOverrides: state.nodePositionOverrides,
       savedViewport: state.viewport,
       suppressNextNodeClick,
-      onNodeDragCommitted: render,
+      onNodeDragCommitted: () => {
+        render();
+        scheduleWorkspaceAutosave();
+      },
     });
   };
 
+  const scheduleWorkspaceAutosave = (): void => {
+    if (!state.generatedFlow || !state.transcriptSetId) {
+      return;
+    }
+    if (state.isHydratingWorkspace) {
+      return;
+    }
+
+    clearAutosaveTimer();
+    state.workspaceSaveStatus = 'saving';
+    state.workspaceSaveMessage = null;
+    render();
+
+    autosaveTimer = setTimeout(() => {
+      void saveWorkspaceNow();
+    }, WORKSPACE_AUTOSAVE_DEBOUNCE_MS);
+  };
+
+  const saveWorkspaceNow = async (): Promise<void> => {
+    clearAutosaveTimer();
+    if (!state.generatedFlow || !state.transcriptSetId) {
+      return;
+    }
+    if (workspaceSaveInFlight) {
+      workspaceSaveQueued = true;
+      return;
+    }
+    workspaceSaveInFlight = true;
+    workspaceSaveQueued = false;
+
+    const saveSerial = ++autosaveSerial;
+    state.workspaceSaveStatus = 'saving';
+    state.workspaceSaveMessage = null;
+    render();
+
+    try {
+      await upsertTranscriptWorkspaceFlow({
+        transcriptSetId: state.transcriptSetId,
+        flow: state.generatedFlow,
+        projectName: state.projectName.trim() || state.generatedFlow.title,
+        nodePositionOverrides: state.nodePositionOverrides,
+      });
+
+      if (saveSerial !== autosaveSerial) return;
+      state.workspaceSaveStatus = 'saved';
+      state.workspaceSavedAt = new Date().toISOString();
+      state.workspaceSaveMessage = null;
+      render();
+    } catch (err) {
+      if (saveSerial !== autosaveSerial) return;
+      state.workspaceSaveStatus = 'error';
+      state.workspaceSaveMessage =
+        err instanceof Error ? err.message : 'Failed to save transcript workspace.';
+      render();
+    } finally {
+      workspaceSaveInFlight = false;
+      if (saveSerial !== autosaveSerial) {
+        workspaceSaveQueued = false;
+        return;
+      }
+      if (workspaceSaveQueued) {
+        workspaceSaveQueued = false;
+        void saveWorkspaceNow();
+      }
+    }
+  };
+
+  const hydrateWorkspace = async (transcriptSetId: string): Promise<void> => {
+    state.isHydratingWorkspace = true;
+    state.generationError = '';
+    render();
+
+    try {
+      const snapshot = await loadTranscriptWorkspace(transcriptSetId);
+      state.transcriptSetId = snapshot.transcriptSetId;
+      if (snapshot.projectName.trim().length > 0) {
+        state.projectName = snapshot.projectName;
+      }
+      if (snapshot.projectModel.trim().length > 0) {
+        state.projectModel = snapshot.projectModel;
+      }
+      state.generatedFlow = snapshot.flow;
+      state.nodePositionOverrides = { ...snapshot.nodePositionOverrides };
+      state.latestRenderedLayout = {};
+      state.latestRenderedNodeSizes = {};
+      state.processingProgress = null;
+      state.persistenceMessage = null;
+      state.workspaceSaveStatus = 'idle';
+      state.workspaceSaveMessage = null;
+      state.workspaceSavedAt = null;
+      state.flowRevision = snapshot.flow ? 1 : 0;
+    } catch (err) {
+      state.generationError = err instanceof Error ? err.message : 'Failed to load transcript workspace.';
+      state.workspaceSaveStatus = 'error';
+      state.workspaceSaveMessage = state.generationError;
+    } finally {
+      state.isHydratingWorkspace = false;
+      render();
+    }
+  };
+
   render();
+  if (routeTranscriptSetId) {
+    void hydrateWorkspace(routeTranscriptSetId);
+  }
+}
+
+function normalizeOptionalId(value: string | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+function resolveLinkedProjectId(transcriptSetId: string | null): string | null {
+  if (!transcriptSetId) return null;
+  const draft = store
+    .getTranscriptFlowDrafts()
+    .find((candidate) => candidate.transcriptSetId === transcriptSetId);
+  if (!draft?.projectId) return null;
+  if (!store.getProject(draft.projectId)) return null;
+  return draft.projectId;
 }

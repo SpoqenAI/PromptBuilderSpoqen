@@ -1,5 +1,6 @@
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { corsHeaders, jsonResponse } from '../_shared/cors.ts';
+import { generateStructuredJson, resolveDefaultGroqModel, resolveDefaultOpenAiModel } from '../_shared/llm-provider.ts';
 import { createAdminClient, requireUser } from '../_shared/supabase.ts';
 
 interface RequestBody {
@@ -13,12 +14,17 @@ interface CanonicalNode {
   label: string;
   type: string;
   content: string;
+  supportCount: number;
 }
 
 interface CanonicalEdge {
   from: string;
   to: string;
   reason: string;
+  supportCount: number;
+  transitionRate: number;
+  isInferred?: boolean;
+  inferenceType?: string;
 }
 
 interface PromptNode {
@@ -28,10 +34,26 @@ interface PromptNode {
   content: string;
 }
 
+interface PromptCompilationResult {
+  promptMarkdown: string;
+  model: string;
+  usedFallback: boolean;
+  warning: string | null;
+}
+
 const STOP_WORDS = new Set([
   'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'have',
   'if', 'in', 'is', 'it', 'of', 'on', 'or', 'that', 'the', 'to', 'was', 'with', 'you',
 ]);
+
+const PROMPT_JSON_SCHEMA: Record<string, unknown> = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['promptMarkdown'],
+  properties: {
+    promptMarkdown: { type: 'string' },
+  },
+};
 
 serve(async (req: Request) => {
   if (req.method === 'OPTIONS') {
@@ -69,7 +91,7 @@ serve(async (req: Request) => {
     }
 
     const orderedNodes = orderCanonicalNodes(flowData.nodes, flowData.edges);
-    const promptMarkdown = assemblePromptMarkdown(orderedNodes, flowData.edges, mode);
+    const compiled = await compilePromptFromFlow(orderedNodes, flowData.edges, mode);
 
     let mappings: Array<{
       canonicalNodeId: string;
@@ -98,11 +120,11 @@ serve(async (req: Request) => {
     }
 
     return jsonResponse(200, {
-      promptMarkdown,
+      promptMarkdown: compiled.promptMarkdown,
       nodeMappings: mappings,
-      model: 'deterministic-flow-compiler',
-      usedFallback: false,
-      warning: null,
+      model: compiled.model,
+      usedFallback: compiled.usedFallback,
+      warning: compiled.warning,
     }, req);
   } catch (err) {
     return jsonResponse(400, {
@@ -143,7 +165,7 @@ async function loadCanonicalFlow(
 ): Promise<{ nodes: CanonicalNode[]; edges: CanonicalEdge[] }> {
   const nodesRes = await admin
     .from('canonical_flow_nodes')
-    .select('id, label, type, content')
+    .select('id, label, type, content, support_count')
     .eq('transcript_set_id', transcriptSetId);
   if (nodesRes.error) {
     throw new Error(`Failed to load canonical nodes: ${nodesRes.error.message}`);
@@ -151,7 +173,7 @@ async function loadCanonicalFlow(
 
   const edgesRes = await admin
     .from('canonical_flow_edges')
-    .select('from_node_id, to_node_id, reason')
+    .select('from_node_id, to_node_id, reason, support_count, transition_rate')
     .eq('transcript_set_id', transcriptSetId);
   if (edgesRes.error) {
     throw new Error(`Failed to load canonical edges: ${edgesRes.error.message}`);
@@ -162,17 +184,43 @@ async function loadCanonicalFlow(
     label: normalizeText(row.label, 'Untitled step'),
     type: normalizeText(row.type, 'custom'),
     content: normalizeText(row.content, row.label || 'Step'),
+    supportCount: toNonNegativeInt(row.support_count),
   }));
   const edges: CanonicalEdge[] = (edgesRes.data ?? []).map((row) => ({
     from: row.from_node_id,
     to: row.to_node_id,
     reason: normalizeText(row.reason, 'Next'),
+    supportCount: toNonNegativeInt(row.support_count),
+    transitionRate: clamp01(toFiniteNumber(row.transition_rate)),
   }));
 
+  const fallbackFlow = await loadLatestTranscriptFlow(admin, transcriptSetId);
   if (nodes.length > 0) {
-    return { nodes, edges };
+    if (!fallbackFlow) {
+      return { nodes, edges };
+    }
+
+    const validNodeIds = new Set(nodes.map((node) => node.id));
+    return {
+      nodes,
+      edges: mergeEdgeVariants(edges, fallbackFlow.edges, validNodeIds),
+    };
   }
 
+  if (!fallbackFlow) {
+    return { nodes: [], edges: [] };
+  }
+
+  return {
+    nodes: fallbackFlow.nodes,
+    edges: fallbackFlow.edges,
+  };
+}
+
+async function loadLatestTranscriptFlow(
+  admin: ReturnType<typeof createAdminClient>,
+  transcriptSetId: string,
+): Promise<{ nodes: CanonicalNode[]; edges: CanonicalEdge[] } | null> {
   const transcriptsRes = await admin
     .from('transcripts')
     .select('id')
@@ -185,7 +233,7 @@ async function loadCanonicalFlow(
 
   const transcriptIds = (transcriptsRes.data ?? []).map((row) => row.id);
   if (transcriptIds.length === 0) {
-    return { nodes: [], edges: [] };
+    return null;
   }
 
   const flowRes = await admin
@@ -199,7 +247,7 @@ async function loadCanonicalFlow(
     throw new Error(`Failed to load transcript flow fallback: ${flowRes.error.message}`);
   }
   if (!flowRes.data) {
-    return { nodes: [], edges: [] };
+    return null;
   }
 
   return {
@@ -221,6 +269,7 @@ function parseFallbackNodes(raw: unknown): CanonicalNode[] {
       label,
       type: normalizeText(item.type, 'custom'),
       content: normalizeText(item.content, label),
+      supportCount: toNonNegativeInt(item.supportCount),
     });
   }
   return output;
@@ -229,15 +278,37 @@ function parseFallbackNodes(raw: unknown): CanonicalNode[] {
 function parseFallbackEdges(raw: unknown): CanonicalEdge[] {
   if (!Array.isArray(raw)) return [];
   const output: CanonicalEdge[] = [];
+  const dedupe = new Set<string>();
   for (const item of raw) {
     if (!isRecord(item)) continue;
     const from = normalizeText(item.from, '');
     const to = normalizeText(item.to, '');
     if (!from || !to) continue;
+    const reason = normalizeText(item.reason, 'Next');
+    const inferenceType = normalizeInferenceType(item.inferenceType);
+    const isInferred = normalizeInferredFlag(item.isInferred, inferenceType);
+    const key = edgeKey({
+      from,
+      to,
+      reason,
+      ...(typeof isInferred === 'boolean' ? { isInferred } : {}),
+      ...(inferenceType ? { inferenceType } : {}),
+    });
+    if (dedupe.has(key)) continue;
+    dedupe.add(key);
+
     output.push({
       from,
       to,
-      reason: normalizeText(item.reason, 'Next'),
+      reason,
+      supportCount: toNonNegativeInt(item.supportCount),
+      transitionRate: clamp01(
+        toFiniteNumber(
+          item.supportRate ?? item.transitionRate ?? item.transition_rate,
+        ),
+      ),
+      ...(typeof isInferred === 'boolean' ? { isInferred } : {}),
+      ...(inferenceType ? { inferenceType } : {}),
     });
   }
   return output;
@@ -291,17 +362,152 @@ function orderCanonicalNodes(nodes: CanonicalNode[], edges: CanonicalEdge[]): Ca
   return ordered;
 }
 
-function assemblePromptMarkdown(
+async function compilePromptFromFlow(
+  nodes: CanonicalNode[],
+  edges: CanonicalEdge[],
+  mode: 'runtime' | 'flow-template',
+): Promise<PromptCompilationResult> {
+  if (hasConfiguredLlmProvider()) {
+    try {
+      const generated = await generatePromptWithLlm(nodes, edges, mode);
+      return {
+        promptMarkdown: generated.promptMarkdown,
+        model: generated.model,
+        usedFallback: false,
+        warning: generated.warning,
+      };
+    } catch (err) {
+      const fallback = assembleDeterministicVoicePrompt(nodes, edges, mode);
+      return {
+        promptMarkdown: fallback,
+        model: 'deterministic-flow-compiler',
+        usedFallback: true,
+        warning: `LLM prompt synthesis failed. Returned deterministic prompt. ${sanitizeError(
+          err instanceof Error ? err.message : String(err),
+        )}`,
+      };
+    }
+  }
+
+  return {
+    promptMarkdown: assembleDeterministicVoicePrompt(nodes, edges, mode),
+    model: 'deterministic-flow-compiler',
+    usedFallback: true,
+    warning: 'No GROQ_API_KEY or OPENAI_API_KEY configured. Returned deterministic prompt.',
+  };
+}
+
+async function generatePromptWithLlm(
+  nodes: CanonicalNode[],
+  edges: CanonicalEdge[],
+  mode: 'runtime' | 'flow-template',
+): Promise<{ promptMarkdown: string; model: string; warning: string | null }> {
+  const temperature = resolveOptionalTemperature();
+  const flowContext = buildFlowContext(nodes, edges, mode);
+  const result = await generateStructuredJson({
+    messages: [
+      {
+        role: 'system',
+        content: [
+          'You are a senior voice AI prompt architect.',
+          'Convert a conversation flow graph into a production-ready system prompt.',
+          'Write behavior and policy instructions, not a static line-by-line script.',
+          'The final prompt must let the agent adapt naturally while preserving flow intent and branch logic.',
+          'Return JSON only.',
+        ].join(' '),
+      },
+      {
+        role: 'user',
+        content: [
+          `Target mode: ${mode}`,
+          '',
+          'Prompt requirements:',
+          '- Output markdown suitable as a single system prompt.',
+          '- Include sections for persona, mission, operating rules, flow state machine, branch handling, escalation/recovery, and voice style.',
+          '- Represent branch behavior as decision policies the agent can execute in real conversations.',
+          '- For inferred branches, describe them as plausible alternatives (for example: negative response, unclear response, missing information).',
+          '- Keep concrete anchors to the flow graph (state labels and branch conditions) so the behavior stays faithful to the source flow.',
+          '- Never write it as a rigid call script with fixed turns.',
+          '',
+          'Canonical flow JSON:',
+          flowContext,
+        ].join('\n'),
+      },
+    ],
+    schema: PROMPT_JSON_SCHEMA,
+    schemaName: 'voice_agent_prompt',
+    validateSchema: false,
+    temperature,
+    maxTokens: mode === 'flow-template' ? 2600 : 1800,
+    groqModel: resolveDefaultGroqModel(),
+    openAiModel: resolveDefaultOpenAiModel(),
+  });
+
+  const rawPrompt = extractPromptMarkdown(result.payload);
+  const promptMarkdown = normalizePromptMarkdown(rawPrompt);
+  if (!promptMarkdown) {
+    throw new Error('LLM response returned empty promptMarkdown.');
+  }
+
+  return {
+    promptMarkdown,
+    model: `${result.provider}:${result.model}`,
+    warning: result.fallbackFailures.length > 0
+      ? `Recovered via provider fallback. ${sanitizeError(result.fallbackFailures.join(' | '))}`
+      : null,
+  };
+}
+
+function extractPromptMarkdown(payload: unknown): string {
+  if (typeof payload === 'string') return payload;
+  if (!isRecord(payload)) return '';
+
+  const direct = payload.promptMarkdown;
+  if (typeof direct === 'string' && direct.trim().length > 0) {
+    return direct;
+  }
+
+  const underscore = payload.prompt_markdown;
+  if (typeof underscore === 'string' && underscore.trim().length > 0) {
+    return underscore;
+  }
+
+  const markdown = payload.markdown;
+  if (typeof markdown === 'string' && markdown.trim().length >= 300) {
+    return markdown;
+  }
+
+  const prompt = payload.prompt;
+  if (typeof prompt === 'string' && prompt.trim().length >= 300) {
+    return prompt;
+  }
+
+  return '';
+}
+
+function resolveOptionalTemperature(): number | null {
+  const raw = (Deno.env.get('OPENAI_TRANSCRIPT_TEMPERATURE') ?? '').trim();
+  if (!raw || raw.toLowerCase() === 'default') {
+    return null;
+  }
+
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    throw new Error('OPENAI_TRANSCRIPT_TEMPERATURE must be a valid number between 0 and 2, or "default".');
+  }
+  if (parsed < 0 || parsed > 2) {
+    throw new Error('OPENAI_TRANSCRIPT_TEMPERATURE must be between 0 and 2, or "default".');
+  }
+
+  return parsed;
+}
+
+function buildFlowContext(
   nodes: CanonicalNode[],
   edges: CanonicalEdge[],
   mode: 'runtime' | 'flow-template',
 ): string {
-  if (mode === 'runtime') {
-    return nodes
-      .map((node, index) => `## ${index + 1}. ${node.label}\n${node.content.trim() || '(empty node content)'}`)
-      .join('\n\n');
-  }
-
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const outgoingByNode = new Map<string, CanonicalEdge[]>();
   for (const edge of edges) {
     const bucket = outgoingByNode.get(edge.from) ?? [];
@@ -309,30 +515,235 @@ function assemblePromptMarkdown(
     outgoingByNode.set(edge.from, bucket);
   }
 
-  const sections = nodes.map((node, index) => {
-    const sectionLines = [`## ${index + 1}. ${node.label}`];
-    sectionLines.push(node.content.trim() || '(empty node content)');
+  const context = {
+    mode,
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      label: node.label,
+      type: node.type,
+      supportCount: node.supportCount,
+      content: clipText(node.content, 520),
+      outgoing: (outgoingByNode.get(node.id) ?? []).map((edge) => ({
+        to: edge.to,
+        targetLabel: nodeById.get(edge.to)?.label ?? edge.to,
+        reason: edge.reason,
+        supportCount: edge.supportCount,
+        transitionRate: edge.transitionRate,
+        isInferred: edge.isInferred === true,
+        inferenceType: edge.inferenceType ?? null,
+      })),
+    })),
+    edges: edges.map((edge) => ({
+      from: edge.from,
+      to: edge.to,
+      reason: edge.reason,
+      supportCount: edge.supportCount,
+      transitionRate: edge.transitionRate,
+      isInferred: edge.isInferred === true,
+      inferenceType: edge.inferenceType ?? null,
+    })),
+  };
 
+  return JSON.stringify(context, null, 2);
+}
+
+function assembleDeterministicVoicePrompt(
+  nodes: CanonicalNode[],
+  edges: CanonicalEdge[],
+  mode: 'runtime' | 'flow-template',
+): string {
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const outgoingByNode = new Map<string, CanonicalEdge[]>();
+  for (const edge of edges) {
+    const bucket = outgoingByNode.get(edge.from) ?? [];
+    bucket.push(edge);
+    outgoingByNode.set(edge.from, bucket);
+  }
+
+  const startNode = nodes.find((node) => node.type === 'start') ?? nodes[0];
+  const personaSignals = collectSignals(nodes, ['core-persona', 'tone-guidelines', 'language-model', 'style-module']);
+  const missionSignals = collectSignals(nodes, ['mission-objective', 'process', 'start']);
+
+  const lines: string[] = [];
+  lines.push('# Voice Agent System Prompt');
+  lines.push('');
+  lines.push('You are a real-time voice AI agent. Treat this prompt as an operational policy, not a fixed script.');
+  lines.push('Adapt wording to the caller while preserving intent, branch logic, and outcomes defined in the flow.');
+  lines.push('');
+  lines.push('## Identity and Persona');
+  lines.push(personaSignals || 'Adopt a clear, calm, professional voice and stay conversational.');
+  lines.push('');
+  lines.push('## Mission');
+  lines.push(missionSignals || 'Guide the caller through the flow, resolve the request, and close cleanly.');
+  lines.push('');
+  lines.push('## Operating Rules');
+  lines.push('1. Start in the entry state and move through states based on user intent and branch conditions.');
+  lines.push('2. Ask clarifying questions when user intent is ambiguous before committing to a branch.');
+  lines.push('3. Use concise responses, confirm key details, and keep momentum toward resolution.');
+  lines.push('4. If required data is missing, collect it explicitly and route to the proper branch.');
+  lines.push('5. Escalate when policy or capability boundaries are reached.');
+  lines.push('');
+  lines.push('## State Machine');
+  lines.push(`Start state: ${startNode.label} (${startNode.id})`);
+  lines.push('');
+
+  for (const node of nodes) {
+    lines.push(`### ${node.label} (${node.id})`);
+    lines.push(`Type: ${node.type}`);
+    lines.push(`Policy: ${toPolicySummary(node.content, node.label)}`);
     const outgoing = outgoingByNode.get(node.id) ?? [];
     if (outgoing.length === 0) {
-      sectionLines.push('Next: [end]');
-    } else if (outgoing.length === 1) {
-      sectionLines.push(`Next: ${outgoing[0].to} [${outgoing[0].reason}]`);
+      lines.push('Transitions: [end]');
     } else {
-      sectionLines.push('Branches:');
+      lines.push('Transitions:');
       for (const edge of outgoing) {
-        sectionLines.push(`- ${edge.to} [${edge.reason}]`);
+        const targetLabel = nodeById.get(edge.to)?.label ?? edge.to;
+        const inferredSuffix = edge.isInferred === true
+          ? ` (inferred${edge.inferenceType ? `:${edge.inferenceType}` : ''})`
+          : '';
+        lines.push(`- If "${edge.reason || 'Next'}" then go to ${targetLabel} (${edge.to})${inferredSuffix}.`);
       }
     }
-    return sectionLines.join('\n');
-  });
+    lines.push('');
+  }
 
-  return [
-    '# Prompt Flow Template',
-    'Generated from canonical transcript flow.',
-    '',
-    sections.join('\n\n'),
-  ].join('\n');
+  const branchNodes = nodes.filter((node) => (outgoingByNode.get(node.id) ?? []).length > 1);
+  lines.push('## Branch Handling');
+  if (branchNodes.length === 0) {
+    lines.push('Use a single-path conversation and close when completion criteria are met.');
+  } else {
+    for (const node of branchNodes) {
+      const outgoing = outgoingByNode.get(node.id) ?? [];
+      const branchList = outgoing.map((edge) => edge.reason || 'Next').join(', ');
+      lines.push(`- At "${node.label}" evaluate: ${branchList}. Ask targeted follow-ups when user intent is unclear.`);
+    }
+  }
+  lines.push('');
+  lines.push('## Escalation and Recovery');
+  lines.push('Escalate to a human when the user requests escalation, when policy blocks completion, or when repeated attempts fail.');
+  lines.push('If the user goes off-path, restate the current goal and guide them to the nearest valid state.');
+  lines.push('');
+  lines.push('## Voice Style');
+  lines.push('Keep language natural, confident, and concise. Confirm decisions before high-impact actions.');
+  if (mode === 'flow-template') {
+    lines.push('Expose branch conditions explicitly in your reasoning so this prompt remains auditable against the flow map.');
+  }
+
+  return lines.join('\n').trim();
+}
+
+function collectSignals(nodes: CanonicalNode[], preferredTypes: string[]): string {
+  const picked = nodes
+    .filter((node) => preferredTypes.includes(node.type))
+    .slice(0, 3)
+    .map((node) => toPolicySummary(node.content, node.label))
+    .filter((entry) => entry.length > 0);
+  return picked.join(' ');
+}
+
+function toPolicySummary(content: string, fallback: string): string {
+  const normalized = content
+    .replace(/\s+/g, ' ')
+    .replace(/\b(assistant|agent|user)\s*:/gi, '')
+    .trim();
+  if (!normalized) return fallback;
+  const clipped = clipText(normalized, 260);
+  return clipped || fallback;
+}
+
+function mergeEdgeVariants(
+  primary: CanonicalEdge[],
+  supplemental: CanonicalEdge[],
+  validNodeIds: ReadonlySet<string>,
+): CanonicalEdge[] {
+  const merged: CanonicalEdge[] = [];
+  const seen = new Set<string>();
+
+  const append = (candidate: CanonicalEdge): void => {
+    if (!candidate.from || !candidate.to || candidate.from === candidate.to) return;
+    if (!validNodeIds.has(candidate.from) || !validNodeIds.has(candidate.to)) return;
+    const key = edgeKey(candidate);
+    if (seen.has(key)) return;
+    seen.add(key);
+    merged.push(candidate);
+  };
+
+  for (const edge of primary) append(edge);
+  for (const edge of supplemental) append(edge);
+
+  return merged;
+}
+
+function edgeKey(edge: Pick<CanonicalEdge, 'from' | 'to' | 'reason' | 'isInferred' | 'inferenceType'>): string {
+  const normalizedReason = normalizeText(edge.reason, 'next').toLowerCase();
+  const normalizedInferenceType = normalizeInferenceType(edge.inferenceType);
+  const inferredToken = edge.isInferred === true ? '1' : edge.isInferred === false ? '0' : '';
+  return `${edge.from}->${edge.to}->${normalizedReason}->${normalizedInferenceType}->${inferredToken}`;
+}
+
+function normalizeInferenceType(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '-')
+    .replace(/--+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40);
+}
+
+function normalizeInferredFlag(value: unknown, inferenceType: string): boolean | undefined {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'true') return true;
+    if (normalized === 'false') return false;
+  }
+  if (inferenceType.length > 0) return true;
+  return undefined;
+}
+
+function hasConfiguredLlmProvider(): boolean {
+  return (Deno.env.get('GROQ_API_KEY') ?? '').trim().length > 0
+    || (Deno.env.get('OPENAI_API_KEY') ?? '').trim().length > 0;
+}
+
+function normalizePromptMarkdown(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  return trimmed.replace(/\r\n?/g, '\n');
+}
+
+function sanitizeError(value: string): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (!normalized) return 'Unknown LLM error.';
+  return normalized.slice(0, 280);
+}
+
+function clipText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trim()}...`;
+}
+
+function toFiniteNumber(value: unknown): number {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number.parseFloat(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return 0;
+}
+
+function toNonNegativeInt(value: unknown): number {
+  const parsed = toFiniteNumber(value);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.trunc(parsed));
+}
+
+function clamp01(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.min(1, value));
 }
 
 async function loadPromptNodes(

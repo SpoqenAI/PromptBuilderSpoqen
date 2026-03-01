@@ -10,6 +10,7 @@ interface WireFlowViewportOptions {
   container: HTMLElement;
   latestRenderedLayout: LayoutMap;
   latestRenderedNodeSizes: NodeSizeMap;
+  latestRenderedConnections: ReadonlyArray<{ from: string; to: string }>;
   nodePositionOverrides: LayoutMap;
   savedViewport: {
     zoom: number | null;
@@ -97,7 +98,11 @@ export function wireFlowViewport(
   };
 
   const updateWorldGeometry = (): void => {
-    const geometry = computeCanvasGeometry(liveLayout, options.latestRenderedNodeSizes);
+    const geometry = computeCanvasGeometry(
+      liveLayout,
+      options.latestRenderedNodeSizes,
+      options.latestRenderedConnections,
+    );
     worldEl.style.width = `${geometry.width}px`;
     worldEl.style.height = `${geometry.height}px`;
     if (svg) {
@@ -194,7 +199,7 @@ export function wireFlowViewport(
       const handle = nodeEl.querySelector<HTMLElement>('.node-header') ?? nodeEl;
       const onNodeMouseDown = (event: MouseEvent): void => {
         if (event.button !== 0) return;
-        if ((event.target as HTMLElement).closest('button,input,select,textarea,a')) return;
+        if ((event.target as HTMLElement).closest('button,input,select,textarea,a,.port')) return;
         const nodeId = nodeEl.dataset.flowNodeId;
         if (!nodeId) return;
 

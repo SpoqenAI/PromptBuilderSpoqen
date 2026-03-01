@@ -15,12 +15,14 @@ export function createTranscriptImportState(): TranscriptImportState {
     generatedFlow: null,
     generationError: '',
     isGenerating: false,
+    isHydratingWorkspace: false,
     processingProgress: null,
     flowRevision: 0,
-    approvedRevision: -1,
-    approvedAt: null,
     transcriptSetId: null,
     persistenceMessage: null,
+    workspaceSaveStatus: 'idle',
+    workspaceSaveMessage: null,
+    workspaceSavedAt: null,
     generatedPromptMarkdown: '',
     promptGenerationMessage: null,
     isGeneratingPrompt: false,
@@ -33,16 +35,12 @@ export function createTranscriptImportState(): TranscriptImportState {
       panX: null,
       panY: null,
     },
+    sidebar: {
+      inputCollapsed: false,
+      nodesCollapsed: false,
+      nodeSearchQuery: '',
+    },
   };
-}
-
-export function clearFlowApproval(state: TranscriptImportState): void {
-  state.approvedRevision = -1;
-  state.approvedAt = null;
-}
-
-export function isCurrentFlowApproved(state: TranscriptImportState): boolean {
-  return state.generatedFlow !== null && state.approvedRevision === state.flowRevision;
 }
 
 export function clearTranscriptSession(state: TranscriptImportState): void {
@@ -50,18 +48,23 @@ export function clearTranscriptSession(state: TranscriptImportState): void {
   state.generationError = '';
   state.processingProgress = null;
   state.generatedFlow = null;
+  state.isHydratingWorkspace = false;
   state.nodePositionOverrides = {};
   state.latestRenderedLayout = {};
   state.latestRenderedNodeSizes = {};
   state.flowRevision = 0;
-  state.approvedRevision = -1;
-  state.approvedAt = null;
   state.transcriptSetId = null;
   state.persistenceMessage = null;
+  state.workspaceSaveStatus = 'idle';
+  state.workspaceSaveMessage = null;
+  state.workspaceSavedAt = null;
   state.generatedPromptMarkdown = '';
   state.promptGenerationMessage = null;
   state.isGeneratingPrompt = false;
   state.viewport.zoom = null;
   state.viewport.panX = null;
   state.viewport.panY = null;
+  state.sidebar.inputCollapsed = false;
+  state.sidebar.nodesCollapsed = false;
+  state.sidebar.nodeSearchQuery = '';
 }

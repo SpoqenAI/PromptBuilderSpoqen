@@ -1533,17 +1533,17 @@ function parseStoredTranscriptConnections(
     const to = typeof rawConnection.to === 'string' ? rawConnection.to.trim() : '';
     if (!from || !to || from === to) continue;
     if (!validNodeIds.has(from) || !validNodeIds.has(to)) continue;
-    const dedupeKey = `${from}->${to}`;
-    if (seen.has(dedupeKey)) continue;
-    seen.add(dedupeKey);
-
     const reasonCandidate = typeof rawConnection.reason === 'string'
       ? rawConnection.reason
       : (typeof rawConnection.label === 'string' ? rawConnection.label : '');
+    const normalizedLabel = normalizeConnectionLabel(reasonCandidate);
+    const dedupeKey = `${from}->${to}->${normalizedLabel.toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
     parsed.push({
       from,
       to,
-      label: normalizeConnectionLabel(reasonCandidate),
+      label: normalizedLabel,
     });
   }
 

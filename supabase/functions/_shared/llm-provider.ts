@@ -9,6 +9,7 @@ export interface StructuredJsonRequest {
   messages: LlmMessage[];
   schema: Record<string, unknown>;
   schemaName: string;
+  validateSchema?: boolean;
   temperature?: number | null;
   maxTokens?: number;
   groqModel?: string;
@@ -19,6 +20,7 @@ export interface StructuredJsonResult {
   provider: 'groq' | 'openai';
   model: string;
   payload: unknown;
+  fallbackFailures: string[];
 }
 
 interface ProviderAttempt {
@@ -52,10 +54,14 @@ export async function generateStructuredJson(request: StructuredJsonRequest): Pr
         ? await callGroqJson(request, attempt)
         : await callOpenAiJson(request, attempt);
       const payload = JSON.parse(content) as unknown;
+      if (request.validateSchema !== false && !matchesSchema(payload, request.schema)) {
+        throw new Error(`Response JSON did not match required schema '${request.schemaName}'.`);
+      }
       return {
         provider: attempt.provider,
         model: attempt.model,
         payload,
+        fallbackFailures: [...failures],
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -90,9 +96,10 @@ function buildAttempts(request: StructuredJsonRequest): ProviderAttempt[] {
 }
 
 async function callGroqJson(request: StructuredJsonRequest, attempt: ProviderAttempt): Promise<string> {
+  const messages = ensureGroqJsonMessages(request.messages);
   const body: Record<string, unknown> = {
     model: attempt.model,
-    messages: request.messages,
+    messages,
     response_format: { type: 'json_object' },
   };
   if (typeof request.maxTokens === 'number' && Number.isFinite(request.maxTokens) && request.maxTokens > 0) {
@@ -102,25 +109,35 @@ async function callGroqJson(request: StructuredJsonRequest, attempt: ProviderAtt
     body.temperature = request.temperature;
   }
 
-  const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${attempt.apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  const maxAttempts = 3;
+  for (let callAttempt = 1; callAttempt <= maxAttempts; callAttempt += 1) {
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${attempt.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
 
-  const payload: unknown = await response.json();
-  if (!response.ok) {
-    throw new Error(extractProviderError(payload) ?? `Groq request failed with status ${response.status}.`);
+    const payload: unknown = await response.json();
+    if (!response.ok) {
+      const message = extractProviderError(payload) ?? `Groq request failed with status ${response.status}.`;
+      if (callAttempt < maxAttempts && isRateLimitMessage(message)) {
+        await waitForRateLimitWindow(message, callAttempt);
+        continue;
+      }
+      throw new Error(message);
+    }
+
+    const content = extractAssistantContent(payload);
+    if (!content) {
+      throw new Error('Groq response did not contain JSON content.');
+    }
+    return content;
   }
 
-  const content = extractAssistantContent(payload);
-  if (!content) {
-    throw new Error('Groq response did not contain JSON content.');
-  }
-  return content;
+  throw new Error('Groq request failed after retries.');
 }
 
 async function callOpenAiJson(request: StructuredJsonRequest, attempt: ProviderAttempt): Promise<string> {
@@ -162,6 +179,37 @@ async function callOpenAiJson(request: StructuredJsonRequest, attempt: ProviderA
     throw new Error('OpenAI response did not contain JSON content.');
   }
   return content;
+}
+
+function ensureGroqJsonMessages(messages: LlmMessage[]): LlmMessage[] {
+  const hasJsonHint = messages.some((message) => /\bjson\b/i.test(message.content));
+  if (hasJsonHint) return messages;
+
+  return [
+    {
+      role: 'system',
+      content: 'Return valid JSON only.',
+    },
+    ...messages,
+  ];
+}
+
+function isRateLimitMessage(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return normalized.includes('rate limit')
+    || normalized.includes('too many requests')
+    || normalized.includes('status 429')
+    || normalized.includes('429');
+}
+
+async function waitForRateLimitWindow(message: string, attempt: number): Promise<void> {
+  const match = message.match(/try again in\s+([0-9]+(?:\.[0-9]+)?)ms/i);
+  const parsedDelay = match ? Number.parseFloat(match[1]) : Number.NaN;
+  const backoff = 250 * (2 ** Math.max(0, attempt - 1));
+  const delayMs = Number.isFinite(parsedDelay)
+    ? Math.min(5000, Math.max(200, Math.ceil(parsedDelay) + 100))
+    : Math.min(3000, backoff);
+  await new Promise((resolve) => setTimeout(resolve, delayMs));
 }
 
 function extractProviderError(payload: unknown): string | null {
@@ -206,4 +254,68 @@ function extractAssistantContent(payload: unknown): string | null {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function matchesSchema(value: unknown, schema: unknown): boolean {
+  if (!isRecord(schema)) return true;
+  if (!matchesSchemaType(value, schema.type)) return false;
+
+  if (Array.isArray(schema.required)) {
+    if (!isRecord(value)) return false;
+    for (const key of schema.required) {
+      if (typeof key !== 'string') continue;
+      if (!(key in value)) return false;
+    }
+  }
+
+  if (schema.properties && isRecord(schema.properties) && isRecord(value)) {
+    for (const [key, childSchema] of Object.entries(schema.properties)) {
+      if (!(key in value)) continue;
+      if (!matchesSchema(value[key], childSchema)) return false;
+    }
+  }
+
+  if (schema.items && Array.isArray(value)) {
+    for (const item of value) {
+      if (!matchesSchema(item, schema.items)) return false;
+    }
+  }
+
+  return true;
+}
+
+function matchesSchemaType(value: unknown, typeSpec: unknown): boolean {
+  if (typeSpec === undefined) return true;
+  if (typeof typeSpec === 'string') {
+    return matchesSingleType(value, typeSpec);
+  }
+  if (Array.isArray(typeSpec)) {
+    for (const candidate of typeSpec) {
+      if (typeof candidate !== 'string') continue;
+      if (matchesSingleType(value, candidate)) return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+function matchesSingleType(value: unknown, typeName: string): boolean {
+  switch (typeName) {
+    case 'object':
+      return isRecord(value);
+    case 'array':
+      return Array.isArray(value);
+    case 'string':
+      return typeof value === 'string';
+    case 'number':
+      return typeof value === 'number' && Number.isFinite(value);
+    case 'integer':
+      return typeof value === 'number' && Number.isInteger(value);
+    case 'boolean':
+      return typeof value === 'boolean';
+    case 'null':
+      return value === null;
+    default:
+      return true;
+  }
 }

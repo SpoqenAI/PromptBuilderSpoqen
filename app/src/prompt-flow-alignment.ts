@@ -390,7 +390,7 @@ async function rebuildCanonicalFlowFromTranscripts(
 
     for (const node of flowNodes) {
       const key = nodeBucketKey(node);
-      const canonicalId = canonicalIdFromKey(key);
+      const canonicalId = canonicalIdFromKey(transcriptSetId, key);
       nodeIdToCanonical.set(node.id, canonicalId);
       const bucket = nodeBuckets.get(canonicalId) ?? {
         id: canonicalId,
@@ -534,8 +534,8 @@ function nodeBucketKey(node: Pick<FlowNodeLike, 'type' | 'label'>): string {
   return `${normalizeLabel(node.type)}|${normalizeLabel(node.label)}`;
 }
 
-function canonicalIdFromKey(key: string): string {
-  return `canon_${hashText(key)}`;
+function canonicalIdFromKey(transcriptSetId: string, key: string): string {
+  return `${transcriptSetId}::canon_${hashText(key)}`;
 }
 
 function tokensForNode(node: Pick<PromptNodeRecord | CanonicalNodeRecord | PromptNode, 'label' | 'content'>): string[] {

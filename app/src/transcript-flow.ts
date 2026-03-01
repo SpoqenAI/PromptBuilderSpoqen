@@ -7,6 +7,10 @@ export interface TranscriptFlowRequest {
   maxNodes?: number;
   assistantName?: string;
   userName?: string;
+  existingGraph?: {
+    nodes: TranscriptFlowNode[];
+    connections: TranscriptFlowConnection[];
+  };
   onProgress?: (processed: number, total: number, partialFlow?: TranscriptFlowResult) => void;
 }
 
@@ -23,6 +27,8 @@ export interface TranscriptFlowConnection {
   from: string;
   to: string;
   reason: string;
+  isInferred?: boolean;
+  inferenceType?: string;
   supportCount?: number;
   supportRate?: number;
 }
@@ -94,6 +100,12 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
   const chunks = buildTranscriptBatches(transcripts, MAX_BATCH_CHARS, MAX_TRANSCRIPTS_PER_BATCH);
 
   let currentFlow: TranscriptFlowResult | null = null;
+  let existingGraph = request.existingGraph
+    ? {
+      nodes: request.existingGraph.nodes,
+      connections: request.existingGraph.connections,
+    }
+    : undefined;
 
   for (let i = 0; i < chunks.length; i++) {
     const combinedTranscript = chunks[i];
@@ -101,7 +113,8 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
 
     const payload = {
       transcript: combinedTranscript,
-      existingGraph: currentFlow ? { nodes: currentFlow.nodes, connections: currentFlow.connections } : undefined,
+      existingGraph: existingGraph
+        ?? (currentFlow ? { nodes: currentFlow.nodes, connections: currentFlow.connections } : undefined),
       maxNodes: normalizeMaxNodes(request.maxNodes),
       assistantName: normalizeOptionalText(request.assistantName),
       userName: normalizeOptionalText(request.userName),
@@ -131,6 +144,10 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
     }
 
     currentFlow = toTranscriptFlowResult(data);
+    existingGraph = {
+      nodes: currentFlow.nodes,
+      connections: currentFlow.connections,
+    };
     request.onProgress?.(i + 1, chunks.length, currentFlow);
   }
 
@@ -280,19 +297,58 @@ function toTranscriptConnections(
     if (!validNodeIds.has(from) || !validNodeIds.has(to)) continue;
     if (from === to) continue;
 
-    const dedupeKey = `${from}->${to}`;
+    const reason = sanitizeText(rawConnection.reason, '');
+    const inference = normalizeConnectionInference(rawConnection);
+    const dedupeKey = flowConnectionDedupeKey({
+      from,
+      to,
+      reason,
+      ...inference,
+    });
     if (seen.has(dedupeKey)) continue;
     seen.add(dedupeKey);
 
     normalized.push({
       from,
       to,
-      reason: sanitizeText(rawConnection.reason, ''),
+      reason,
+      ...inference,
       ...normalizeConnectionSupport(rawConnection),
     });
   }
 
   return normalized;
+}
+
+function normalizeConnectionInference(rawConnection: Record<string, unknown>): Pick<TranscriptFlowConnection, 'isInferred' | 'inferenceType'> {
+  const rawInferenceType = typeof rawConnection.inferenceType === 'string'
+    ? rawConnection.inferenceType.trim().toLowerCase()
+    : '';
+  const inferenceType = rawInferenceType.length > 0
+    ? rawInferenceType
+      .replace(/[^a-z0-9_-]+/g, '-')
+      .replace(/--+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 40)
+    : null;
+
+  const isInferred = typeof rawConnection.isInferred === 'boolean'
+    ? rawConnection.isInferred
+    : (inferenceType ? true : null);
+
+  return {
+    ...(isInferred !== null ? { isInferred } : {}),
+    ...(inferenceType ? { inferenceType } : {}),
+  };
+}
+
+function flowConnectionDedupeKey(
+  connection: Pick<TranscriptFlowConnection, 'from' | 'to' | 'reason' | 'isInferred' | 'inferenceType'>,
+): string {
+  const reasonKey = connection.reason.trim().toLowerCase();
+  const inferenceTypeKey = (connection.inferenceType ?? '').trim().toLowerCase();
+  const inferredKey = connection.isInferred === true ? '1' : connection.isInferred === false ? '0' : '';
+  return `${connection.from}->${connection.to}->${reasonKey}->${inferenceTypeKey}->${inferredKey}`;
 }
 
 function normalizeConnectionSupport(rawConnection: Record<string, unknown>): Pick<TranscriptFlowConnection, 'supportCount' | 'supportRate'> {
@@ -405,7 +461,7 @@ function addFlowCoverageMetrics(flow: TranscriptFlowResult, transcripts: string[
   }
 
   for (const connection of flow.connections) {
-    edgeSupport.set(edgeSupportKey(connection.from, connection.to), 0);
+    edgeSupport.set(edgeSupportKey(connection), 0);
   }
 
   for (let transcriptIndex = 0; transcriptIndex < transcripts.length; transcriptIndex += 1) {
@@ -422,7 +478,7 @@ function addFlowCoverageMetrics(flow: TranscriptFlowResult, transcripts: string[
 
     for (const connection of flow.connections) {
       if (!callMatches.has(connection.from) || !callMatches.has(connection.to)) continue;
-      const key = edgeSupportKey(connection.from, connection.to);
+      const key = edgeSupportKey(connection);
       edgeSupport.set(key, (edgeSupport.get(key) ?? 0) + 1);
     }
   }
@@ -441,7 +497,7 @@ function addFlowCoverageMetrics(flow: TranscriptFlowResult, transcripts: string[
   });
 
   const connections = flow.connections.map((connection) => {
-    const supportCount = edgeSupport.get(edgeSupportKey(connection.from, connection.to)) ?? 0;
+    const supportCount = edgeSupport.get(edgeSupportKey(connection)) ?? 0;
     const supportRate = supportCount / totalCalls;
     return {
       ...connection,
@@ -488,8 +544,8 @@ function isNodeCoveredByTranscript(
   return overlap >= minHits;
 }
 
-function edgeSupportKey(from: string, to: string): string {
-  return `${from}->${to}`;
+function edgeSupportKey(connection: Pick<TranscriptFlowConnection, 'from' | 'to' | 'reason' | 'isInferred' | 'inferenceType'>): string {
+  return flowConnectionDedupeKey(connection);
 }
 
 function formatPercent(value: number): string {

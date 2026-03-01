@@ -15,11 +15,11 @@ import { DEFAULT_PROJECT_NAME } from './constants';
 import { shortId } from './format';
 import { buildGeneratingThoughtSequence } from './generating-thoughts';
 import { buildFlowRenderState } from './layout';
-import { clearFlowApproval, isCurrentFlowApproved } from './state';
 import type { TranscriptImportState } from './types';
 
 interface GenerateFlowDeps {
   render: () => void;
+  onFlowGenerated?: () => void;
 }
 
 export async function generateFlow(
@@ -33,6 +33,13 @@ export async function generateFlow(
     deps.render();
     return;
   }
+
+  const existingGraph = state.generatedFlow
+    ? {
+      nodes: state.generatedFlow.nodes,
+      connections: state.generatedFlow.connections,
+    }
+    : undefined;
 
   state.isGenerating = true;
   state.generatingThoughts = buildGeneratingThoughtSequence();
@@ -48,6 +55,7 @@ export async function generateFlow(
       transcripts: state.transcripts.map((transcript) => transcript.content),
       assistantName: state.assistantName.trim() || undefined,
       userName: state.userName.trim() || undefined,
+      existingGraph,
       onProgress: (processed, total, partialFlow) => {
         state.processingProgress = { processed, total };
         if (partialFlow) {
@@ -65,7 +73,6 @@ export async function generateFlow(
     state.viewport.panX = null;
     state.viewport.panY = null;
     state.flowRevision += 1;
-    clearFlowApproval(state);
 
     if (
       state.projectName.trim().length === 0
@@ -108,6 +115,7 @@ export async function generateFlow(
             : 'Failed to persist transcript artifacts.',
       };
     }
+    deps.onFlowGenerated?.();
   } catch (err) {
     state.generationError =
       err instanceof Error
@@ -179,12 +187,6 @@ export function createProjectFromGeneratedFlow(
   deps: CreateProjectDeps,
 ): void {
   if (!state.generatedFlow) return;
-  if (!isCurrentFlowApproved(state)) {
-    state.generationError =
-      'Review and approve the generated flow before creating a project.';
-    deps.render();
-    return;
-  }
 
   const normalizedProjectName =
     state.projectName.trim() || state.generatedFlow.title || DEFAULT_PROJECT_NAME;
@@ -238,32 +240,119 @@ export function createProjectFromGeneratedFlow(
 }
 
 function assemblePromptFromGeneratedFlow(flow: NonNullable<TranscriptImportState['generatedFlow']>): string {
-  const outgoingByNode = new Map<string, Array<{ to: string; reason: string }>>();
+  const nodeById = new Map(flow.nodes.map((node) => [node.id, node]));
+  const outgoingByNode = new Map<string, Array<{
+    to: string;
+    reason: string;
+    isInferred: boolean;
+    inferenceType: string;
+  }>>();
   for (const connection of flow.connections) {
     const bucket = outgoingByNode.get(connection.from) ?? [];
     bucket.push({
       to: connection.to,
       reason: connection.reason,
+      isInferred: connection.isInferred === true,
+      inferenceType: typeof connection.inferenceType === 'string' ? connection.inferenceType.trim() : '',
     });
     outgoingByNode.set(connection.from, bucket);
   }
 
-  const sections = flow.nodes.map((node, index) => {
-    const lines = [`## ${index + 1}. ${node.label}`];
-    lines.push(node.content.trim() || '(empty node content)');
+  const inboundCounts = new Map<string, number>();
+  for (const node of flow.nodes) {
+    inboundCounts.set(node.id, 0);
+  }
+  for (const connection of flow.connections) {
+    inboundCounts.set(connection.to, (inboundCounts.get(connection.to) ?? 0) + 1);
+  }
+  const startNode = flow.nodes.find((node) => (inboundCounts.get(node.id) ?? 0) === 0) ?? flow.nodes[0];
+  const personaSignal = collectSignal(flow.nodes, ['core-persona', 'tone-guidelines', 'language-model', 'style-module']);
+  const missionSignal = collectSignal(flow.nodes, ['mission-objective', 'process', 'start']);
+
+  const lines: string[] = [
+    '# Voice Agent System Prompt',
+    '',
+    'You are a real-time voice AI agent. Treat this prompt as behavior policy, not a fixed script.',
+    'Adapt naturally to user language while preserving branch logic and completion outcomes.',
+    '',
+    '## Identity and Persona',
+    personaSignal || 'Maintain a calm, precise, and helpful tone.',
+    '',
+    '## Mission',
+    missionSignal || 'Move the user to a successful resolution or the correct escalation path.',
+    '',
+    '## Operating Rules',
+    '1. Start at the entry state and route by user intent.',
+    '2. Ask clarifying questions when user input is ambiguous.',
+    '3. Confirm key decisions and required details before advancing.',
+    '4. Use escalation paths when policy or capability limits are reached.',
+    '',
+    '## State Machine',
+    `Start state: ${startNode.label} (${startNode.id})`,
+    '',
+  ];
+
+  for (const node of flow.nodes) {
+    lines.push(`### ${node.label} (${node.id})`);
+    lines.push(`Type: ${node.type}`);
+    lines.push(`Policy: ${summarizePolicy(node.content, node.label)}`);
     const outgoing = outgoingByNode.get(node.id) ?? [];
     if (outgoing.length === 0) {
       lines.push('Next: [end]');
-    } else if (outgoing.length === 1) {
-      lines.push(`Next: ${outgoing[0].to} [${outgoing[0].reason || 'Next'}]`);
     } else {
-      lines.push('Branches:');
-      for (const branch of outgoing) {
-        lines.push(`- ${branch.to} [${branch.reason || 'Next'}]`);
+      lines.push('Transitions:');
+      for (const edge of outgoing) {
+        const targetLabel = nodeById.get(edge.to)?.label ?? edge.to;
+        const inferredSuffix = edge.isInferred
+          ? ` (inferred${edge.inferenceType ? `:${edge.inferenceType}` : ''})`
+          : '';
+        lines.push(`- If "${edge.reason || 'Next'}" then go to ${targetLabel} (${edge.to})${inferredSuffix}.`);
       }
     }
-    return lines.join('\n');
-  });
+    lines.push('');
+  }
 
-  return ['# Prompt Flow Template', 'Generated from transcript flow.', '', sections.join('\n\n')].join('\n');
+  const branchNodes = flow.nodes.filter((node) => (outgoingByNode.get(node.id) ?? []).length > 1);
+  lines.push('## Branch Handling');
+  if (branchNodes.length === 0) {
+    lines.push('Single-path interaction. Close once completion criteria are met.');
+  } else {
+    for (const node of branchNodes) {
+      const conditions = (outgoingByNode.get(node.id) ?? [])
+        .map((edge) => edge.reason || 'Next')
+        .join(', ');
+      lines.push(`- At "${node.label}" evaluate: ${conditions}.`);
+    }
+  }
+  lines.push('');
+  lines.push('## Escalation and Recovery');
+  lines.push('Escalate when requested, when blocked by policy, or after repeated failed attempts.');
+  lines.push('If the user goes off-path, summarize the current goal and guide them back to a valid state.');
+  lines.push('');
+  lines.push('## Voice Style');
+  lines.push('Sound natural, concise, and action-oriented. Avoid robotic repetition.');
+
+  return lines.join('\n').trim();
+}
+
+function collectSignal(
+  nodes: NonNullable<TranscriptImportState['generatedFlow']>['nodes'],
+  preferredTypes: string[],
+): string {
+  return nodes
+    .filter((node) => preferredTypes.includes(node.type))
+    .slice(0, 3)
+    .map((node) => summarizePolicy(node.content, node.label))
+    .filter((text) => text.length > 0)
+    .join(' ');
+}
+
+function summarizePolicy(content: string, fallback: string): string {
+  const normalized = content
+    .replace(/\s+/g, ' ')
+    .replace(/\b(assistant|agent|user)\s*:/gi, '')
+    .trim();
+  if (!normalized) return fallback;
+  if (normalized.length <= 240) return normalized;
+  return `${normalized.slice(0, 237).trim()}...`;
 }

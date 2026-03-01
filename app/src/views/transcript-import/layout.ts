@@ -39,7 +39,7 @@ export function buildFlowRenderState(
   return {
     layout,
     nodeSizes,
-    geometry: computeCanvasGeometry(layout, nodeSizes),
+    geometry: computeCanvasGeometry(layout, nodeSizes, flow.connections),
   };
 }
 
@@ -84,19 +84,63 @@ export function estimateTranscriptNodeLabelWidth(label: string): number {
 export function computeCanvasGeometry(
   layout: LayoutMap,
   nodeSizes: NodeSizeMap,
+  connections: ReadonlyArray<{ from: string; to: string }> = [],
 ): { width: number; height: number } {
+  const PADDING = 120;
+  const MIN_WIDTH = 760;
+  const MIN_HEIGHT = 420;
+  let minX = Number.POSITIVE_INFINITY;
+  let minY = Number.POSITIVE_INFINITY;
   let maxX = 0;
   let maxY = 0;
+  let hasContent = false;
+
+  const includePoint = (x: number, y: number): void => {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+    hasContent = true;
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x);
+    maxY = Math.max(maxY, y);
+  };
 
   for (const [nodeId, position] of Object.entries(layout)) {
     const nodeSize = nodeSizes[nodeId] ?? defaultNodeSize();
-    maxX = Math.max(maxX, position.x + nodeSize.width);
-    maxY = Math.max(maxY, position.y + nodeSize.height);
+    includePoint(position.x, position.y);
+    includePoint(position.x + nodeSize.width, position.y + nodeSize.height);
   }
 
+  for (const connection of connections) {
+    const from = layout[connection.from];
+    const to = layout[connection.to];
+    if (!from || !to) continue;
+
+    const fromSize = nodeSizes[connection.from] ?? defaultNodeSize();
+    const toSize = nodeSizes[connection.to] ?? defaultNodeSize();
+    const fromX = from.x + fromSize.width;
+    const fromY = from.y + fromSize.height / 2;
+    const toX = to.x;
+    const toY = to.y + toSize.height / 2;
+    const dx = Math.abs(toX - fromX) * 0.5;
+    const control1X = fromX + dx;
+    const control2X = toX - dx;
+
+    includePoint(fromX, fromY);
+    includePoint(toX, toY);
+    includePoint(control1X, fromY);
+    includePoint(control2X, toY);
+  }
+
+  if (!hasContent) {
+    return { width: MIN_WIDTH, height: MIN_HEIGHT };
+  }
+
+  const leftOverflow = Math.max(0, -minX);
+  const topOverflow = Math.max(0, -minY);
+
   return {
-    width: Math.max(maxX + 120, 760),
-    height: Math.max(maxY + 120, 420),
+    width: Math.max(maxX + PADDING + leftOverflow, MIN_WIDTH),
+    height: Math.max(maxY + PADDING + topOverflow, MIN_HEIGHT),
   };
 }
 

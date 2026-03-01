@@ -36,18 +36,32 @@ supabase secrets set APP_PUBLIC_URL=<your-frontend-origin>
 - `http://localhost:5173` in local dev
 - `https://yourapp.com` in production
 
-## 3. Deploy Functions
+## 3. Deploy Functions (Safe Default)
+
+Use the repo deploy script below instead of raw `supabase functions deploy`.
+This enforces `--no-verify-jwt` for handler-auth functions (`requireUser(...)`) and for public callback routes that must be reachable without gateway JWT verification.
 
 ```bash
-supabase functions deploy github-connect-url
-supabase functions deploy github-app-callback
-supabase functions deploy github-prompt-sync
-supabase functions deploy flow-to-prompt
-supabase functions deploy prompt-repair-run
-supabase functions deploy apply-prompt-repair
-# IMPORTANT: use the script below for transcript-flow-map.
-# On some CLI versions, update deploys can re-enable legacy JWT verification.
-pwsh ./supabase/functions/deploy-transcript-flow-map.ps1
+powershell.exe -ExecutionPolicy Bypass -File .\supabase\functions\deploy-all-functions.ps1
+```
+
+To include authenticated smoke checks (requires `SUPABASE_TEST_EMAIL` / `SUPABASE_TEST_PASSWORD` or `-AccessToken` path):
+
+```bash
+powershell.exe -ExecutionPolicy Bypass -File .\supabase\functions\deploy-all-functions.ps1 -RequireAuthSmoke
+```
+
+If you need manual per-function deploy commands:
+
+```bash
+supabase functions deploy github-connect-url --no-verify-jwt
+supabase functions deploy github-app-callback --no-verify-jwt
+supabase functions deploy github-prompt-sync --no-verify-jwt
+supabase functions deploy flow-to-prompt --no-verify-jwt
+supabase functions deploy prompt-repair-run --no-verify-jwt
+supabase functions deploy apply-prompt-repair --no-verify-jwt
+# IMPORTANT: use the script below for transcript-flow-map (delete + redeploy + smoke test).
+powershell.exe -ExecutionPolicy Bypass -File .\supabase\functions\deploy-transcript-flow-map.ps1
 ```
 
 ## 3b. Transcript Flow AI Mapping
@@ -66,7 +80,7 @@ supabase secrets set GROQ_MODEL=llama-3.3-70b-versatile
 
 The function uses Groq first when `GROQ_API_KEY` is configured, then OpenAI when `OPENAI_API_KEY` is configured, then deterministic mapping.
 
-`transcript-flow-map` is deployed with `--no-verify-jwt` because it performs explicit token verification in-function using `requireUser(...)`. This avoids gateway-side JWT rejection while preserving authenticated access control.
+`transcript-flow-map` and other handler-auth functions are deployed with `--no-verify-jwt` because they perform explicit token verification in-function using `requireUser(...)`. This avoids gateway-side JWT rejection while preserving authenticated access control.
 
 `OPENAI_TRANSCRIPT_TEMPERATURE` is optional. Set it to `default` (or leave unset) to omit `temperature` from the request. This is recommended for models like `gpt-5-nano` that only support default temperature behavior.
 
