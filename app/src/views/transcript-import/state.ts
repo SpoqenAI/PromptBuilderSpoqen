@@ -18,6 +18,7 @@ export function createTranscriptImportState(): TranscriptImportState {
     isHydratingWorkspace: false,
     processingProgress: null,
     flowRevision: 0,
+    selectedConnectionIndex: null,
     transcriptSetId: null,
     persistenceMessage: null,
     workspaceSaveStatus: 'idle',
@@ -53,6 +54,7 @@ export function clearTranscriptSession(state: TranscriptImportState): void {
   state.latestRenderedLayout = {};
   state.latestRenderedNodeSizes = {};
   state.flowRevision = 0;
+  state.selectedConnectionIndex = null;
   state.transcriptSetId = null;
   state.persistenceMessage = null;
   state.workspaceSaveStatus = 'idle';

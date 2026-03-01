@@ -23,11 +23,34 @@ export function renderTranscriptImport(
 ): void {
   const state = createTranscriptImportState();
   const suppressNextNodeClick = { value: false };
+  let cleanupEventBindings: (() => void) | null = null;
   let cleanupFlowViewport: (() => void) | null = null;
   let autosaveTimer: ReturnType<typeof setTimeout> | null = null;
   let autosaveSerial = 0;
   let workspaceSaveInFlight = false;
   let workspaceSaveQueued = false;
+
+  const pinCurrentNodePositions = (): void => {
+    const flow = state.generatedFlow;
+    if (!flow) return;
+
+    const activeNodeIds = new Set(flow.nodes.map((node) => node.id));
+    for (const nodeId of Object.keys(state.nodePositionOverrides)) {
+      if (!activeNodeIds.has(nodeId)) {
+        delete state.nodePositionOverrides[nodeId];
+      }
+    }
+
+    for (const node of flow.nodes) {
+      if (state.nodePositionOverrides[node.id]) continue;
+      const currentPosition = state.latestRenderedLayout[node.id];
+      if (!currentPosition) continue;
+      state.nodePositionOverrides[node.id] = {
+        x: currentPosition.x,
+        y: currentPosition.y,
+      };
+    }
+  };
 
   const routeTranscriptSetId = normalizeOptionalId(transcriptSetIdParam);
   if (routeTranscriptSetId) {
@@ -42,6 +65,8 @@ export function renderTranscriptImport(
   };
 
   const cleanupViewport = (): void => {
+    cleanupEventBindings?.();
+    cleanupEventBindings = null;
     cleanupFlowViewport?.();
     cleanupFlowViewport = null;
   };
@@ -56,6 +81,16 @@ export function renderTranscriptImport(
 
   const render = (): void => {
     cleanupViewport();
+    if (
+      state.selectedConnectionIndex !== null
+      && (
+        !state.generatedFlow
+        || state.selectedConnectionIndex < 0
+        || state.selectedConnectionIndex >= state.generatedFlow.connections.length
+      )
+    ) {
+      state.selectedConnectionIndex = null;
+    }
 
     const canGenerate =
       state.transcripts.length > 0 &&
@@ -101,11 +136,12 @@ export function renderTranscriptImport(
         inputSectionCollapsed: state.sidebar.inputCollapsed,
         nodesSectionCollapsed: state.sidebar.nodesCollapsed,
         nodeSearchQuery: state.sidebar.nodeSearchQuery,
+        selectedConnectionIndex: state.selectedConnectionIndex,
       });
     });
 
     wireThemeToggle(container);
-    wireTranscriptImportEvents({
+    cleanupEventBindings = wireTranscriptImportEvents({
       container,
       state,
       suppressNextNodeClick,
@@ -142,6 +178,14 @@ export function renderTranscriptImport(
         });
       },
       onFlowMutated: () => {
+        if (
+          state.selectedConnectionIndex !== null
+          && state.generatedFlow
+          && state.selectedConnectionIndex >= state.generatedFlow.connections.length
+        ) {
+          state.selectedConnectionIndex = null;
+        }
+        pinCurrentNodePositions();
         state.flowRevision += 1;
         state.generatedPromptMarkdown = '';
         state.promptGenerationMessage = null;
@@ -292,6 +336,7 @@ export function renderTranscriptImport(
       state.workspaceSaveMessage = null;
       state.workspaceSavedAt = null;
       state.flowRevision = snapshot.flow ? 1 : 0;
+      state.selectedConnectionIndex = null;
     } catch (err) {
       state.generationError = err instanceof Error ? err.message : 'Failed to load transcript workspace.';
       state.workspaceSaveStatus = 'error';

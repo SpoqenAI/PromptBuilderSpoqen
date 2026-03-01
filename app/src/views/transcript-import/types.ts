@@ -41,6 +41,7 @@ export interface TranscriptImportState {
   isHydratingWorkspace: boolean;
   processingProgress: { processed: number; total: number } | null;
   flowRevision: number;
+  selectedConnectionIndex: number | null;
   transcriptSetId: string | null;
   persistenceMessage: { tone: MessageTone; text: string } | null;
   workspaceSaveStatus: WorkspaceSaveStatus;

@@ -66,6 +66,7 @@ export async function generateFlow(
     });
 
     state.generatedFlow = flow;
+    state.selectedConnectionIndex = null;
     state.nodePositionOverrides = {};
     state.latestRenderedLayout = {};
     state.latestRenderedNodeSizes = {};

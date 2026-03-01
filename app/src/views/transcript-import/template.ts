@@ -46,6 +46,7 @@ interface TranscriptImportShellModel {
   inputSectionCollapsed: boolean;
   nodesSectionCollapsed: boolean;
   nodeSearchQuery: string;
+  selectedConnectionIndex: number | null;
 }
 
 export function renderTranscriptImportShell(model: TranscriptImportShellModel): string {
@@ -76,6 +77,7 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
     inputSectionCollapsed,
     nodesSectionCollapsed,
     nodeSearchQuery,
+    selectedConnectionIndex,
   } = model;
 
   return `
@@ -103,8 +105,8 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
           </button>
         `
     : `
-          <button id="btn-create-flow-project" type="button" class="ui-btn ui-btn-outline" title="Create a separate prompt project from this transcript flow">
-            <span class="material-icons text-sm">add_circle</span> Create Prompt Project
+          <button id="btn-create-flow-project" type="button" class="ui-btn ui-btn-outline" title="Create prompt canvas project from this flow">
+            <span class="material-icons text-sm">add_box</span> Create Canvas Copy
           </button>
         `}
           <button id="btn-generate-prompt-from-flow" type="button" class="ui-btn ui-btn-outline" ${isGeneratingPrompt ? 'disabled' : ''}>
@@ -246,7 +248,7 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
               <span class="material-icons text-sm text-slate-400 transition-transform ${nodesSectionCollapsed ? '-rotate-90' : ''}">expand_more</span>
             </button>
             <div class="${nodesSectionCollapsed ? 'hidden' : ''} px-3 pb-3 pt-1 border-t border-slate-200 dark:border-slate-800 space-y-3">
-              <p class="text-xs text-slate-500 dark:text-slate-400">Drag-and-drop or click blocks to edit this transcript workspace directly.</p>
+              <p class="text-xs text-slate-500 dark:text-slate-400">Canvas controls: drag nodes, drag between ports to connect, click edge then Delete to remove, double-click edge to edit branch label.</p>
               <div class="relative">
                 <span class="material-icons absolute left-2.5 top-2.5 text-slate-400 text-sm">search</span>
                 <input id="flow-node-search" value="${esc(nodeSearchQuery)}" class="w-full pl-8 pr-3 py-2 text-xs bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded focus:ring-1 focus:ring-primary focus:border-primary outline-none transition-all" placeholder="Search nodes..." type="text" />
@@ -267,7 +269,7 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
 
       <div class="ui-pane flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
         ${generatedFlow
-    ? renderFlowCanvas(generatedFlow, isGenerating, flowRenderState as FlowRenderState)
+    ? renderFlowCanvas(generatedFlow, isGenerating, flowRenderState as FlowRenderState, selectedConnectionIndex)
     : renderEmptyCanvas(isGenerating, generatingThoughts)}
         ${isGenerating && generatedFlow ? renderGeneratingOverlay(generatingThoughts) : ''}
       </div>
@@ -319,6 +321,7 @@ export function renderFlowCanvas(
   flow: TranscriptFlowResult,
   isGenerating: boolean,
   flowRenderState: FlowRenderState,
+  selectedConnectionIndex: number | null,
 ): string {
   const { layout, nodeSizes, geometry } = flowRenderState;
 
@@ -331,6 +334,14 @@ export function renderFlowCanvas(
       const fromSize = nodeSizes[connection.from] ?? defaultNodeSize();
       const toSize = nodeSizes[connection.to] ?? defaultNodeSize();
       const geometryData = edgeGeometry(from, fromSize, to, toSize);
+      const isSelected = selectedConnectionIndex === index;
+      const midpoint = cubicBezierPointAtHalf(
+        geometryData.fromX,
+        geometryData.fromY,
+        geometryData.toX,
+        geometryData.toY,
+      );
+      const reason = connection.reason.trim();
 
       return `
         <g data-flow-edge="${index}" data-from-id="${esc(connection.from)}" data-to-id="${esc(connection.to)}">
@@ -341,10 +352,30 @@ export function renderFlowCanvas(
             stroke="#23956F"
             stroke-width="2"
             fill="none"
-            class="connector-path cursor-pointer"
+            class="connector-path ${isSelected ? 'connector-path-selected' : ''}"
+            style="pointer-events:none"
           />
-          <circle data-flow-edge-from-dot="1" cx="${geometryData.fromX}" cy="${geometryData.fromY}" r="5" fill="#23956F" />
-          <circle data-flow-edge-to-dot="1" cx="${geometryData.toX}" cy="${geometryData.toY}" r="5" fill="#23956F" />
+          <path
+            data-flow-edge-hit-index="${index}"
+            d="${geometryData.curve}"
+            stroke="#23956F"
+            stroke-opacity="0.001"
+            stroke-width="14"
+            stroke-linecap="round"
+            fill="none"
+            class="connector-hit cursor-pointer"
+          />
+          ${reason
+    ? `
+                <text
+                  x="${midpoint.x}"
+                  y="${midpoint.y - 8}"
+                  text-anchor="middle"
+                  class="flow-edge-label"
+                  ${isSelected ? 'style="fill:#0f766e"' : ''}
+                >${esc(reason)}</text>
+              `
+    : ''}
           <circle r="3" fill="#23956F" opacity="0.7">
             <animateMotion data-flow-edge-motion="1" dur="3s" repeatCount="indefinite" path="${geometryData.curve}" />
           </circle>
@@ -410,6 +441,12 @@ export function renderFlowCanvas(
       <span>${flow.nodes.length} nodes</span>
       <span class="text-[10px]">&middot;</span>
       <span>${flow.connections.length} connections</span>
+      ${selectedConnectionIndex !== null
+    ? `
+          <span class="text-[10px]">|</span>
+          <span class="text-cyan-700 dark:text-cyan-300">edge selected</span>
+        `
+    : ''}
       <span class="text-[10px]">|</span>
       <span class="text-emerald-600 dark:text-emerald-300">workspace auto-save enabled</span>
       ${isGenerating
@@ -442,6 +479,28 @@ export function renderFlowCanvas(
       </div>
     </div>
   `;
+}
+
+function cubicBezierPointAtHalf(
+  fromX: number,
+  fromY: number,
+  toX: number,
+  toY: number,
+): { x: number; y: number } {
+  const dx = Math.abs(toX - fromX) * 0.5;
+  const c1x = fromX + dx;
+  const c2x = toX - dx;
+  const t = 0.5;
+  const oneMinusT = 1 - t;
+  const x = oneMinusT ** 3 * fromX
+    + 3 * oneMinusT ** 2 * t * c1x
+    + 3 * oneMinusT * t ** 2 * c2x
+    + t ** 3 * toX;
+  const y = oneMinusT ** 3 * fromY
+    + 3 * oneMinusT ** 2 * t * fromY
+    + 3 * oneMinusT * t ** 2 * toY
+    + t ** 3 * toY;
+  return { x, y };
 }
 
 function renderFlowNodeBlocks(searchQuery: string): string {
