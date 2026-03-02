@@ -16,6 +16,13 @@ export interface PersistTranscriptFlowArtifactsResult {
   transcriptFlowId: string;
 }
 
+export interface TranscriptCorpusEntry {
+  id: string;
+  title: string;
+  content: string;
+  createdAt: string;
+}
+
 export async function persistTranscriptFlowArtifacts(
   request: PersistTranscriptFlowArtifactsRequest,
 ): Promise<PersistTranscriptFlowArtifactsResult> {
@@ -81,6 +88,38 @@ export async function persistTranscriptFlowArtifacts(
     transcriptId,
     transcriptFlowId: flowRes.data.id,
   };
+}
+
+export async function listTranscriptCorpus(transcriptSetId: string): Promise<TranscriptCorpusEntry[]> {
+  const normalizedSetId = transcriptSetId.trim();
+  if (!normalizedSetId) return [];
+
+  const transcriptsRes = await supabase
+    .from('transcripts')
+    .select('id, title, transcript_text, created_at, metadata')
+    .eq('transcript_set_id', normalizedSetId)
+    .order('created_at', { ascending: true });
+
+  if (transcriptsRes.error) {
+    throw new Error(`Failed to load transcript corpus: ${transcriptsRes.error.message}`);
+  }
+
+  return (transcriptsRes.data ?? [])
+    .filter((row) => {
+      if (!row || typeof row !== 'object') return false;
+      const metadata = row.metadata;
+      if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+        return true;
+      }
+      const source = (metadata as Record<string, unknown>).source;
+      return source !== 'canvas-edit';
+    })
+    .map((row) => ({
+      id: row.id,
+      title: typeof row.title === 'string' ? row.title : 'Transcript',
+      content: typeof row.transcript_text === 'string' ? row.transcript_text : '',
+      createdAt: typeof row.created_at === 'string' ? row.created_at : '',
+    }));
 }
 
 async function resolveCurrentUserId(): Promise<string> {

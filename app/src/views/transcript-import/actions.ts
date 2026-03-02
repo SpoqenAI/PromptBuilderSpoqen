@@ -103,9 +103,15 @@ export async function generateFlow(
         persisted.transcriptFlowId,
         state.projectName.trim() || flow.title || DEFAULT_PROJECT_NAME,
       );
+
+      // Auto-link (or auto-create) a canvas project after every successful transcript flow generation.
+      // This removes the old two-step "generate then manually create canvas copy" default flow.
+      const linkedProject = store.createProjectFromTranscriptFlowDraft(persisted.transcriptSetId);
       state.persistenceMessage = {
-        tone: 'success',
-        text: `Saved transcript artifacts (set ${shortId(persisted.transcriptSetId)}, flow ${shortId(persisted.transcriptFlowId)}).`,
+        tone: linkedProject ? 'success' : 'info',
+        text: linkedProject
+          ? `Saved transcript artifacts (set ${shortId(persisted.transcriptSetId)}, flow ${shortId(persisted.transcriptFlowId)}) and linked Canvas project (${shortId(linkedProject.id)}).`
+          : `Saved transcript artifacts (set ${shortId(persisted.transcriptSetId)}, flow ${shortId(persisted.transcriptFlowId)}). Canvas project auto-link did not complete.`,
       };
     } catch (persistErr) {
       state.persistenceMessage = {

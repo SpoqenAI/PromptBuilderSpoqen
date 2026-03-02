@@ -166,7 +166,7 @@ export function renderDashboard(container: HTMLElement): void {
         <div class="flex items-center justify-between gap-3">
           <div>
             <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Transcript Flows</h2>
-            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Persistent transcript workspaces that can be reopened, edited, and optionally copied into Canvas.</p>
+            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Persistent transcript projects with a unified open path into Canvas.</p>
           </div>
           <span class="text-[11px] text-slate-400">${transcriptFlows.length} transcript sets</span>
         </div>
@@ -372,47 +372,39 @@ export function renderDashboard(container: HTMLElement): void {
       });
     });
 
+    const openTranscriptEntry = async (transcriptSetId: string, projectId: string | null): Promise<void> => {
+      const normalizedProjectId = projectId?.trim() || null;
+      if (normalizedProjectId && store.getProject(normalizedProjectId)) {
+        router.navigate(`/project/${normalizedProjectId}`);
+        return;
+      }
+
+      const linkedProject = store.createProjectFromTranscriptFlowDraft(transcriptSetId);
+      if (linkedProject) {
+        router.navigate(`/project/${linkedProject.id}`);
+        return;
+      }
+
+      // Legacy fallback for transcript sets that do not have enough flow data to seed a project.
+      router.navigate(`/import/transcript/${transcriptSetId}`);
+    };
+
     container.querySelectorAll<HTMLElement>('.transcript-project-card').forEach((card) => {
       card.addEventListener('click', (event) => {
-        if ((event.target as HTMLElement).closest('.delete-transcript-flow,.create-transcript-project,.open-transcript-project,.open-transcript-workspace')) return;
+        if ((event.target as HTMLElement).closest('.delete-transcript-flow,.open-transcript-entry')) return;
         const transcriptSetId = card.dataset.transcriptSetId;
         if (!transcriptSetId) return;
-        router.navigate(`/import/transcript/${transcriptSetId}`);
+        void openTranscriptEntry(transcriptSetId, card.dataset.projectId ?? null);
       });
     });
 
-    container.querySelectorAll<HTMLButtonElement>('.open-transcript-workspace').forEach((button) => {
+    container.querySelectorAll<HTMLButtonElement>('.open-transcript-entry').forEach((button) => {
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
         const transcriptSetId = button.dataset.transcriptSetId;
         if (!transcriptSetId) return;
-        router.navigate(`/import/transcript/${transcriptSetId}`);
-      });
-    });
-
-    container.querySelectorAll<HTMLButtonElement>('.open-transcript-project').forEach((button) => {
-      button.addEventListener('click', (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const projectId = button.dataset.projectId;
-        if (!projectId) return;
-        router.navigate(`/project/${projectId}`);
-      });
-    });
-
-    container.querySelectorAll<HTMLButtonElement>('.create-transcript-project').forEach((button) => {
-      button.addEventListener('click', async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const transcriptSetId = button.dataset.transcriptSetId;
-        if (!transcriptSetId) return;
-        const project = store.createProjectFromTranscriptFlowDraft(transcriptSetId);
-        if (!project) {
-          await customAlert('This transcript set does not have a generated flow to edit yet.');
-          return;
-        }
-        router.navigate(`/project/${project.id}`);
+        void openTranscriptEntry(transcriptSetId, button.dataset.projectId ?? null);
       });
     });
 
@@ -683,10 +675,13 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
           <div class="flex items-center justify-between gap-2">
             <span class="text-[11px] text-slate-400">Updated ${escapeHtml(formatDashboardTimestamp(updatedAt))}</span>
             <div class="flex items-center gap-1.5">
-              <button class="open-transcript-workspace px-2.5 py-1 text-[11px] font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">Open Workspace</button>
-              ${linkedProjectId
-      ? `<button class="open-transcript-project px-2.5 py-1 text-[11px] font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors" data-project-id="${escapeHtml(linkedProjectId)}">Open in Canvas</button>`
-      : `<button class="create-transcript-project px-2.5 py-1 text-[11px] font-medium border border-primary/30 text-primary hover:bg-primary/5 rounded transition-colors" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">Create Prompt Project</button>`}
+              <button
+                class="open-transcript-entry px-2.5 py-1 text-[11px] font-medium bg-primary text-white hover:bg-primary/90 rounded transition-colors"
+                data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}"
+                data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}"
+              >
+                Open
+              </button>
             </div>
           </div>
         </div>

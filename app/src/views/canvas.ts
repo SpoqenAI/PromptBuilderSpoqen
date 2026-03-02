@@ -3,11 +3,36 @@
  */
 import { store } from '../store';
 import { router } from '../router';
-import { BLOCK_PALETTE, PromptNode, uid, CustomNodeTemplate } from '../models';
+import {
+  PROMPT_BLOCK_PALETTE,
+  TRANSCRIPT_BLOCK_PALETTE,
+  PromptNode,
+  uid,
+  CustomNodeTemplate,
+  type BlockDefinition,
+} from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas, projectViewTabsHTML, wireProjectViewTabs } from './project-nav';
 import { customPrompt, customConfirm } from '../dialogs';
-import { buildNodeColorStyles, readNodeColorMeta } from '../node-colors';
+import {
+  buildNodeColorStyles,
+  getAutoNodeColor,
+  readNodeColorMeta,
+  withNodeColorMeta,
+} from '../node-colors';
+import { resolveNodeIcon } from '../node-icons';
+import {
+  generateTranscriptFlow,
+  type TranscriptFlowConnection,
+  type TranscriptFlowNode,
+  type TranscriptFlowResult,
+} from '../transcript-flow';
+import {
+  listTranscriptCorpus,
+  persistTranscriptFlowArtifacts,
+} from '../transcript-artifacts';
+import { upsertTranscriptWorkspaceFlow } from '../transcript-workspace';
+import { buildFlowRenderState } from './transcript-import/layout';
 
 interface CanvasViewportState {
   zoom: number;
@@ -33,6 +58,14 @@ interface SidebarBlock {
   meta: Record<string, string>;
   templateId?: string;
   isCustomTemplate: boolean;
+}
+
+type WorkspaceMode = 'prompt' | 'transcript';
+
+interface StagedTranscriptFile {
+  id: string;
+  name: string;
+  content: string;
 }
 
 interface McpRelayConfig {
@@ -177,9 +210,16 @@ function resolveMcpRelayConfig(): McpRelayConfig {
   };
 }
 
-function buildSidebarCategories(customTemplates: CustomNodeTemplate[]): Map<string, SidebarBlock[]> {
+function resolveWorkspacePalette(mode: WorkspaceMode): ReadonlyArray<BlockDefinition> {
+  return mode === 'transcript' ? TRANSCRIPT_BLOCK_PALETTE : PROMPT_BLOCK_PALETTE;
+}
+
+function buildSidebarCategories(
+  customTemplates: CustomNodeTemplate[],
+  mode: WorkspaceMode,
+): Map<string, SidebarBlock[]> {
   const categories = new Map<string, SidebarBlock[]>();
-  for (const block of BLOCK_PALETTE) {
+  for (const block of resolveWorkspacePalette(mode)) {
     if (!categories.has(block.category)) categories.set(block.category, []);
     categories.get(block.category)!.push({
       type: block.type,
@@ -192,7 +232,9 @@ function buildSidebarCategories(customTemplates: CustomNodeTemplate[]): Map<stri
     });
   }
 
-  const customCategory = 'My Custom Nodes';
+  const customCategory = mode === 'transcript'
+    ? 'My Transcript Templates'
+    : 'My Custom Nodes';
   categories.set(customCategory, customTemplates.map((template) => ({
     type: template.type,
     label: template.label,
@@ -209,7 +251,8 @@ function buildSidebarCategories(customTemplates: CustomNodeTemplate[]): Map<stri
 
 function renderSidebarBlocksHTML(categories: Map<string, SidebarBlock[]>): string {
   return [...categories.entries()].map(([category, blocks]) => {
-    const isCustomCategory = category === 'My Custom Nodes';
+    const isCustomCategory =
+      category === 'My Custom Nodes' || category === 'My Transcript Templates';
     const customEmptyState = isCustomCategory && blocks.length === 0
       ? `<p class="px-2 py-2 text-[11px] text-slate-400">Save any canvas node as a template to reuse it here.</p>`
       : '';
@@ -254,13 +297,38 @@ function renderSidebarBlocksHTML(categories: Map<string, SidebarBlock[]>): strin
   }).join('');
 }
 
+function renderTranscriptIterationPanel(): string {
+  return `
+    <section id="transcript-iteration-panel" class="mb-3 rounded-lg border border-primary/15 bg-primary/5 px-3 py-3 space-y-2.5">
+      <div>
+        <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">Transcript Iteration</h2>
+        <p class="text-[10px] text-slate-500 dark:text-slate-400 mt-1">Upload additional transcripts and regenerate this flow from evidence.</p>
+      </div>
+      <div id="canvas-transcript-drop-zone" class="rounded-md border border-dashed border-primary/30 bg-white/70 dark:bg-black/20 px-2.5 py-2 text-[10px] text-slate-500 dark:text-slate-300 hover:border-primary/50 transition-colors cursor-pointer">
+        <span class="font-medium text-primary">Drag files here</span> or
+        <button id="btn-upload-canvas-transcripts" type="button" class="ml-1 underline underline-offset-2 text-primary hover:text-primary/80">browse</button>
+      </div>
+      <input id="canvas-transcript-file-input" type="file" multiple accept=".txt,.md,.log,.json,.csv,.srt,.vtt" class="hidden" />
+      <div id="canvas-transcript-staged-list" class="space-y-1.5 hidden"></div>
+      <p id="canvas-transcript-meta" class="text-[10px] text-slate-500 dark:text-slate-400">Loading transcript corpus...</p>
+      <p id="canvas-transcript-status" class="hidden text-[10px] rounded px-2 py-1"></p>
+      <button id="btn-iterate-transcript-flow" type="button" class="w-full ui-btn ui-btn-primary !text-xs !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+        Iterate Flow
+      </button>
+    </section>
+  `;
+}
+
 export function renderCanvas(container: HTMLElement, projectId: string): void {
   clearCanvasViewCleanup(container);
   const project = store.getProject(projectId);
   if (!project) { router.navigate('/'); return; }
   clearProjectEscapeToCanvas(container);
 
-  const categories = buildSidebarCategories(store.getCustomNodeTemplates());
+  const linkedTranscriptSetId = store.getLinkedTranscriptSetId(projectId);
+  const workspaceMode: WorkspaceMode = linkedTranscriptSetId ? 'transcript' : 'prompt';
+  const isTranscriptWorkspace = workspaceMode === 'transcript';
+  const categories = buildSidebarCategories(store.getCustomNodeTemplates(), workspaceMode);
   const recommendedSidebarWidth = computeRecommendedSidebarWidth(categories);
   const mcpRelayConfig = resolveMcpRelayConfig();
   const relaySetupInstructionHtml = mcpRelayConfig.enabled && mcpRelayConfig.agentRelayUrl
@@ -286,7 +354,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           </button>
           <div class="min-w-0">
             <h1 class="text-sm font-semibold leading-none truncate max-w-[34ch]" title="${escapeHTML(project.name)}">${project.name}</h1>
-            <span class="text-[10px] text-slate-400 uppercase tracking-wider">Visual Prompt Editor</span>
+            <span class="text-[10px] text-slate-400 uppercase tracking-wider">${isTranscriptWorkspace ? 'Transcript Flow Workspace' : 'Visual Prompt Editor'}</span>
           </div>
         </div>
         <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
@@ -322,6 +390,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
               <span class="material-icons text-sm">chevron_left</span>
             </button>
           </div>
+          ${isTranscriptWorkspace ? renderTranscriptIterationPanel() : ''}
           <div class="relative">
             <span class="material-icons absolute left-2.5 top-2.5 text-slate-400 text-sm">search</span>
             <input id="sidebar-search" class="w-full pl-8 pr-3 py-2 text-xs bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded focus:ring-1 focus:ring-primary focus:border-primary outline-none transition-all" placeholder="Search blocks..." type="text" />
@@ -1501,6 +1570,339 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     zoomAt(zoom * scaleFactor, focalX, focalY);
   }, { passive: false });
 
+  const MIN_TRANSCRIPT_ITERATION_LENGTH = 20;
+  let transcriptCorpusTexts: string[] = [];
+  let stagedTranscriptFiles: StagedTranscriptFile[] = [];
+  let transcriptIterationBusy = false;
+  let transcriptIterationStatus: { tone: 'info' | 'success' | 'error'; text: string } | null = null;
+
+  const transcriptDropZone = container.querySelector<HTMLElement>('#canvas-transcript-drop-zone');
+  const transcriptUploadButton = container.querySelector<HTMLButtonElement>('#btn-upload-canvas-transcripts');
+  const transcriptFileInput = container.querySelector<HTMLInputElement>('#canvas-transcript-file-input');
+  const transcriptIterateButton = container.querySelector<HTMLButtonElement>('#btn-iterate-transcript-flow');
+  const transcriptMetaHost = container.querySelector<HTMLElement>('#canvas-transcript-meta');
+  const transcriptStatusHost = container.querySelector<HTMLElement>('#canvas-transcript-status');
+  const transcriptStagedListHost = container.querySelector<HTMLElement>('#canvas-transcript-staged-list');
+
+  function normalizeTranscriptText(input: string): string {
+    return normalizeLineEndings(input).trim();
+  }
+
+  function dedupeTranscriptCorpus(corpus: string[]): string[] {
+    const dedupe = new Set<string>();
+    const normalized: string[] = [];
+    for (const entry of corpus) {
+      const next = normalizeTranscriptText(entry);
+      if (next.length < MIN_TRANSCRIPT_ITERATION_LENGTH) continue;
+      if (dedupe.has(next)) continue;
+      dedupe.add(next);
+      normalized.push(next);
+    }
+    return normalized;
+  }
+
+  function collectIterationCorpus(): string[] {
+    return dedupeTranscriptCorpus([
+      ...transcriptCorpusTexts,
+      ...stagedTranscriptFiles.map((file) => file.content),
+    ]);
+  }
+
+  function setTranscriptIterationStatus(
+    tone: 'info' | 'success' | 'error',
+    text: string,
+  ): void {
+    transcriptIterationStatus = { tone, text };
+  }
+
+  function renderTranscriptIterationStatus(): void {
+    if (!transcriptStatusHost) return;
+    if (!transcriptIterationStatus) {
+      transcriptStatusHost.className = 'hidden text-[10px] rounded px-2 py-1';
+      transcriptStatusHost.textContent = '';
+      return;
+    }
+
+    const toneClass = transcriptIterationStatus.tone === 'success'
+      ? 'text-emerald-700 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/40'
+      : transcriptIterationStatus.tone === 'error'
+        ? 'text-red-700 dark:text-red-200 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/40'
+        : 'text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700';
+    transcriptStatusHost.className = `text-[10px] rounded px-2 py-1 ${toneClass}`;
+    transcriptStatusHost.textContent = transcriptIterationStatus.text;
+  }
+
+  function renderTranscriptStagedFiles(): void {
+    if (!transcriptStagedListHost) return;
+    if (stagedTranscriptFiles.length === 0) {
+      transcriptStagedListHost.classList.add('hidden');
+      transcriptStagedListHost.innerHTML = '';
+      return;
+    }
+
+    transcriptStagedListHost.classList.remove('hidden');
+    transcriptStagedListHost.innerHTML = stagedTranscriptFiles.map((file) => `
+      <div class="flex items-center justify-between gap-2 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-black/20 px-2 py-1.5">
+        <div class="min-w-0">
+          <p class="text-[10px] font-medium text-slate-700 dark:text-slate-200 truncate" title="${escapeHTML(file.name)}">${escapeHTML(file.name)}</p>
+          <p class="text-[9px] text-slate-400">${(file.content.length / 1024).toFixed(1)} KB</p>
+        </div>
+        <button type="button" class="canvas-transcript-remove p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors" data-staged-transcript-id="${escapeHTML(file.id)}" title="Remove transcript">
+          <span class="material-icons text-[14px]">close</span>
+        </button>
+      </div>
+    `).join('');
+
+    transcriptStagedListHost.querySelectorAll<HTMLButtonElement>('.canvas-transcript-remove').forEach((button) => {
+      button.addEventListener('click', () => {
+        const fileId = button.dataset.stagedTranscriptId;
+        if (!fileId) return;
+        stagedTranscriptFiles = stagedTranscriptFiles.filter((entry) => entry.id !== fileId);
+        renderTranscriptIterationPanelState();
+      });
+    });
+  }
+
+  function renderTranscriptIterationPanelState(): void {
+    if (!isTranscriptWorkspace) return;
+
+    const corpusSize = transcriptCorpusTexts.length;
+    const stagedSize = stagedTranscriptFiles.length;
+    if (transcriptMetaHost) {
+      transcriptMetaHost.textContent = `${corpusSize} stored transcripts | ${stagedSize} staged for next iteration`;
+    }
+
+    if (transcriptIterateButton) {
+      transcriptIterateButton.disabled = transcriptIterationBusy || collectIterationCorpus().length === 0;
+      transcriptIterateButton.innerHTML = transcriptIterationBusy
+        ? '<span class="material-icons text-sm">hourglass_top</span> Iterating...'
+        : '<span class="material-icons text-sm">auto_fix_high</span> Iterate Flow';
+    }
+
+    renderTranscriptStagedFiles();
+    renderTranscriptIterationStatus();
+  }
+
+  function toTranscriptFlowNodesFromProject(): TranscriptFlowNode[] {
+    return project!.nodes.map((node) => ({
+      id: node.id,
+      label: node.label,
+      type: node.type,
+      icon: resolveNodeIcon(node.icon, node.type),
+      content: node.content,
+      meta: { ...node.meta },
+    }));
+  }
+
+  function toTranscriptFlowConnectionsFromProject(): TranscriptFlowConnection[] {
+    return project!.connections.map((connection) => ({
+      from: connection.from,
+      to: connection.to,
+      reason: normalizeConnectionLabel(connection.label ?? 'Next') || 'Next',
+    }));
+  }
+
+  function replaceProjectGraphFromTranscriptFlow(flow: TranscriptFlowResult): Record<string, { x: number; y: number }> {
+    const layout = buildFlowRenderState(flow, {}).layout;
+    const nodeIdMap = new Map<string, string>();
+
+    for (const connection of [...project!.connections]) {
+      store.removeConnection(projectId, connection.id);
+    }
+    for (const node of [...project!.nodes]) {
+      store.removeNode(projectId, node.id);
+    }
+
+    for (const [index, flowNode] of flow.nodes.entries()) {
+      const nodePosition = layout[flowNode.id] ?? { x: 80, y: 80 };
+      const seededColor = readNodeColorMeta(flowNode.meta) ?? getAutoNodeColor(index);
+      const promptNode: PromptNode = {
+        id: uid(),
+        type: flowNode.type,
+        label: flowNode.label,
+        icon: resolveNodeIcon(flowNode.icon, flowNode.type),
+        x: nodePosition.x,
+        y: nodePosition.y,
+        content: flowNode.content,
+        meta: withNodeColorMeta(flowNode.meta, seededColor),
+      };
+      store.addNode(projectId, promptNode);
+      nodeIdMap.set(flowNode.id, promptNode.id);
+    }
+
+    for (const connection of flow.connections) {
+      const fromNodeId = nodeIdMap.get(connection.from);
+      const toNodeId = nodeIdMap.get(connection.to);
+      if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) continue;
+      store.addConnection(projectId, fromNodeId, toNodeId, normalizeConnectionLabel(connection.reason) || 'Next');
+    }
+
+    renderNodes();
+    return layout;
+  }
+
+  async function stageTranscriptFiles(files: File[]): Promise<void> {
+    if (!isTranscriptWorkspace || files.length === 0) return;
+
+    let accepted = 0;
+    let skipped = 0;
+    const nextEntries: StagedTranscriptFile[] = [];
+    for (const file of files) {
+      const raw = await file.text();
+      const normalized = normalizeTranscriptText(raw);
+      if (normalized.length < MIN_TRANSCRIPT_ITERATION_LENGTH) {
+        skipped += 1;
+        continue;
+      }
+      accepted += 1;
+      nextEntries.push({
+        id: uid(),
+        name: file.name,
+        content: normalized,
+      });
+    }
+
+    if (nextEntries.length > 0) {
+      stagedTranscriptFiles = [...stagedTranscriptFiles, ...nextEntries];
+      setTranscriptIterationStatus('success', `Staged ${accepted} transcript${accepted === 1 ? '' : 's'} for iteration.`);
+    } else if (files.length > 0) {
+      setTranscriptIterationStatus('error', `No transcripts met the ${MIN_TRANSCRIPT_ITERATION_LENGTH}-character minimum.`);
+    }
+
+    if (skipped > 0 && accepted > 0) {
+      setTranscriptIterationStatus(
+        'info',
+        `Staged ${accepted} transcript${accepted === 1 ? '' : 's'}. Skipped ${skipped} short file${skipped === 1 ? '' : 's'}.`,
+      );
+    }
+
+    renderTranscriptIterationPanelState();
+  }
+
+  async function iterateTranscriptFlow(): Promise<void> {
+    if (!isTranscriptWorkspace || !linkedTranscriptSetId) return;
+    if (transcriptIterationBusy) return;
+
+    const iterationCorpus = collectIterationCorpus();
+    if (iterationCorpus.length === 0) {
+      setTranscriptIterationStatus('error', 'Add transcript files first.');
+      renderTranscriptIterationPanelState();
+      return;
+    }
+
+    transcriptIterationBusy = true;
+    setTranscriptIterationStatus('info', 'Running transcript flow iteration...');
+    renderTranscriptIterationPanelState();
+
+    try {
+      const flow = await generateTranscriptFlow({
+        transcripts: iterationCorpus,
+        existingGraph: {
+          nodes: toTranscriptFlowNodesFromProject(),
+          connections: toTranscriptFlowConnectionsFromProject(),
+        },
+      });
+
+      store.saveAssembledVersion(projectId, 'Pre transcript iteration snapshot');
+      const nodePositionOverrides = replaceProjectGraphFromTranscriptFlow(flow);
+      store.saveAssembledVersion(projectId, 'Transcript iteration update');
+
+      const stagedTranscriptText = stagedTranscriptFiles.map((file) => file.content).join('\n\n---\n\n');
+      const persisted = await persistTranscriptFlowArtifacts({
+        transcript: stagedTranscriptText || iterationCorpus.join('\n\n---\n\n'),
+        flow,
+        projectName: project!.name,
+        projectId,
+        transcriptSetId: linkedTranscriptSetId,
+        metadata: {
+          source: 'canvas-transcript-iteration',
+          stagedTranscriptCount: stagedTranscriptFiles.length,
+          corpusTranscriptCount: iterationCorpus.length,
+        },
+      });
+
+      await upsertTranscriptWorkspaceFlow({
+        transcriptSetId: linkedTranscriptSetId,
+        flow,
+        projectName: project!.name,
+        nodePositionOverrides,
+      });
+
+      store.registerTranscriptFlowDraft(
+        linkedTranscriptSetId,
+        flow,
+        persisted.transcriptFlowId,
+        project!.name,
+      );
+
+      transcriptCorpusTexts = dedupeTranscriptCorpus([
+        ...transcriptCorpusTexts,
+        ...stagedTranscriptFiles.map((file) => file.content),
+      ]);
+      stagedTranscriptFiles = [];
+      setTranscriptIterationStatus('success', 'Transcript flow updated from the latest corpus.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Transcript iteration failed.';
+      setTranscriptIterationStatus('error', message);
+    } finally {
+      transcriptIterationBusy = false;
+      renderTranscriptIterationPanelState();
+    }
+  }
+
+  async function hydrateTranscriptCorpus(): Promise<void> {
+    if (!isTranscriptWorkspace || !linkedTranscriptSetId) return;
+    try {
+      const corpus = await listTranscriptCorpus(linkedTranscriptSetId);
+      transcriptCorpusTexts = dedupeTranscriptCorpus(corpus.map((item) => item.content));
+      if (!transcriptIterationStatus) {
+        setTranscriptIterationStatus('info', 'Transcript corpus loaded. You can iterate at any time.');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load transcript corpus.';
+      setTranscriptIterationStatus('error', message);
+    } finally {
+      renderTranscriptIterationPanelState();
+    }
+  }
+
+  if (isTranscriptWorkspace) {
+    transcriptUploadButton?.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      transcriptFileInput?.click();
+    });
+
+    transcriptDropZone?.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      transcriptDropZone.classList.add('border-primary');
+    });
+
+    transcriptDropZone?.addEventListener('dragleave', () => {
+      transcriptDropZone.classList.remove('border-primary');
+    });
+
+    transcriptDropZone?.addEventListener('drop', (event) => {
+      event.preventDefault();
+      transcriptDropZone.classList.remove('border-primary');
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      void stageTranscriptFiles(files);
+    });
+
+    transcriptFileInput?.addEventListener('change', () => {
+      const files = Array.from(transcriptFileInput.files ?? []);
+      transcriptFileInput.value = '';
+      void stageTranscriptFiles(files);
+    });
+
+    transcriptIterateButton?.addEventListener('click', () => {
+      void iterateTranscriptFlow();
+    });
+
+    renderTranscriptIterationPanelState();
+    void hydrateTranscriptCorpus();
+  }
+
   interface SidebarBlockData {
     type: PromptNode['type'];
     label: string;
@@ -1725,7 +2127,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
   function refreshSidebarBlocks(): void {
     if (!sidebarBlocksHost) return;
-    const nextCategories = buildSidebarCategories(store.getCustomNodeTemplates());
+    const nextCategories = buildSidebarCategories(store.getCustomNodeTemplates(), workspaceMode);
     sidebarBlocksHost.innerHTML = renderSidebarBlocksHTML(nextCategories);
     wireSidebarBlocks();
     applySidebarFilter();
@@ -1871,6 +2273,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
   // Theme toggle
   wireThemeToggle(container);
+}
+
+function normalizeLineEndings(input: string): string {
+  return input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 }
 
 function escapeHTML(str: string): string {

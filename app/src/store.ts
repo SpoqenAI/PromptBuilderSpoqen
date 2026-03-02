@@ -445,6 +445,15 @@ class Store {
     return this.projects.filter((project) => !this.transcriptSetIdByProjectId.has(project.id));
   }
 
+  getLinkedTranscriptSetId(projectId: string): string | null {
+    const value = this.transcriptSetIdByProjectId.get(projectId);
+    return typeof value === 'string' && value.trim().length > 0 ? value : null;
+  }
+
+  isTranscriptFlowProject(projectId: string): boolean {
+    return this.transcriptSetIdByProjectId.has(projectId);
+  }
+
   getTranscriptFlowDrafts(): TranscriptFlowDraft[] {
     return this.transcriptFlowDrafts
       .map((draft) => cloneTranscriptFlowDraft(draft))

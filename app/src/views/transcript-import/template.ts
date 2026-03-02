@@ -1,4 +1,4 @@
-import { BLOCK_PALETTE } from '../../models';
+import { TRANSCRIPT_BLOCK_PALETTE } from '../../models';
 import { buildNodeColorStyles, getAutoNodeColor, readNodeColorMeta } from '../../node-colors';
 import { resolveNodeIcon } from '../../node-icons';
 import type { TranscriptFlowResult } from '../../transcript-flow';
@@ -105,8 +105,8 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
           </button>
         `
     : `
-          <button id="btn-create-flow-project" type="button" class="ui-btn ui-btn-outline" title="Create prompt canvas project from this flow">
-            <span class="material-icons text-sm">add_box</span> Create Canvas Copy
+          <button id="btn-create-flow-project" type="button" class="ui-btn ui-btn-outline" title="Fallback: link this flow to a canvas project">
+            <span class="material-icons text-sm">link</span> Link Canvas Project
           </button>
         `}
           <button id="btn-generate-prompt-from-flow" type="button" class="ui-btn ui-btn-outline" ${isGeneratingPrompt ? 'disabled' : ''}>
@@ -505,7 +505,7 @@ function cubicBezierPointAtHalf(
 
 function renderFlowNodeBlocks(searchQuery: string): string {
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const filtered = BLOCK_PALETTE.filter((block) => {
+  const filtered = TRANSCRIPT_BLOCK_PALETTE.filter((block) => {
     if (!normalizedQuery) return true;
     return (
       block.label.toLowerCase().includes(normalizedQuery)
@@ -573,7 +573,7 @@ function renderWorkspaceSaveStatus(params: {
   }
 
   if (!transcriptSetId) {
-    return '<p class="rounded-lg border px-3 py-2 text-xs border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 text-slate-700 dark:text-slate-200">Generate a flow to create and auto-save a transcript workspace.</p>';
+    return '<p class="rounded-lg border px-3 py-2 text-xs border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-900/30 text-slate-700 dark:text-slate-200">Generate a flow to create and auto-save a transcript workspace and linked Canvas project.</p>';
   }
 
   if (workspaceSaveStatus === 'saving') {
