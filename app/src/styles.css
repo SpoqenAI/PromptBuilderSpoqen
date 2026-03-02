@@ -318,6 +318,7 @@ html.dark .canvas-sidebar-toggle:hover {
 }
 
 html.dark .canvas-sidebar {
+  background-color: var(--color-background-dark);
   box-shadow: 0 16px 30px rgba(2, 6, 23, 0.5);
 }
 

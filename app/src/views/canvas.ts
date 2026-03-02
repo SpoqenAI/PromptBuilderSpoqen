@@ -382,7 +382,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
     <main id="canvas-main" class="ui-main ui-stack-lg">
       <!-- Sidebar -->
-      <aside id="canvas-sidebar" class="ui-sidebar canvas-sidebar border-r border-primary/10 bg-white dark:bg-background-dark/50 z-10">
+      <aside id="canvas-sidebar" class="ui-sidebar canvas-sidebar border-r border-primary/10 bg-white dark:bg-background-dark z-10">
         <div class="p-4 border-b border-primary/5">
           <div class="flex items-center justify-between gap-2 mb-3">
             <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Menu</span>
