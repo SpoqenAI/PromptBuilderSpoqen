@@ -153,6 +153,25 @@ The canvas UI also shows a copy-ready connector command in-app.
 - [app/README.md](./app/README.md): frontend-specific notes
 - [supabase/functions/README.md](./supabase/functions/README.md): function secrets/deploy details
 
+## CI/CD
+
+GitHub Actions workflows:
+
+- `.github/workflows/ci.yml`: runs `npm ci` + `npm run verify` in `app/` on PRs and pushes to `main`.
+- `.github/workflows/cd.yml`: runs on pushes to `main` (and manual dispatch), builds frontend artifact, and conditionally deploys frontend/functions.
+
+CD deployment toggles:
+
+- GitHub Pages deploy job runs only when repository variable `ENABLE_PAGES_DEPLOY` is set to `true`.
+- Supabase function deploy job runs only when secrets `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are configured.
+
+Recommended Supabase deploy secrets:
+
+- `SUPABASE_ACCESS_TOKEN` (required for CLI deploy)
+- `SUPABASE_PROJECT_REF` (required target project)
+- `SUPABASE_PUBLISHABLE_KEY` (recommended for smoke-test coverage)
+- `SUPABASE_TEST_EMAIL` and `SUPABASE_TEST_PASSWORD` (optional; enables authenticated smoke checks)
+
 ## Security Notes
 
 - Never commit real credentials to `.env` files.
