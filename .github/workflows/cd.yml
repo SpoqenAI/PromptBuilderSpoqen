@@ -17,6 +17,9 @@ jobs:
   build_artifact:
     name: Build App Artifact
     runs-on: ubuntu-latest
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://ci.supabase.local
+      NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY: sb_publishable_ci_dummy
 
     defaults:
       run:
@@ -82,7 +85,7 @@ jobs:
   deploy_supabase_functions:
     name: Deploy Supabase Functions
     needs: build_artifact
-    if: ${{ secrets.SUPABASE_ACCESS_TOKEN != '' && secrets.SUPABASE_PROJECT_REF != '' }}
+    if: ${{ vars.ENABLE_SUPABASE_DEPLOY == 'true' }}
     runs-on: ubuntu-latest
     environment: production
     permissions:
@@ -97,21 +100,38 @@ jobs:
         with:
           version: latest
 
+      - name: Validate deploy inputs
+        shell: bash
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+        run: |
+          if [ -z "$SUPABASE_ACCESS_TOKEN" ]; then
+            echo "Missing required secret: SUPABASE_ACCESS_TOKEN"
+            exit 1
+          fi
+          if [ -z "$SUPABASE_PROJECT_REF" ]; then
+            echo "Missing required repository variable: SUPABASE_PROJECT_REF"
+            exit 1
+          fi
+
       - name: Deploy functions (with smoke tests)
         shell: pwsh
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+          SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
           SUPABASE_TEST_EMAIL: ${{ secrets.SUPABASE_TEST_EMAIL }}
           SUPABASE_TEST_PASSWORD: ${{ secrets.SUPABASE_TEST_PASSWORD }}
         run: |
-          $args = @('-ProjectRef', '${{ secrets.SUPABASE_PROJECT_REF }}')
+          $args = @('-ProjectRef', $env:SUPABASE_PROJECT_REF)
 
-          if ('${{ secrets.SUPABASE_PUBLISHABLE_KEY }}' -ne '') {
-            $args += @('-PublishableKey', '${{ secrets.SUPABASE_PUBLISHABLE_KEY }}')
+          if (-not [string]::IsNullOrWhiteSpace($env:SUPABASE_PUBLISHABLE_KEY)) {
+            $args += @('-PublishableKey', $env:SUPABASE_PUBLISHABLE_KEY)
           }
 
-          $hasAuthSmokeCreds = ('${{ secrets.SUPABASE_TEST_EMAIL }}' -ne '') -and ('${{ secrets.SUPABASE_TEST_PASSWORD }}' -ne '')
+          $hasAuthSmokeCreds = (-not [string]::IsNullOrWhiteSpace($env:SUPABASE_TEST_EMAIL)) -and (-not [string]::IsNullOrWhiteSpace($env:SUPABASE_TEST_PASSWORD))
           if ($hasAuthSmokeCreds) {
             $args += '-RequireAuthSmoke'
           }

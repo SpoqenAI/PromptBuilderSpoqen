@@ -163,14 +163,17 @@ GitHub Actions workflows:
 CD deployment toggles:
 
 - GitHub Pages deploy job runs only when repository variable `ENABLE_PAGES_DEPLOY` is set to `true`.
-- Supabase function deploy job runs only when secrets `SUPABASE_ACCESS_TOKEN` and `SUPABASE_PROJECT_REF` are configured.
+- Supabase function deploy job runs only when repository variable `ENABLE_SUPABASE_DEPLOY` is set to `true`.
 
 Recommended Supabase deploy secrets:
 
 - `SUPABASE_ACCESS_TOKEN` (required for CLI deploy)
-- `SUPABASE_PROJECT_REF` (required target project)
 - `SUPABASE_PUBLISHABLE_KEY` (recommended for smoke-test coverage)
 - `SUPABASE_TEST_EMAIL` and `SUPABASE_TEST_PASSWORD` (optional; enables authenticated smoke checks)
+
+Recommended Supabase deploy repository variables:
+
+- `SUPABASE_PROJECT_REF` (required target project ref)
 
 ## Security Notes
 
