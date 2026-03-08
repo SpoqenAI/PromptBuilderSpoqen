@@ -31,9 +31,11 @@ supabase secrets set GITHUB_APP_PRIVATE_KEY="$(cat /path/to/private-key.pem)"
 supabase secrets set APP_PUBLIC_URL=<your-frontend-origin>
 ```
 
-`APP_PUBLIC_URL` should match your app origin exactly (for redirect safety), for example:
+`APP_PUBLIC_URL` must match the **exact** URL you use in the browser (including port), or CORS will block Edge Function calls (e.g. create-checkout-session). Examples:
 
-- `http://localhost:5173` in local dev
+- `http://localhost:5173` if your app runs on port 5173
+- `http://localhost:5174` if your app runs on port 5174 (or any other port)
+- `http://127.0.0.1:5173` if you use 127.0.0.1 instead of localhost
 - `https://yourapp.com` in production
 
 ## 3. Deploy Functions (Safe Default)
@@ -110,6 +112,76 @@ For authenticated checks (recommended once you have a stable test user), provide
 - or environment vars `SUPABASE_TEST_EMAIL` and `SUPABASE_TEST_PASSWORD` (script will mint a token via `/auth/v1/token`), then run:
   - `pwsh ./supabase/functions/test-edge-functions.ps1 -RequireAuth`
 
+## 3c. Stripe Subscription Billing
+
+The app supports Individual and Enterprise subscription tiers via Stripe.
+
+### Set Stripe function secrets
+
+```bash
+supabase secrets set STRIPE_SECRET_KEY=<your-stripe-secret-key>
+supabase secrets set STRIPE_WEBHOOK_SECRET=<your-stripe-webhook-signing-secret>
+supabase secrets set STRIPE_INDIVIDUAL_PRICE_ID=<price_xxx>
+supabase secrets set STRIPE_ENTERPRISE_PRICE_ID=<price_yyy>
+```
+
+- `STRIPE_SECRET_KEY`: Stripe API secret key (starts with `sk_test_` or `sk_live_`).
+- `STRIPE_WEBHOOK_SECRET`: Signing secret from the Stripe webhook endpoint settings (starts with `whsec_`).
+- `STRIPE_INDIVIDUAL_PRICE_ID` / `STRIPE_ENTERPRISE_PRICE_ID`: Recurring price IDs from Stripe Dashboard (Products).
+
+### Stripe Products Setup
+
+1. In the [Stripe Dashboard](https://dashboard.stripe.com/products), create two Products:
+   - **Spoqen Individual** — with a recurring Price (monthly or yearly).
+   - **Spoqen Enterprise** — with a recurring Price (monthly or yearly).
+2. Copy each Price ID and set as Supabase secrets above.
+
+### Stripe Webhook Endpoint
+
+1. In Stripe Dashboard → Developers → Webhooks, add an endpoint:
+   - URL: `https://<your-project-ref>.supabase.co/functions/v1/stripe-webhook`
+   - Events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.payment_failed`
+2. Copy the Signing Secret and set as `STRIPE_WEBHOOK_SECRET`.
+
+### Deploy Stripe Functions
+
+```bash
+supabase functions deploy create-checkout-session --no-verify-jwt
+supabase functions deploy create-portal-session --no-verify-jwt
+supabase functions deploy stripe-webhook --no-verify-jwt
+```
+
+`create-checkout-session` and `create-portal-session` perform explicit JWT verification via `requireUser()`. `stripe-webhook` verifies the Stripe signature instead of JWT.
+
+### Database Migration
+
+Run the migration to create `stripe_customers` and `subscriptions` tables:
+
+- `supabase/migrations/20260224120000_add_stripe_subscriptions.sql`
+
+### CORS and APP_PUBLIC_URL (required for billing)
+
+If you see "CORS request did not succeed" or "Access-Control-Allow-Origin does not match" when clicking **Get Started** on the billing page, the Edge Function is returning an origin that doesn't match your browser. Set one of:
+
+```bash
+# Option 1: full URL (use the exact URL and port from your address bar)
+supabase secrets set APP_PUBLIC_URL=http://localhost:5174
+
+# Option 2: port only (function will use http://localhost:5174)
+supabase secrets set LOCALHOST_PORT=5174
+```
+
+Then **redeploy** the billing Edge Functions so they use the new CORS logic:
+
+```bash
+supabase functions deploy create-checkout-session --no-verify-jwt
+supabase functions deploy create-portal-session
+```
+
+### Frontend
+
+The billing page is available at `#/billing`. Users can also access it from the account dropdown menu on the dashboard.
+
 ## 4. Apply Database Migration
 
 Run migrations so these tables exist:
@@ -119,7 +191,8 @@ Run migrations so these tables exist:
 - `public.optimization_run_patches`
 - `public.prompt_node_sync_meta`
 
-The migration file is:
+The migration files are:
 
 - `supabase/migrations/20260217103000_add_github_app_integrations.sql`
+- `supabase/migrations/20260224120000_add_stripe_subscriptions.sql`
 - `supabase/migrations/20260228103000_add_prompt_repair_tables.sql`

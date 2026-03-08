@@ -2,6 +2,7 @@
  * main.ts - Application entry point.
  * Sets up the SPA router and renders the appropriate view.
  */
+import './instrument';
 import './styles.css';
 import { router } from './router';
 import { renderDashboard } from './views/dashboard';
@@ -10,6 +11,7 @@ import { renderEditor } from './views/editor';
 import { renderDiff } from './views/diff';
 import { renderImport } from './views/import';
 import { renderTranscriptImport } from './views/transcript-import';
+import { renderBilling } from './views/billing';
 import { renderAuthPage, renderOnboardingPage } from './views/auth';
 import { applyTheme } from './theme';
 import { store, type StoreRemoteErrorEventDetail } from './store';
@@ -154,6 +156,9 @@ router
   })
   .on('/import/transcript/:transcriptSetId', (params) => {
     void runProtectedRoute(() => renderTranscriptImport(app, params.transcriptSetId));
+  })
+  .on('/billing', () => {
+    void runProtectedRoute(() => renderBilling(app));
   })
   .otherwise(() => {
     router.navigate('/');

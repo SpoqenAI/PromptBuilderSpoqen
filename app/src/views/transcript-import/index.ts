@@ -3,6 +3,8 @@ import { router } from '../../router';
 import { store } from '../../store';
 import { wireThemeToggle } from '../../theme';
 import { preserveScrollDuringRender } from '../../view-state';
+import { getSubscriptionLimits, recordFeatureUsage } from '../../subscription-limits';
+import { customAlert } from '../../dialogs';
 import {
   createProjectFromGeneratedFlow,
   generateFlow,
@@ -155,12 +157,25 @@ export function renderTranscriptImport(
         router.navigate('/import');
       },
       onGenerateFlow: () => {
-        void generateFlow(state, {
-          render,
-          onFlowGenerated: () => {
-            scheduleWorkspaceAutosave();
-          },
-        });
+        void (async () => {
+          if (!state.transcriptSetId) {
+            try {
+              const limits = await getSubscriptionLimits();
+              if (limits.isFreeTier && !limits.canCreateTranscriptSet) {
+                await customAlert(`You've reached the limit of ${limits.transcriptSetLimit} transcript sets on the free tier. Upgrade to Pro for unlimited transcript sets.`);
+                return;
+              }
+            } catch {
+              // Limits unavailable — allow generation
+            }
+          }
+          void generateFlow(state, {
+            render,
+            onFlowGenerated: () => {
+              scheduleWorkspaceAutosave();
+            },
+          });
+        })();
       },
       onGeneratePromptFromFlow: () => {
         void generatePromptFromCurrentFlow(state, { render });
@@ -172,10 +187,30 @@ export function renderTranscriptImport(
         router.navigate(`/project/${projectId}`);
       },
       onCreateProjectFromFlow: () => {
-        createProjectFromGeneratedFlow(state, {
-          render,
-          cleanupViewportAndNavigate: cleanupViewport,
-        });
+        void (async () => {
+          try {
+            const limits = await getSubscriptionLimits();
+            if (limits.isFreeTier && !limits.canCreateTranscriptionFlow) {
+              await customAlert(`You've reached the limit of ${limits.transcriptionFlowLimit} transcript flows on the free tier. Upgrade to Pro for unlimited flows.`);
+              return;
+            }
+            if (limits.isFreeTier && !limits.canUseImportTranscript) {
+              await customAlert('You have already used Import Transcript on the free tier. Upgrade to Pro for unlimited imports.');
+              return;
+            }
+            createProjectFromGeneratedFlow(state, {
+              render,
+              cleanupViewportAndNavigate: cleanupViewport,
+            });
+            await recordFeatureUsage('import_transcript').catch(() => {});
+          } catch (err) {
+            console.error('Limit check failed:', err);
+            createProjectFromGeneratedFlow(state, {
+              render,
+              cleanupViewportAndNavigate: cleanupViewport,
+            });
+          }
+        })();
       },
       onFlowMutated: () => {
         if (

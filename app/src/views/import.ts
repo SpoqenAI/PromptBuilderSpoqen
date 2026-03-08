@@ -12,6 +12,7 @@ import { BLOCK_PALETTE, PromptNode, uid, type EditorFormat } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { preserveScrollDuringRender } from '../view-state';
 import { getAutoNodeColor, rgbaFromHex, withNodeColorMeta } from '../node-colors';
+import { getSubscriptionLimits, recordFeatureUsage } from '../subscription-limits';
 
 /* ── Types ────────────────────────────────────── */
 
@@ -825,8 +826,31 @@ export function renderImport(container: HTMLElement): void {
       render();
     });
 
-    container.querySelector('#btn-create')?.addEventListener('click', () => {
-      createProjectFromSections();
+    const createBtn = container.querySelector<HTMLButtonElement>('#btn-create');
+
+    void (async () => {
+      try {
+        const limits = await getSubscriptionLimits();
+        if (limits.isFreeTier && !limits.canCreatePromptFlow) {
+          if (createBtn) {
+            createBtn.disabled = true;
+            createBtn.insertAdjacentHTML('afterend',
+              `<p class="text-xs text-amber-600 dark:text-amber-400 mt-2">You've reached the limit of ${limits.promptFlowLimit} prompt flows. <a href="#/billing" class="underline font-semibold">Upgrade to Pro</a></p>`);
+          }
+        } else if (limits.isFreeTier && !limits.canUseImportPrompt) {
+          if (createBtn) {
+            createBtn.disabled = true;
+            createBtn.insertAdjacentHTML('afterend',
+              '<p class="text-xs text-amber-600 dark:text-amber-400 mt-2">You\'ve already used Import Prompt once on the free tier. <a href="#/billing" class="underline font-semibold">Upgrade to Pro</a></p>');
+          }
+        }
+      } catch {
+        // Limits unavailable — allow creation
+      }
+    })();
+
+    createBtn?.addEventListener('click', () => {
+      void createProjectFromSections();
     });
   }
 
@@ -869,14 +893,13 @@ export function renderImport(container: HTMLElement): void {
 
   /* ── Create project from sections ──────────── */
 
-  function createProjectFromSections(): void {
+  async function createProjectFromSections(): Promise<void> {
     const project = store.createProject(
       projectName,
       `Imported prompt with ${sections.length} sections`,
       projectModel
     );
 
-    // Create nodes laid out vertically
     const NODE_SPACING_X = 600;
     const NODE_START_X = 80;
     const NODE_START_Y = 80;
@@ -908,12 +931,12 @@ export function renderImport(container: HTMLElement): void {
       createdNodes.push(node);
     }
 
-    // Connect nodes sequentially
     for (let i = 0; i < createdNodes.length - 1; i++) {
       store.addConnection(project.id, createdNodes[i].id, createdNodes[i + 1].id);
     }
 
-    // Navigate to the new project canvas
+    await recordFeatureUsage('import_prompt').catch(() => {});
+
     router.navigate(`/project/${project.id}`);
   }
 

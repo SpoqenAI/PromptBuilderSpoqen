@@ -28,7 +28,8 @@ $functionDirs = Get-ChildItem -Path $scriptDir -Directory |
   Sort-Object Name
 
 $publicNoVerifyJwtFunctions = @(
-  'github-app-callback'
+  'github-app-callback',
+  'stripe-webhook'
 )
 
 function Test-RequiresHandlerAuth {

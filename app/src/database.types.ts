@@ -630,6 +630,96 @@ export interface Database {
         };
         Relationships: [];
       };
+      stripe_customers: {
+        Row: {
+          id: string;
+          user_id: string;
+          stripe_customer_id: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          stripe_customer_id: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          stripe_customer_id?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      subscriptions: {
+        Row: {
+          id: string;
+          user_id: string;
+          stripe_subscription_id: string;
+          stripe_customer_id: string;
+          stripe_price_id: string;
+          status: string;
+          tier: string;
+          current_period_start: string | null;
+          current_period_end: string | null;
+          cancel_at_period_end: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id: string;
+          stripe_subscription_id: string;
+          stripe_customer_id: string;
+          stripe_price_id?: string;
+          status?: string;
+          tier?: string;
+          current_period_start?: string | null;
+          current_period_end?: string | null;
+          cancel_at_period_end?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          stripe_subscription_id?: string;
+          stripe_customer_id?: string;
+          stripe_price_id?: string;
+          status?: string;
+          tier?: string;
+          current_period_start?: string | null;
+          current_period_end?: string | null;
+          cancel_at_period_end?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      feature_usage: {
+        Row: {
+          id: string;
+          user_id: string;
+          feature_key: string;
+          used_at: string;
+        };
+        Insert: {
+          id?: string;
+          user_id?: string;
+          feature_key: string;
+          used_at?: string;
+        };
+        Update: {
+          id?: string;
+          user_id?: string;
+          feature_key?: string;
+          used_at?: string;
+        };
+        Relationships: [];
+      };
       prompt_node_sync_meta: {
         Row: {
           prompt_node_id: string;
@@ -655,6 +745,38 @@ export interface Database {
     Views: Record<string, never>;
     Functions: {
       delete_current_user: {
+        Args: Record<string, never>;
+        Returns: boolean;
+      };
+      user_transcription_flow_count: {
+        Args: Record<string, never>;
+        Returns: number;
+      };
+      user_prompt_flow_count: {
+        Args: Record<string, never>;
+        Returns: number;
+      };
+      user_has_active_subscription: {
+        Args: Record<string, never>;
+        Returns: boolean;
+      };
+      user_can_create_prompt_flow: {
+        Args: Record<string, never>;
+        Returns: boolean;
+      };
+      user_can_create_transcription_flow: {
+        Args: Record<string, never>;
+        Returns: boolean;
+      };
+      user_can_use_import_feature: {
+        Args: { p_feature_key: string };
+        Returns: boolean;
+      };
+      user_transcript_set_count: {
+        Args: Record<string, never>;
+        Returns: number;
+      };
+      user_can_create_transcript_set: {
         Args: Record<string, never>;
         Returns: boolean;
       };

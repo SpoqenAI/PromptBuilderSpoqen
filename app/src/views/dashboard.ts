@@ -18,6 +18,7 @@ import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas } from './project-nav';
 import { customAlert, customConfirm } from '../dialogs';
 import { preserveScrollDuringRender } from '../view-state';
+import { getSubscriptionLimits, type SubscriptionLimits } from '../subscription-limits';
 
 type DashboardLayout = 'grid' | 'list';
 const DASHBOARD_LAYOUT_KEY = 'promptblueprint_dashboard_layout';
@@ -99,6 +100,9 @@ export function renderDashboard(container: HTMLElement): void {
                 <div class="p-2">
                   <button id="btn-account-settings" type="button" role="menuitem" class="w-full text-left rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
                     Account settings
+                  </button>
+                  <button id="btn-billing" type="button" role="menuitem" class="w-full text-left rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                    Billing
                   </button>
                   <button id="btn-sign-out" type="button" role="menuitem" class="w-full text-left rounded-lg px-3 py-2 text-sm text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors">
                     Sign out
@@ -518,8 +522,49 @@ export function renderDashboard(container: HTMLElement): void {
       });
     });
 
-    container.querySelector('#btn-import-prompt')?.addEventListener('click', () => router.navigate('/import'));
-    container.querySelector('#btn-import-transcript')?.addEventListener('click', () => router.navigate('/import/transcript'));
+    let cachedLimits: SubscriptionLimits | null = null;
+    const loadLimits = async (): Promise<SubscriptionLimits> => {
+      if (!cachedLimits) cachedLimits = await getSubscriptionLimits();
+      return cachedLimits;
+    };
+
+    const importPromptBtn = container.querySelector<HTMLButtonElement>('#btn-import-prompt');
+    const importTranscriptBtn = container.querySelector<HTMLButtonElement>('#btn-import-transcript');
+
+    importPromptBtn?.addEventListener('click', () => {
+      void (async () => {
+        const limits = await loadLimits();
+        if (limits.isFreeTier && !limits.canUseImportPrompt) {
+          await customAlert('You have already used Import Prompt on the free tier. Upgrade to Pro for unlimited imports.');
+          return;
+        }
+        if (limits.isFreeTier && !limits.canCreatePromptFlow) {
+          await customAlert(`You've reached the limit of ${limits.promptFlowLimit} prompt flows on the free tier. Upgrade to Pro for unlimited flows.`);
+          return;
+        }
+        router.navigate('/import');
+      })();
+    });
+
+    importTranscriptBtn?.addEventListener('click', () => {
+      void (async () => {
+        const limits = await loadLimits();
+        if (limits.isFreeTier && !limits.canUseImportTranscript) {
+          await customAlert('You have already used Import Transcript on the free tier. Upgrade to Pro for unlimited imports.');
+          return;
+        }
+        if (limits.isFreeTier && !limits.canCreateTranscriptionFlow) {
+          await customAlert(`You've reached the limit of ${limits.transcriptionFlowLimit} transcript flows on the free tier. Upgrade to Pro for unlimited flows.`);
+          return;
+        }
+        if (limits.isFreeTier && !limits.canCreateTranscriptSet) {
+          await customAlert(`You've reached the limit of ${limits.transcriptSetLimit} transcript sets on the free tier. Upgrade to Pro for unlimited transcript sets.`);
+          return;
+        }
+        router.navigate('/import/transcript');
+      })();
+    });
+
     container.querySelector('#btn-new-project')?.addEventListener('click', openNewProjectModal);
     container.querySelector('#new-project-card')?.addEventListener('click', openPromptModal);
     container.querySelector('#new-transcript-flow-card')?.addEventListener('click', openTranscriptModal);
@@ -536,12 +581,28 @@ export function renderDashboard(container: HTMLElement): void {
             await customAlert('Select Prompt Flow or Transcript Flow first.');
             return;
           }
+
+          const limits = await loadLimits();
+          if (modalMode === 'prompt' && limits.isFreeTier && !limits.canCreatePromptFlow) {
+            await customAlert(`You've reached the limit of ${limits.promptFlowLimit} prompt flows on the free tier. Upgrade to Pro for unlimited flows.`);
+            return;
+          }
+          if (modalMode === 'transcript' && limits.isFreeTier && !limits.canCreateTranscriptionFlow) {
+            await customAlert(`You've reached the limit of ${limits.transcriptionFlowLimit} transcript flows on the free tier. Upgrade to Pro for unlimited flows.`);
+            return;
+          }
+          if (modalMode === 'transcript' && limits.isFreeTier && !limits.canCreateTranscriptSet) {
+            await customAlert(`You've reached the limit of ${limits.transcriptSetLimit} transcript sets on the free tier. Upgrade to Pro for unlimited transcript sets.`);
+            return;
+          }
+
           const name = (container.querySelector('#modal-name') as HTMLInputElement).value.trim();
           const desc = (container.querySelector('#modal-desc') as HTMLTextAreaElement).value.trim();
           const model = (container.querySelector('#modal-model') as HTMLSelectElement).value;
           const project = modalMode === 'transcript'
             ? await store.createTranscriptFlowProject(name || 'Untitled Transcript Flow', desc, model)
             : store.createProject(name || 'Untitled Blueprint', desc, model);
+          cachedLimits = null;
           closeModal();
           router.navigate(`/project/${project.id}`);
         } catch (err) {
@@ -600,7 +661,44 @@ export function renderDashboard(container: HTMLElement): void {
     wireThemeToggle(container);
     wireDashboardAccountInteractions(container);
     void hydrateDashboardAccount(container);
+
+    void (async () => {
+      try {
+        const limits = await loadLimits();
+        applyLimitBadges(container, limits);
+      } catch {
+        // Limits unavailable — leave buttons enabled
+      }
+    })();
   });
+}
+
+function applyLimitBadges(container: HTMLElement, limits: SubscriptionLimits): void {
+  if (!limits.isFreeTier) return;
+
+  const upgradeTag = '<span class="ml-1 text-[10px] font-semibold text-amber-600 dark:text-amber-400">(Upgrade)</span>';
+
+  const importPromptBtn = container.querySelector<HTMLButtonElement>('#btn-import-prompt');
+  if (importPromptBtn && (!limits.canUseImportPrompt || !limits.canCreatePromptFlow)) {
+    importPromptBtn.classList.add('opacity-60');
+    importPromptBtn.insertAdjacentHTML('beforeend', upgradeTag);
+  }
+
+  const importTranscriptBtn = container.querySelector<HTMLButtonElement>('#btn-import-transcript');
+  if (importTranscriptBtn && (!limits.canUseImportTranscript || !limits.canCreateTranscriptionFlow || !limits.canCreateTranscriptSet)) {
+    importTranscriptBtn.classList.add('opacity-60');
+    importTranscriptBtn.insertAdjacentHTML('beforeend', upgradeTag);
+  }
+
+  const promptFlowCountEl = container.querySelector('#prompt-flow-grid')?.previousElementSibling?.querySelector('span:last-child');
+  if (promptFlowCountEl) {
+    promptFlowCountEl.textContent = `${limits.promptFlowCount} / ${limits.promptFlowLimit} projects`;
+  }
+
+  const transcriptFlowCountEl = container.querySelector('#transcript-flow-grid')?.previousElementSibling?.querySelector('.flex > span:last-child');
+  if (transcriptFlowCountEl) {
+    transcriptFlowCountEl.textContent = `${limits.transcriptSetCount} / ${limits.transcriptSetLimit} transcript sets`;
+  }
 }
 
 function renderPromptFlowCard(project: Project): string {
@@ -936,6 +1034,12 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
   accountSettingsButton.addEventListener('click', () => {
     setMenuOpen(false);
     openAccountModal();
+  });
+
+  const billingButton = container.querySelector<HTMLButtonElement>('#btn-billing');
+  billingButton?.addEventListener('click', () => {
+    setMenuOpen(false);
+    router.navigate('/billing');
   });
 
   signOutButton.addEventListener('click', () => {
