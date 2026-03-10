@@ -2,10 +2,11 @@
  * Dashboard View — Project card grid (matches page1.html mockup)
  */
 import { store, type TranscriptFlowDraft } from '../store';
-import type { Project, PromptNode, Connection } from '../models';
+import type { Project, PromptNode, Connection, Folder } from '../models';
 import { router } from '../router';
 import {
   deleteCurrentUserAccount,
+  confirmCurrentPassword,
   getCurrentUser,
   getOnboardingProfile,
   sendPasswordResetEmail,
@@ -16,23 +17,15 @@ import {
 } from '../auth';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas } from './project-nav';
-import { customAlert, customConfirm } from '../dialogs';
+import { customAlert, customConfirm, customPrompt } from '../dialogs';
 import { preserveScrollDuringRender } from '../view-state';
+import { getSubscriptionLimits, type SubscriptionLimits } from '../subscription-limits';
+import { getSubscription } from '../billing';
 
 type DashboardLayout = 'grid' | 'list';
 const DASHBOARD_LAYOUT_KEY = 'promptblueprint_dashboard_layout';
-
-const ROLE_OPTIONS = ['Founder', 'Product Manager', 'Engineer', 'Designer', 'Marketer', 'Operations', 'Other'] as const;
-const HEARD_ABOUT_OPTIONS = [
-  'Search engine',
-  'Social media',
-  'Friend or colleague',
-  'Community',
-  'Newsletter',
-  'Event',
-  'Other',
-] as const;
-const TEAM_SIZE_OPTIONS = ['Solo', '2-5', '6-20', '21-100', '101+'] as const;
+const FOLDER_SIDEBAR_KEY = 'promptblueprint_folder_sidebar';
+const FOLDER_EXPANDED_KEY = 'promptblueprint_folder_expanded';
 
 interface DashboardAccountState {
   avatarUrl: string | null;
@@ -40,11 +33,8 @@ interface DashboardAccountState {
   initials: string;
   email: string;
   fullName: string;
-  role: string;
-  heardAbout: string;
-  primaryGoal: string;
-  primaryUseCase: string;
-  teamSize: string;
+  planLabel: string;
+  planDetail: string;
 }
 
 type MessageKind = 'success' | 'error';
@@ -52,8 +42,20 @@ type MessageKind = 'success' | 'error';
 export function renderDashboard(container: HTMLElement): void {
   preserveScrollDuringRender(container, () => {
     clearProjectEscapeToCanvas(container);
-    const promptProjects = store.getPromptFlowProjects();
-    const transcriptFlows = store.getTranscriptFlowDrafts();
+    const allFolders = store.getFolders();
+    const selectedFolderId = getSelectedFolderId();
+    const promptProjects = selectedFolderId === undefined
+      ? store.getPromptFlowProjects()
+      : store.getPromptFlowProjectsInFolder(selectedFolderId);
+    const transcriptFlows = selectedFolderId === undefined
+      ? store.getTranscriptFlowDrafts()
+      : store.getTranscriptFlowDraftsInFolder(selectedFolderId);
+    const sidebarCollapsed = localStorage.getItem(FOLDER_SIDEBAR_KEY) === 'collapsed';
+    const selectedLabel = selectedFolderId === undefined
+      ? 'All'
+      : selectedFolderId === null
+        ? 'Root (No Folder)'
+        : store.getFolder(selectedFolderId)?.name ?? 'Folder';
 
     container.innerHTML = `
       <!-- Top Navigation Bar -->
@@ -100,6 +102,9 @@ export function renderDashboard(container: HTMLElement): void {
                   <button id="btn-account-settings" type="button" role="menuitem" class="w-full text-left rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
                     Account settings
                   </button>
+                  <button id="btn-billing" type="button" role="menuitem" class="w-full text-left rounded-lg px-3 py-2 text-sm text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors">
+                    Billing
+                  </button>
                   <button id="btn-sign-out" type="button" role="menuitem" class="w-full text-left rounded-lg px-3 py-2 text-sm text-red-600 dark:text-red-300 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors">
                     Sign out
                   </button>
@@ -111,98 +116,143 @@ export function renderDashboard(container: HTMLElement): void {
       </div>
     </nav>
 
-    <main data-scroll-preserve="dashboard-main" class="flex-1 min-h-0 overflow-y-auto custom-scrollbar max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8">
-      <!-- Action Header -->
-      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
-        <div>
-          <h1 class="text-2xl font-bold text-slate-900 dark:text-white leading-tight">Project Dashboard</h1>
-          <p class="text-neutral-gray dark:text-neutral-gray/80 text-sm mt-1">Manage and orchestrate your node-based AI workflows.</p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2 sm:justify-end">
-          <div class="flex bg-white dark:bg-slate-800 border border-card-border dark:border-primary/20 rounded-lg p-1">
-            <button id="btn-grid-view" type="button" aria-label="Grid view" aria-pressed="true" class="p-1 rounded-md transition-colors bg-primary/10 text-primary inline-flex items-center justify-center">
-              <span class="material-icons-outlined text-[18px] leading-none">grid_view</span>
+    <div class="flex flex-1 min-h-0 max-w-7xl mx-auto w-full">
+      <!-- Folder Sidebar -->
+      <aside id="folder-sidebar" class="${sidebarCollapsed ? 'w-0 overflow-hidden' : 'w-56 min-w-[14rem]'} transition-all duration-200 border-r border-card-border dark:border-primary/10 bg-white/50 dark:bg-slate-900/30 flex-shrink-0 flex flex-col">
+        <div class="px-3 pt-4 pb-2 flex items-center justify-between gap-1">
+          <span class="text-[11px] font-semibold text-slate-500 dark:text-slate-400 uppercase tracking-wider">Folders</span>
+          <div class="flex items-center gap-0.5">
+            <button id="btn-new-folder" type="button" class="p-1 text-slate-400 hover:text-primary rounded transition-colors" title="New folder">
+              <span class="material-icons-outlined text-[16px]">create_new_folder</span>
             </button>
-            <button id="btn-list-view" type="button" aria-label="List view" aria-pressed="false" class="p-1 rounded-md transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 inline-flex items-center justify-center">
-              <span class="material-icons-outlined text-[18px] leading-none">view_list</span>
+            <button id="btn-collapse-sidebar" type="button" class="p-1 text-slate-400 hover:text-primary rounded transition-colors" title="Collapse sidebar">
+              <span class="material-icons-outlined text-[16px]">chevron_left</span>
             </button>
           </div>
-          <button id="btn-import-prompt" class="ui-btn ui-btn-outline !text-sm !py-2">
-            <span class="material-icons-outlined text-sm">file_upload</span>
-            <span>Import Prompt</span>
-          </button>
-          <button id="btn-import-transcript" class="ui-btn ui-btn-outline !text-sm !py-2">
-            <span class="material-icons-outlined text-sm">smart_toy</span>
-            <span>Import Transcript</span>
-          </button>
-          <button id="btn-new-project" class="ui-btn ui-btn-primary !text-sm !py-2">
-            <span class="material-icons-outlined text-sm">add</span>
-            <span>New Project</span>
-          </button>
         </div>
-      </div>
+        <nav class="flex-1 overflow-y-auto custom-scrollbar px-1.5 pb-4">
+          <button
+            data-folder-id="__all__"
+            class="folder-tree-item w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors ${selectedFolderId === undefined ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
+          >
+            <span class="material-icons-outlined text-[16px]">folder_special</span>
+            <span class="truncate">All Items</span>
+          </button>
+          <button
+            data-folder-id="__root__"
+            class="folder-tree-item w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors ${selectedFolderId === null ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
+          >
+            <span class="material-icons-outlined text-[16px]">snippet_folder</span>
+            <span class="truncate">Unfiled</span>
+          </button>
+          ${renderFolderTree(allFolders, null, 0, selectedFolderId)}
+        </nav>
+      </aside>
 
-      <section class="space-y-3">
-        <div class="flex items-center justify-between gap-3">
-          <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Prompt Flows</h2>
-          <span class="text-[11px] text-slate-400">${promptProjects.length} projects</span>
-        </div>
-        <div id="prompt-flow-grid" class="dashboard-project-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          ${promptProjects.map((project) => renderPromptFlowCard(project)).join('')}
+      <!-- Main Content -->
+      <main data-scroll-preserve="dashboard-main" class="flex-1 min-h-0 min-w-0 overflow-y-auto custom-scrollbar px-4 sm:px-6 lg:px-8 py-8">
+        <!-- Sidebar toggle when collapsed -->
+        ${sidebarCollapsed ? `
+          <button id="btn-expand-sidebar" type="button" class="mb-4 inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-slate-500 dark:text-slate-400 hover:text-primary border border-card-border dark:border-primary/20 rounded-lg transition-colors">
+            <span class="material-icons-outlined text-[16px]">folder</span>
+            <span>Show Folders</span>
+          </button>
+        ` : ''}
 
-          <div id="new-project-card" class="new-project-card group border-2 border-dashed border-card-border dark:border-primary/20 rounded-xl transition-all duration-200 cursor-pointer hover:border-primary/50 hover:bg-primary/5 flex flex-col items-center justify-center min-h-[280px]">
-            <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
-              <span class="material-icons-outlined text-2xl">add_circle_outline</span>
-            </div>
-            <div class="new-project-card-copy flex flex-col items-center">
-              <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Blueprint</span>
-              <span class="text-[11px] text-slate-400 mt-1">Start from a blank canvas</span>
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section class="space-y-3 mt-10">
-        <div class="flex items-center justify-between gap-3">
+        <!-- Action Header -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-8">
           <div>
-            <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Transcript Flows</h2>
-            <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Persistent transcript projects with a unified open path into Canvas.</p>
+            <h1 class="text-2xl font-bold text-slate-900 dark:text-white leading-tight">Project Dashboard</h1>
+            <p class="text-neutral-gray dark:text-neutral-gray/80 text-sm mt-1">
+              ${selectedFolderId === undefined ? 'Manage and orchestrate your node-based AI workflows.' : `Viewing: <strong>${escapeHtml(selectedLabel)}</strong>`}
+            </p>
           </div>
-          <span class="text-[11px] text-slate-400">${transcriptFlows.length} transcript sets</span>
+          <div class="flex flex-wrap items-center gap-2 sm:justify-end">
+            <div class="flex bg-white dark:bg-slate-800 border border-card-border dark:border-primary/20 rounded-lg p-1">
+              <button id="btn-grid-view" type="button" aria-label="Grid view" aria-pressed="true" class="p-1 rounded-md transition-colors bg-primary/10 text-primary inline-flex items-center justify-center">
+                <span class="material-icons-outlined text-[18px] leading-none">grid_view</span>
+              </button>
+              <button id="btn-list-view" type="button" aria-label="List view" aria-pressed="false" class="p-1 rounded-md transition-colors text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 inline-flex items-center justify-center">
+                <span class="material-icons-outlined text-[18px] leading-none">view_list</span>
+              </button>
+            </div>
+            <button id="btn-import-prompt" class="ui-btn ui-btn-outline !text-sm !py-2">
+              <span class="material-icons-outlined text-sm">file_upload</span>
+              <span>Import Prompt</span>
+            </button>
+            <button id="btn-import-transcript" class="ui-btn ui-btn-outline !text-sm !py-2">
+              <span class="material-icons-outlined text-sm">smart_toy</span>
+              <span>Import Transcript</span>
+            </button>
+            <button id="btn-new-project" class="ui-btn ui-btn-primary !text-sm !py-2">
+              <span class="material-icons-outlined text-sm">add</span>
+              <span>New Project</span>
+            </button>
+          </div>
         </div>
-        <div id="transcript-flow-grid" class="dashboard-project-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
-          ${transcriptFlows.map((flow) => renderTranscriptFlowCard(flow)).join('')}
 
-          <div id="new-transcript-flow-card" class="new-project-card group border-2 border-dashed border-card-border dark:border-primary/20 rounded-xl transition-all duration-200 cursor-pointer hover:border-primary/50 hover:bg-primary/5 flex flex-col items-center justify-center min-h-[280px]">
-            <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
-              <span class="material-icons-outlined text-2xl">add_circle_outline</span>
-            </div>
-            <div class="new-project-card-copy flex flex-col items-center">
-              <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Transcript Flow</span>
-              <span class="text-[11px] text-slate-400 mt-1">Start from a blank transcript flow</span>
-            </div>
+        <section class="space-y-3">
+          <div class="flex items-center justify-between gap-3">
+            <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Prompt Flows</h2>
+            <span class="text-[11px] text-slate-400">${promptProjects.length} projects</span>
           </div>
+          <div id="prompt-flow-grid" class="dashboard-project-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            ${promptProjects.map((project) => renderPromptFlowCard(project, allFolders)).join('')}
 
-          ${transcriptFlows.length === 0
-        ? `
-              <div class="col-span-full rounded-xl border border-dashed border-card-border dark:border-primary/20 bg-white/70 dark:bg-slate-900/50 px-5 py-6 text-sm text-slate-500 dark:text-slate-300">
-                No transcript flows yet. Use <strong>Import Transcript</strong> to auto-generate one.
+            <div id="new-project-card" class="new-project-card group border-2 border-dashed border-card-border dark:border-primary/20 rounded-xl transition-all duration-200 cursor-pointer hover:border-primary/50 hover:bg-primary/5 flex flex-col items-center justify-center min-h-[280px]">
+              <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
+                <span class="material-icons-outlined text-2xl">add_circle_outline</span>
               </div>
-            `
-        : ''}
-        </div>
-      </section>
+              <div class="new-project-card-copy flex flex-col items-center">
+                <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Blueprint</span>
+                <span class="text-[11px] text-slate-400 mt-1">Start from a blank canvas</span>
+              </div>
+            </div>
+          </div>
+        </section>
 
-      <!-- Footer -->
-      <footer class="mt-16 pt-8 border-t border-card-border dark:border-primary/10 flex flex-col md:flex-row justify-between items-center text-[12px] text-slate-400 gap-4">
-        <div class="flex items-center gap-6">
-          <a class="hover:text-primary transition-colors" href="#">Documentation</a>
-          <a class="hover:text-primary transition-colors" href="#">Templates</a>
-          <a class="hover:text-primary transition-colors" href="#">API Keys</a>
-        </div>
-        <p>&copy; 2026 PromptBlueprint. All rights reserved.</p>
-      </footer>
-    </main>
+        <section class="space-y-3 mt-10">
+          <div class="flex items-center justify-between gap-3">
+            <div>
+              <h2 class="text-sm font-semibold text-slate-800 dark:text-slate-100 uppercase tracking-wide">Transcript Flows</h2>
+              <p class="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">Persistent transcript projects with a unified open path into Canvas.</p>
+            </div>
+            <span class="text-[11px] text-slate-400">${transcriptFlows.length} transcript sets</span>
+          </div>
+          <div id="transcript-flow-grid" class="dashboard-project-grid grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+            ${transcriptFlows.map((flow) => renderTranscriptFlowCard(flow, allFolders)).join('')}
+
+            <div id="new-transcript-flow-card" class="new-project-card group border-2 border-dashed border-card-border dark:border-primary/20 rounded-xl transition-all duration-200 cursor-pointer hover:border-primary/50 hover:bg-primary/5 flex flex-col items-center justify-center min-h-[280px]">
+              <div class="w-12 h-12 bg-slate-100 dark:bg-slate-800 group-hover:bg-primary group-hover:text-white rounded-full flex items-center justify-center text-slate-400 transition-colors mb-3">
+                <span class="material-icons-outlined text-2xl">add_circle_outline</span>
+              </div>
+              <div class="new-project-card-copy flex flex-col items-center">
+                <span class="text-sm font-medium text-slate-600 dark:text-slate-300 group-hover:text-primary">Create New Transcript Flow</span>
+                <span class="text-[11px] text-slate-400 mt-1">Start from a blank transcript flow</span>
+              </div>
+            </div>
+
+            ${transcriptFlows.length === 0
+          ? `
+                <div class="col-span-full rounded-xl border border-dashed border-card-border dark:border-primary/20 bg-white/70 dark:bg-slate-900/50 px-5 py-6 text-sm text-slate-500 dark:text-slate-300">
+                  No transcript flows yet. Use <strong>Import Transcript</strong> to auto-generate one.
+                </div>
+              `
+          : ''}
+          </div>
+        </section>
+
+        <!-- Footer -->
+        <footer class="mt-16 pt-8 border-t border-card-border dark:border-primary/10 flex flex-col md:flex-row justify-between items-center text-[12px] text-slate-400 gap-4">
+          <div class="flex items-center gap-6">
+            <a class="hover:text-primary transition-colors" href="#">Documentation</a>
+            <a class="hover:text-primary transition-colors" href="#">Templates</a>
+            <a class="hover:text-primary transition-colors" href="#">API Keys</a>
+          </div>
+          <p>&copy; 2026 PromptBlueprint. All rights reserved.</p>
+        </footer>
+      </main>
+    </div>
 
     <!-- New Project Modal -->
     <div id="new-project-modal" class="fixed inset-0 z-[999] hidden items-center justify-center bg-black/40 backdrop-blur-sm">
@@ -259,6 +309,13 @@ export function renderDashboard(container: HTMLElement): void {
                 <option>Llama 3</option>
               </select>
             </div>
+            <div>
+              <label class="block text-xs font-medium text-slate-500 mb-1">Folder (optional)</label>
+              <select id="modal-folder" class="w-full border border-card-border dark:border-primary/20 rounded-lg px-3 py-2 text-sm bg-background-light dark:bg-background-dark focus:ring-1 focus:ring-primary outline-none">
+                <option value="">No folder</option>
+                ${renderFolderSelectOptions(allFolders, null, 0)}
+              </select>
+            </div>
           </div>
         </div>
         <div class="flex justify-end gap-3 mt-6">
@@ -282,7 +339,7 @@ export function renderDashboard(container: HTMLElement): void {
 
         <p id="account-message" class="hidden mb-4 rounded-lg border px-3 py-2 text-xs"></p>
 
-        <form id="account-settings-form" class="space-y-4">
+        <form id="account-settings-form" class="space-y-4" autocomplete="off">
           <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div class="sm:col-span-2">
               <label for="account-email" class="block text-xs font-medium text-slate-500 mb-1">Email</label>
@@ -292,31 +349,20 @@ export function renderDashboard(container: HTMLElement): void {
               <label for="account-full-name" class="block text-xs font-medium text-slate-500 mb-1">Full name</label>
               <input id="account-full-name" type="text" required class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
             </div>
-            <div>
-              <label for="account-role" class="block text-xs font-medium text-slate-500 mb-1">Role</label>
-              <select id="account-role" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                ${renderSelectOptions(ROLE_OPTIONS)}
-              </select>
-            </div>
-            <div>
-              <label for="account-team-size" class="block text-xs font-medium text-slate-500 mb-1">Team size</label>
-              <select id="account-team-size" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                ${renderSelectOptions(TEAM_SIZE_OPTIONS)}
-              </select>
-            </div>
-            <div class="sm:col-span-2">
-              <label for="account-heard-about" class="block text-xs font-medium text-slate-500 mb-1">How did you hear about Spoqen?</label>
-              <select id="account-heard-about" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary">
-                ${renderSelectOptions(HEARD_ABOUT_OPTIONS)}
-              </select>
-            </div>
-            <div class="sm:col-span-2">
-              <label for="account-goal" class="block text-xs font-medium text-slate-500 mb-1">Primary goal</label>
-              <textarea id="account-goal" rows="3" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"></textarea>
-            </div>
-            <div class="sm:col-span-2">
-              <label for="account-use-case" class="block text-xs font-medium text-slate-500 mb-1">Primary use case</label>
-              <textarea id="account-use-case" rows="3" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"></textarea>
+          </div>
+
+          <div class="pt-3 border-t border-card-border dark:border-primary/10">
+            <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-100">Current plan</h3>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">Your current access level and billing status.</p>
+            <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div class="rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2">
+                <div class="text-[11px] text-slate-500 dark:text-slate-400">Plan</div>
+                <div id="account-plan-label" class="text-sm font-semibold text-slate-800 dark:text-slate-100">—</div>
+              </div>
+              <div class="rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2">
+                <div class="text-[11px] text-slate-500 dark:text-slate-400">Details</div>
+                <div id="account-plan-detail" class="text-sm text-slate-700 dark:text-slate-200">—</div>
+              </div>
             </div>
           </div>
 
@@ -326,11 +372,11 @@ export function renderDashboard(container: HTMLElement): void {
             <div class="mt-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
                 <label for="account-new-password" class="block text-xs font-medium text-slate-500 mb-1">New password</label>
-                <input id="account-new-password" type="password" minlength="8" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                <input id="account-new-password" name="new-password" type="password" minlength="8" autocomplete="new-password" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
               </div>
               <div>
                 <label for="account-confirm-password" class="block text-xs font-medium text-slate-500 mb-1">Confirm password</label>
-                <input id="account-confirm-password" type="password" minlength="8" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
+                <input id="account-confirm-password" name="confirm-password" type="password" minlength="8" autocomplete="new-password" class="w-full rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary" />
               </div>
             </div>
             <div class="mt-3 flex flex-wrap gap-2">
@@ -343,7 +389,7 @@ export function renderDashboard(container: HTMLElement): void {
             <h3 class="text-sm font-semibold text-red-600 dark:text-red-300">Danger zone</h3>
             <p class="text-xs text-slate-500 dark:text-slate-400 mt-1">This permanently deletes your account and all projects.</p>
             <div class="mt-3 flex flex-col sm:flex-row gap-3 sm:items-center">
-              <input id="account-delete-confirm" type="text" placeholder="Type DELETE to confirm" class="w-full sm:w-64 rounded-lg border border-red-200 dark:border-red-900/40 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-red-400" />
+              <input id="account-delete-password" name="current-password" type="password" autocomplete="current-password" placeholder="Enter current password to confirm" class="w-full sm:w-64 rounded-lg border border-red-200 dark:border-red-900/40 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-red-400" />
               <button id="account-delete-button" type="button" class="rounded-lg bg-red-600 text-white px-3 py-2 text-xs font-semibold hover:bg-red-700 transition-colors">Delete account</button>
             </div>
           </div>
@@ -366,7 +412,7 @@ export function renderDashboard(container: HTMLElement): void {
     // Click on project card → open canvas
     container.querySelectorAll<HTMLElement>('.prompt-project-card').forEach((card) => {
       card.addEventListener('click', (event) => {
-        if ((event.target as HTMLElement).closest('.delete-project')) return;
+        if ((event.target as HTMLElement).closest('.delete-project,.move-to-folder-select')) return;
         const projectId = card.dataset.projectId;
         if (projectId) router.navigate(`/project/${projectId}`);
       });
@@ -391,7 +437,7 @@ export function renderDashboard(container: HTMLElement): void {
 
     container.querySelectorAll<HTMLElement>('.transcript-project-card').forEach((card) => {
       card.addEventListener('click', (event) => {
-        if ((event.target as HTMLElement).closest('.delete-transcript-flow,.open-transcript-entry')) return;
+        if ((event.target as HTMLElement).closest('.delete-transcript-flow,.open-transcript-entry,.move-to-folder-select')) return;
         const transcriptSetId = card.dataset.transcriptSetId;
         if (!transcriptSetId) return;
         void openTranscriptEntry(transcriptSetId, card.dataset.projectId ?? null);
@@ -518,8 +564,49 @@ export function renderDashboard(container: HTMLElement): void {
       });
     });
 
-    container.querySelector('#btn-import-prompt')?.addEventListener('click', () => router.navigate('/import'));
-    container.querySelector('#btn-import-transcript')?.addEventListener('click', () => router.navigate('/import/transcript'));
+    let cachedLimits: SubscriptionLimits | null = null;
+    const loadLimits = async (): Promise<SubscriptionLimits> => {
+      if (!cachedLimits) cachedLimits = await getSubscriptionLimits();
+      return cachedLimits;
+    };
+
+    const importPromptBtn = container.querySelector<HTMLButtonElement>('#btn-import-prompt');
+    const importTranscriptBtn = container.querySelector<HTMLButtonElement>('#btn-import-transcript');
+
+    importPromptBtn?.addEventListener('click', () => {
+      void (async () => {
+        const limits = await loadLimits();
+        if (limits.isFreeTier && !limits.canUseImportPrompt) {
+          await customAlert('You have already used Import Prompt on the free tier. Upgrade to Pro for unlimited imports.');
+          return;
+        }
+        if (limits.isFreeTier && !limits.canCreatePromptFlow) {
+          await customAlert(`You've reached the limit of ${limits.promptFlowLimit} prompt flows on the free tier. Upgrade to Pro for unlimited flows.`);
+          return;
+        }
+        router.navigate('/import');
+      })();
+    });
+
+    importTranscriptBtn?.addEventListener('click', () => {
+      void (async () => {
+        const limits = await loadLimits();
+        if (limits.isFreeTier && !limits.canUseImportTranscript) {
+          await customAlert('You have already used Import Transcript on the free tier. Upgrade to Pro for unlimited imports.');
+          return;
+        }
+        if (limits.isFreeTier && !limits.canCreateTranscriptionFlow) {
+          await customAlert(`You've reached the limit of ${limits.transcriptionFlowLimit} transcript flows on the free tier. Upgrade to Pro for unlimited flows.`);
+          return;
+        }
+        if (limits.isFreeTier && !limits.canCreateTranscriptSet) {
+          await customAlert(`You've reached the limit of ${limits.transcriptSetLimit} transcript sets on the free tier. Upgrade to Pro for unlimited transcript sets.`);
+          return;
+        }
+        router.navigate('/import/transcript');
+      })();
+    });
+
     container.querySelector('#btn-new-project')?.addEventListener('click', openNewProjectModal);
     container.querySelector('#new-project-card')?.addEventListener('click', openPromptModal);
     container.querySelector('#new-transcript-flow-card')?.addEventListener('click', openTranscriptModal);
@@ -536,12 +623,30 @@ export function renderDashboard(container: HTMLElement): void {
             await customAlert('Select Prompt Flow or Transcript Flow first.');
             return;
           }
+
+          const limits = await loadLimits();
+          if (modalMode === 'prompt' && limits.isFreeTier && !limits.canCreatePromptFlow) {
+            await customAlert(`You've reached the limit of ${limits.promptFlowLimit} prompt flows on the free tier. Upgrade to Pro for unlimited flows.`);
+            return;
+          }
+          if (modalMode === 'transcript' && limits.isFreeTier && !limits.canCreateTranscriptionFlow) {
+            await customAlert(`You've reached the limit of ${limits.transcriptionFlowLimit} transcript flows on the free tier. Upgrade to Pro for unlimited flows.`);
+            return;
+          }
+          if (modalMode === 'transcript' && limits.isFreeTier && !limits.canCreateTranscriptSet) {
+            await customAlert(`You've reached the limit of ${limits.transcriptSetLimit} transcript sets on the free tier. Upgrade to Pro for unlimited transcript sets.`);
+            return;
+          }
+
           const name = (container.querySelector('#modal-name') as HTMLInputElement).value.trim();
           const desc = (container.querySelector('#modal-desc') as HTMLTextAreaElement).value.trim();
           const model = (container.querySelector('#modal-model') as HTMLSelectElement).value;
+          const folderSelect = container.querySelector<HTMLSelectElement>('#modal-folder');
+          const folderId = folderSelect?.value || null;
           const project = modalMode === 'transcript'
-            ? await store.createTranscriptFlowProject(name || 'Untitled Transcript Flow', desc, model)
-            : store.createProject(name || 'Untitled Blueprint', desc, model);
+            ? await store.createTranscriptFlowProject(name || 'Untitled Transcript Flow', desc, model, folderId)
+            : store.createProject(name || 'Untitled Blueprint', desc, model, folderId);
+          cachedLimits = null;
           closeModal();
           router.navigate(`/project/${project.id}`);
         } catch (err) {
@@ -551,6 +656,115 @@ export function renderDashboard(container: HTMLElement): void {
           if (createButton) createButton.disabled = false;
         }
       })();
+    });
+
+    // Folder sidebar events
+    container.querySelectorAll<HTMLButtonElement>('.folder-tree-item').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const rawId = btn.dataset.folderId ?? '';
+        if (rawId === '__all__') {
+          setSelectedFolderId(undefined);
+        } else if (rawId === '__root__') {
+          setSelectedFolderId(null);
+        } else {
+          setSelectedFolderId(rawId);
+        }
+        renderDashboard(container);
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.folder-tree-toggle').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const folderId = btn.dataset.folderId;
+        if (folderId) toggleFolderExpanded(folderId);
+        renderDashboard(container);
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.folder-rename').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const folderId = btn.dataset.folderId;
+        if (!folderId) return;
+        const folder = store.getFolder(folderId);
+        void (async () => {
+          const newName = await customPrompt('Rename folder:', folder?.name ?? '');
+          if (newName !== null && newName.trim()) {
+            store.renameFolder(folderId, newName.trim());
+            renderDashboard(container);
+          }
+        })();
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.folder-delete').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const folderId = btn.dataset.folderId;
+        if (!folderId) return;
+        void (async () => {
+          if (await customConfirm('Delete this folder? Items inside will be moved to root.')) {
+            store.deleteFolder(folderId);
+            if (getSelectedFolderId() === folderId) setSelectedFolderId(undefined);
+            renderDashboard(container);
+          }
+        })();
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.folder-add-child').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const parentId = btn.dataset.folderId ?? null;
+        void (async () => {
+          const name = await customPrompt('New folder name:');
+          if (name !== null && name.trim()) {
+            store.createFolder(name.trim(), parentId);
+            if (parentId) setFolderExpanded(parentId, true);
+            renderDashboard(container);
+          }
+        })();
+      });
+    });
+
+    container.querySelector('#btn-new-folder')?.addEventListener('click', () => {
+      const activeFolder = getSelectedFolderId();
+      const parentId = activeFolder === undefined ? null : activeFolder;
+      void (async () => {
+        const name = await customPrompt('New folder name:');
+        if (name !== null && name.trim()) {
+          store.createFolder(name.trim(), parentId);
+          if (parentId) setFolderExpanded(parentId, true);
+          renderDashboard(container);
+        }
+      })();
+    });
+
+    container.querySelector('#btn-collapse-sidebar')?.addEventListener('click', () => {
+      localStorage.setItem(FOLDER_SIDEBAR_KEY, 'collapsed');
+      renderDashboard(container);
+    });
+
+    container.querySelector('#btn-expand-sidebar')?.addEventListener('click', () => {
+      localStorage.removeItem(FOLDER_SIDEBAR_KEY);
+      renderDashboard(container);
+    });
+
+    // Move-to-folder dropdown events
+    container.querySelectorAll<HTMLSelectElement>('.move-to-folder-select').forEach((select) => {
+      select.addEventListener('change', (e) => {
+        e.stopPropagation();
+        const projectId = select.dataset.projectId;
+        const transcriptSetId = select.dataset.transcriptSetId;
+        const targetFolderId = select.value || null;
+        if (projectId) {
+          store.moveProjectToFolder(projectId, targetFolderId);
+        } else if (transcriptSetId) {
+          store.moveTranscriptSetToFolder(transcriptSetId, targetFolderId);
+        }
+        renderDashboard(container);
+      });
     });
 
     // Dashboard layout toggle (grid/list)
@@ -600,11 +814,49 @@ export function renderDashboard(container: HTMLElement): void {
     wireThemeToggle(container);
     wireDashboardAccountInteractions(container);
     void hydrateDashboardAccount(container);
+
+    void (async () => {
+      try {
+        const limits = await loadLimits();
+        applyLimitBadges(container, limits);
+      } catch {
+        // Limits unavailable — leave buttons enabled
+      }
+    })();
   });
 }
 
-function renderPromptFlowCard(project: Project): string {
+function applyLimitBadges(container: HTMLElement, limits: SubscriptionLimits): void {
+  if (!limits.isFreeTier) return;
+
+  const upgradeTag = '<span class="ml-1 text-[10px] font-semibold text-amber-600 dark:text-amber-400">(Upgrade)</span>';
+
+  const importPromptBtn = container.querySelector<HTMLButtonElement>('#btn-import-prompt');
+  if (importPromptBtn && (!limits.canUseImportPrompt || !limits.canCreatePromptFlow)) {
+    importPromptBtn.classList.add('opacity-60');
+    importPromptBtn.insertAdjacentHTML('beforeend', upgradeTag);
+  }
+
+  const importTranscriptBtn = container.querySelector<HTMLButtonElement>('#btn-import-transcript');
+  if (importTranscriptBtn && (!limits.canUseImportTranscript || !limits.canCreateTranscriptionFlow || !limits.canCreateTranscriptSet)) {
+    importTranscriptBtn.classList.add('opacity-60');
+    importTranscriptBtn.insertAdjacentHTML('beforeend', upgradeTag);
+  }
+
+  const promptFlowCountEl = container.querySelector('#prompt-flow-grid')?.previousElementSibling?.querySelector('span:last-child');
+  if (promptFlowCountEl) {
+    promptFlowCountEl.textContent = `${limits.promptFlowCount} / ${limits.promptFlowLimit} projects`;
+  }
+
+  const transcriptFlowCountEl = container.querySelector('#transcript-flow-grid')?.previousElementSibling?.querySelector('.flex > span:last-child');
+  if (transcriptFlowCountEl) {
+    transcriptFlowCountEl.textContent = `${limits.transcriptSetCount} / ${limits.transcriptSetLimit} transcript sets`;
+  }
+}
+
+function renderPromptFlowCard(project: Project, folders: Folder[]): string {
   const thumbnailHtml = generateGraphThumbnailSVG(project.nodes, project.connections, project.icon);
+  const folderName = project.folderId ? store.getFolder(project.folderId)?.name : null;
 
   return `
     <div class="dashboard-search-card prompt-project-card project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden flex flex-col" data-project-id="${escapeHtml(project.id)}">
@@ -628,13 +880,24 @@ function renderPromptFlowCard(project: Project): string {
               ${escapeHtml(project.lastEdited)}
             </span>
           </div>
+          <div class="flex items-center justify-between gap-2">
+            ${folderName ? `<span class="text-[10px] text-slate-400 flex items-center gap-1 truncate"><span class="material-icons-outlined text-[12px]">folder</span>${escapeHtml(folderName)}</span>` : '<span></span>'}
+            <select
+              class="move-to-folder-select text-[10px] text-slate-400 bg-transparent border border-card-border dark:border-primary/20 rounded px-1 py-0.5 cursor-pointer focus:ring-1 focus:ring-primary outline-none"
+              data-project-id="${escapeHtml(project.id)}"
+              title="Move to folder"
+            >
+              <option value="" ${!project.folderId ? 'selected' : ''}>No folder</option>
+              ${renderFolderSelectOptions(folders, project.folderId, 0)}
+            </select>
+          </div>
         </div>
       </div>
     </div>
   `;
 }
 
-function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
+function renderTranscriptFlowCard(flow: TranscriptFlowDraft, folders: Folder[]): string {
   const linkedProject = flow.projectId ? store.getProject(flow.projectId) ?? null : null;
   const linkedProjectId = linkedProject?.id ?? null;
   const latestFlow = flow.latestFlow;
@@ -644,8 +907,8 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
   const nodeCount = linkedProject?.nodes.length ?? latestFlow?.nodeCount ?? 0;
   const connectionCount = linkedProject?.connections.length ?? latestFlow?.connectionCount ?? 0;
   const updatedAt = linkedProject?.lastEdited || latestFlow?.createdAt || flow.updatedAt;
+  const folderName = flow.folderId ? store.getFolder(flow.folderId)?.name : null;
 
-  // If linked Project exists, use its nodes to render thumbnail, else fallback to latestFlow JSON or smart_toy icon.
   const thumbnailHtml = generateGraphThumbnailSVG(linkedProject?.nodes, linkedProject?.connections, 'smart_toy');
 
   return `
@@ -683,6 +946,17 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft): string {
                 Open
               </button>
             </div>
+          </div>
+          <div class="flex items-center justify-between gap-2">
+            ${folderName ? `<span class="text-[10px] text-slate-400 flex items-center gap-1 truncate"><span class="material-icons-outlined text-[12px]">folder</span>${escapeHtml(folderName)}</span>` : '<span></span>'}
+            <select
+              class="move-to-folder-select text-[10px] text-slate-400 bg-transparent border border-card-border dark:border-primary/20 rounded px-1 py-0.5 cursor-pointer focus:ring-1 focus:ring-primary outline-none"
+              data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}"
+              title="Move to folder"
+            >
+              <option value="" ${!flow.folderId ? 'selected' : ''}>No folder</option>
+              ${renderFolderSelectOptions(folders, flow.folderId, 0)}
+            </select>
           </div>
         </div>
       </div>
@@ -764,6 +1038,125 @@ function generateGraphThumbnailSVG(
   `;
 }
 
+/* Folder state helpers */
+
+const SELECTED_FOLDER_KEY = 'promptblueprint_selected_folder';
+
+function getSelectedFolderId(): string | null | undefined {
+  const stored = sessionStorage.getItem(SELECTED_FOLDER_KEY);
+  if (stored === null) return undefined;
+  if (stored === '__root__') return null;
+  return stored;
+}
+
+function setSelectedFolderId(value: string | null | undefined): void {
+  if (value === undefined) {
+    sessionStorage.removeItem(SELECTED_FOLDER_KEY);
+  } else if (value === null) {
+    sessionStorage.setItem(SELECTED_FOLDER_KEY, '__root__');
+  } else {
+    sessionStorage.setItem(SELECTED_FOLDER_KEY, value);
+  }
+}
+
+function getExpandedFolderIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(FOLDER_EXPANDED_KEY);
+    return raw ? new Set(JSON.parse(raw) as string[]) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function setFolderExpanded(id: string, expanded: boolean): void {
+  const set = getExpandedFolderIds();
+  if (expanded) set.add(id); else set.delete(id);
+  localStorage.setItem(FOLDER_EXPANDED_KEY, JSON.stringify([...set]));
+}
+
+function toggleFolderExpanded(id: string): void {
+  const set = getExpandedFolderIds();
+  if (set.has(id)) set.delete(id); else set.add(id);
+  localStorage.setItem(FOLDER_EXPANDED_KEY, JSON.stringify([...set]));
+}
+
+function buildFolderChildren(folders: Folder[]): Map<string | null, Folder[]> {
+  const map = new Map<string | null, Folder[]>();
+  for (const f of folders) {
+    const key = f.parentId;
+    const list = map.get(key);
+    if (list) list.push(f);
+    else map.set(key, [f]);
+  }
+  return map;
+}
+
+function renderFolderTree(
+  folders: Folder[],
+  parentId: string | null,
+  depth: number,
+  selectedFolderId: string | null | undefined,
+): string {
+  const childrenMap = buildFolderChildren(folders);
+  const expanded = getExpandedFolderIds();
+
+  function renderLevel(parentKey: string | null, level: number): string {
+    const children = childrenMap.get(parentKey) ?? [];
+    if (children.length === 0) return '';
+
+    return children.map((folder) => {
+      const hasChildren = (childrenMap.get(folder.id) ?? []).length > 0;
+      const isExpanded = expanded.has(folder.id);
+      const isSelected = selectedFolderId === folder.id;
+      const indent = level * 12;
+      const chevron = hasChildren
+        ? `<button class="folder-tree-toggle p-0.5 text-slate-400 hover:text-primary rounded transition-colors" data-folder-id="${escapeHtml(folder.id)}"><span class="material-icons-outlined text-[14px]">${isExpanded ? 'expand_more' : 'chevron_right'}</span></button>`
+        : '<span class="w-5"></span>';
+
+      return `
+        <div class="flex items-center group/folder" style="padding-left:${indent}px">
+          ${chevron}
+          <button
+            data-folder-id="${escapeHtml(folder.id)}"
+            class="folder-tree-item flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-sm transition-colors truncate ${isSelected ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
+          >
+            <span class="material-icons-outlined text-[16px]">${isExpanded ? 'folder_open' : 'folder'}</span>
+            <span class="truncate">${escapeHtml(folder.name)}</span>
+          </button>
+          <div class="hidden group-hover/folder:flex items-center gap-0.5 shrink-0 pr-1">
+            <button class="folder-add-child p-0.5 text-slate-400 hover:text-primary rounded" data-folder-id="${escapeHtml(folder.id)}" title="Add subfolder"><span class="material-icons-outlined text-[14px]">create_new_folder</span></button>
+            <button class="folder-rename p-0.5 text-slate-400 hover:text-primary rounded" data-folder-id="${escapeHtml(folder.id)}" title="Rename"><span class="material-icons-outlined text-[14px]">edit</span></button>
+            <button class="folder-delete p-0.5 text-slate-400 hover:text-red-500 rounded" data-folder-id="${escapeHtml(folder.id)}" title="Delete"><span class="material-icons-outlined text-[14px]">delete_outline</span></button>
+          </div>
+        </div>
+        ${isExpanded ? renderLevel(folder.id, level + 1) : ''}
+      `;
+    }).join('');
+  }
+
+  return renderLevel(parentId, depth);
+}
+
+function renderFolderSelectOptions(
+  folders: Folder[],
+  currentFolderId: string | null,
+  depth: number,
+): string {
+  const childrenMap = buildFolderChildren(folders);
+
+  function renderLevel(parentKey: string | null, level: number): string {
+    const children = childrenMap.get(parentKey) ?? [];
+    return children.map((folder) => {
+      const prefix = '\u00A0\u00A0'.repeat(level);
+      const selected = folder.id === currentFolderId ? 'selected' : '';
+      return `<option value="${escapeHtml(folder.id)}" ${selected}>${prefix}${escapeHtml(folder.name)}</option>`
+        + renderLevel(folder.id, level + 1);
+    }).join('');
+  }
+
+  return renderLevel(null, depth);
+}
+
 function formatDashboardTimestamp(value: string): string {
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
@@ -785,11 +1178,8 @@ async function resolveDashboardAccount(): Promise<DashboardAccountState> {
       initials: 'U',
       email: '',
       fullName: '',
-      role: '',
-      heardAbout: '',
-      primaryGoal: '',
-      primaryUseCase: '',
-      teamSize: '',
+      planLabel: '—',
+      planDetail: '—',
     };
   }
 
@@ -797,25 +1187,22 @@ async function resolveDashboardAccount(): Promise<DashboardAccountState> {
   const metadataName = getRecordString(metadata, 'full_name');
   const metadataAvatar = getRecordString(metadata, 'avatar_url') ?? getRecordString(metadata, 'picture');
 
-  let profile = null;
-  try {
-    profile = await getOnboardingProfile(user.id);
-  } catch {
-    profile = null;
-  }
+  const [profile, limits, subscription] = await Promise.all([
+    getOnboardingProfile(user.id).catch(() => null),
+    getSubscriptionLimits().catch(() => null),
+    getSubscription().catch(() => null),
+  ]);
 
   const displayName = profile?.full_name || metadataName || user.email || 'User';
+  const plan = describeAccountPlan(limits, subscription);
   return {
     avatarUrl: metadataAvatar,
     displayName,
     initials: computeInitials(displayName),
     email: user.email ?? '',
     fullName: profile?.full_name ?? metadataName ?? '',
-    role: profile?.role ?? '',
-    heardAbout: profile?.heard_about ?? '',
-    primaryGoal: profile?.primary_goal ?? '',
-    primaryUseCase: profile?.primary_use_case ?? '',
-    teamSize: profile?.team_size ?? '',
+    planLabel: plan.label,
+    planDetail: plan.detail,
   };
 }
 
@@ -881,7 +1268,7 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
   const updatePasswordButton = container.querySelector<HTMLButtonElement>('#account-update-password');
   const sendResetButton = container.querySelector<HTMLButtonElement>('#account-send-reset-email');
   const deleteAccountButton = container.querySelector<HTMLButtonElement>('#account-delete-button');
-  const deleteConfirmInput = container.querySelector<HTMLInputElement>('#account-delete-confirm');
+  const deletePasswordInput = container.querySelector<HTMLInputElement>('#account-delete-password');
 
   if (
     !accountRoot ||
@@ -897,7 +1284,7 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
     !updatePasswordButton ||
     !sendResetButton ||
     !deleteAccountButton ||
-    !deleteConfirmInput
+    !deletePasswordInput
   ) {
     return;
   }
@@ -936,6 +1323,12 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
   accountSettingsButton.addEventListener('click', () => {
     setMenuOpen(false);
     openAccountModal();
+  });
+
+  const billingButton = container.querySelector<HTMLButtonElement>('#btn-billing');
+  billingButton?.addEventListener('click', () => {
+    setMenuOpen(false);
+    router.navigate('/billing');
   });
 
   signOutButton.addEventListener('click', () => {
@@ -1068,10 +1461,11 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
 
   deleteAccountButton.addEventListener('click', () => {
     void (async () => {
-      if (deleteConfirmInput.value.trim().toUpperCase() !== 'DELETE') {
+      const currentPassword = deletePasswordInput.value.trim();
+      if (!currentPassword) {
         setAccountMessage(container, {
           kind: 'error',
-          text: 'Type DELETE to confirm account deletion.',
+          text: 'Enter your current password to confirm account deletion.',
         });
         return;
       }
@@ -1083,6 +1477,8 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
       deleteAccountButton.disabled = true;
       setAccountMessage(container, null);
       try {
+        const email = getFieldValue(container, '#account-email');
+        await confirmCurrentPassword(email, currentPassword);
         await deleteCurrentUserAccount();
         router.navigate('/auth/sign-in');
       } catch (err) {
@@ -1101,12 +1497,9 @@ function wireDashboardAccountInteractions(container: HTMLElement): void {
 function fillAccountForm(container: HTMLElement, account: DashboardAccountState): void {
   setFormValue(container, '#account-email', account.email);
   setFormValue(container, '#account-full-name', account.fullName || account.displayName);
-  setFormValue(container, '#account-role', account.role || ROLE_OPTIONS[0]);
-  setFormValue(container, '#account-team-size', account.teamSize || TEAM_SIZE_OPTIONS[0]);
-  setFormValue(container, '#account-heard-about', account.heardAbout || HEARD_ABOUT_OPTIONS[0]);
-  setFormValue(container, '#account-goal', account.primaryGoal);
-  setFormValue(container, '#account-use-case', account.primaryUseCase);
-  setFormValue(container, '#account-delete-confirm', '');
+  setFormValue(container, '#account-plan-label', account.planLabel);
+  setFormValue(container, '#account-plan-detail', account.planDetail);
+  setFormValue(container, '#account-delete-password', '');
 }
 
 function readAccountProfileInput(container: HTMLElement): AccountProfileInput {
@@ -1117,11 +1510,6 @@ function readAccountProfileInput(container: HTMLElement): AccountProfileInput {
 
   return {
     fullName,
-    role: getFieldValue(container, '#account-role'),
-    heardAbout: getFieldValue(container, '#account-heard-about'),
-    primaryGoal: getFieldValue(container, '#account-goal'),
-    primaryUseCase: getFieldValue(container, '#account-use-case'),
-    teamSize: getFieldValue(container, '#account-team-size'),
   };
 }
 
@@ -1154,6 +1542,27 @@ function setAccountMessage(container: HTMLElement, message: { kind: MessageKind;
 
 function renderSelectOptions(options: readonly string[]): string {
   return options.map(option => `< option value = "${option}" > ${option} </option>`).join('');
+}
+
+function describeAccountPlan(
+  limits: SubscriptionLimits | null,
+  subscription: Awaited<ReturnType<typeof getSubscription>> | null,
+): { label: string; detail: string } {
+  if (limits?.hasFullAccess) {
+    const detail = subscription
+      ? `${subscription.tier} · status: ${subscription.status}`
+      : 'beta/admin full access';
+    return { label: 'Full access', detail };
+  }
+
+  if (!subscription) {
+    return { label: 'Free', detail: 'No active subscription' };
+  }
+
+  const end = subscription.currentPeriodEnd ? `ends: ${formatDashboardTimestamp(subscription.currentPeriodEnd)}` : null;
+  const cancel = subscription.cancelAtPeriodEnd ? 'canceling' : null;
+  const detail = [`${subscription.tier}`, `status: ${subscription.status}`, end, cancel].filter(Boolean).join(' · ');
+  return { label: 'Pro', detail };
 }
 
 function computeInitials(displayName: string): string {

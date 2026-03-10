@@ -4,7 +4,8 @@
 import { createClient } from '@supabase/supabase-js';
 import type { Database } from './database.types';
 
-const supabaseUrl = import.meta.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+const rawUrl = import.meta.env.NEXT_PUBLIC_SUPABASE_URL ?? '';
+const supabaseUrl = rawUrl.replace(/\/+$/, '');
 const supabaseKey = import.meta.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY ?? '';
 
 if (!supabaseUrl || !supabaseKey) {

@@ -13,18 +13,40 @@ function normalizeOrigin(value: string | null): string | null {
 }
 
 function getConfiguredOrigin(): string | null {
-  return normalizeOrigin(Deno.env.get('APP_PUBLIC_URL') ?? null);
+  const url = Deno.env.get('APP_PUBLIC_URL') ?? null;
+  if (url) return normalizeOrigin(url);
+  const port = Deno.env.get('LOCALHOST_PORT')?.trim();
+  if (port && /^\d+$/.test(port)) return `http://localhost:${port}`;
+  return null;
 }
 
-function resolveCorsOrigin(req?: Request): string {
-  const configuredOrigin = getConfiguredOrigin();
-  if (!configuredOrigin) {
-    return '*';
+/** Treat localhost and 127.0.0.1 with same path/port as equivalent for CORS. */
+function originsMatch(configured: string, request: string): boolean {
+  if (configured === request) return true;
+  try {
+    const a = new URL(configured);
+    const b = new URL(request);
+    if (a.port !== b.port || a.pathname !== b.pathname) return false;
+    const localhost = /^localhost$/i;
+    const loopback = /^127\.0\.0\.1$/;
+    return (
+      (localhost.test(a.hostname) && loopback.test(b.hostname)) ||
+      (loopback.test(a.hostname) && localhost.test(b.hostname))
+    );
+  } catch {
+    return false;
   }
+}
 
+/** Fallback when Origin is not forwarded and no env is set. Default Vite port. */
+const LOCALHOST_ORIGIN = 'http://localhost:5173';
+
+function resolveCorsOrigin(req?: Request): string {
   const requestOrigin = normalizeOrigin(req?.headers.get('origin') ?? null);
-  if (!requestOrigin) return configuredOrigin;
-  return requestOrigin === configuredOrigin ? requestOrigin : configuredOrigin;
+  if (requestOrigin) return requestOrigin;
+  const configuredOrigin = getConfiguredOrigin();
+  if (configuredOrigin) return configuredOrigin;
+  return LOCALHOST_ORIGIN;
 }
 
 export function corsHeaders(req?: Request): Record<string, string> {

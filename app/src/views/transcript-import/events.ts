@@ -1,4 +1,4 @@
-import { customPrompt } from '../../dialogs';
+import { customPrompt, customConfirm } from '../../dialogs';
 import { uid } from '../../models';
 import { getAutoNodeColor, withNodeColorMeta } from '../../node-colors';
 import type { TranscriptFlowNode } from '../../transcript-flow';
@@ -463,7 +463,21 @@ export function wireTranscriptImportEvents(
   });
 
   container.querySelector<HTMLButtonElement>('#btn-regenerate-flow')?.addEventListener('click', () => {
-    onGenerateFlow();
+    void (async () => {
+      const confirmed = await customConfirm(
+        'Regenerating will replace the current flow. Any manual edits will be lost. Continue?',
+      );
+      if (!confirmed) return;
+      state.generatedFlow = null;
+      state.validationWarnings = [];
+      state.nodePositionOverrides = {};
+      state.latestRenderedLayout = {};
+      state.latestRenderedNodeSizes = {};
+      state.generatedPromptMarkdown = '';
+      state.promptGenerationMessage = null;
+      render();
+      onGenerateFlow();
+    })();
   });
 
   const addNodeFromBlock = (

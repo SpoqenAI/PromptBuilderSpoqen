@@ -8,11 +8,15 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:sentry-metric": "node scripts/send-sentry-test-metric.mjs",
+    "test:sentry-error": "node scripts/send-sentry-test-error.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "npm run typecheck",
     "verify": "npm run lint && npm run test && npm run build"
   },
   "devDependencies": {
+    "@sentry/node": "^10.42.0",
+    "@sentry/vite-plugin": "^5.1.1",
     "@tailwindcss/vite": "^4.1.18",
     "tailwindcss": "^4.1.18",
     "typescript": "^5.9.3",
@@ -21,6 +25,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
+    "@sentry/browser": "^10.42.0",
     "@supabase/supabase-js": "^2.95.3",
     "@types/express": "^5.0.6",
     "@types/ws": "^8.18.1",

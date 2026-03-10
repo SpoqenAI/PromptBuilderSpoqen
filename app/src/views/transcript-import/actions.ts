@@ -11,6 +11,7 @@ import { store } from '../../store';
 import { persistTranscriptFlowArtifacts } from '../../transcript-artifacts';
 import { generatePromptFromFlow } from '../../prompt-generation';
 import { generateTranscriptFlow } from '../../transcript-flow';
+import { validateFlowGraph } from '../../transcript-flow-validation';
 import { DEFAULT_PROJECT_NAME } from './constants';
 import { shortId } from './format';
 import { buildGeneratingThoughtSequence } from './generating-thoughts';
@@ -44,6 +45,7 @@ export async function generateFlow(
   state.isGenerating = true;
   state.generatingThoughts = buildGeneratingThoughtSequence();
   state.generationError = '';
+  state.validationWarnings = [];
   state.persistenceMessage = null;
   state.generatedPromptMarkdown = '';
   state.promptGenerationMessage = null;
@@ -64,6 +66,9 @@ export async function generateFlow(
         deps.render();
       },
     });
+
+    const validation = validateFlowGraph(flow.nodes, flow.connections);
+    state.validationWarnings = validation.issues.map((issue) => issue.detail);
 
     state.generatedFlow = flow;
     state.selectedConnectionIndex = null;

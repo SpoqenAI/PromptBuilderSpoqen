@@ -5,7 +5,7 @@
  * All mutating calls update the in-memory cache immediately (keeping
  * the UI synchronous) and fire a background Supabase call.
  */
-import { Project, PromptNode, Connection, PromptGraphSnapshot, PromptVersion, NodeType, uid, CustomNodeTemplate } from './models';
+import { Folder, Project, PromptNode, Connection, PromptGraphSnapshot, PromptVersion, NodeType, uid, CustomNodeTemplate } from './models';
 import type { Database } from './database.types';
 import { supabase } from './supabase';
 import { resolveNodeIcon } from './node-icons';
@@ -17,6 +17,7 @@ type PromptNodeUpdate = Database['public']['Tables']['prompt_nodes']['Update'];
 type ConnectionRow = Database['public']['Tables']['connections']['Row'];
 type PromptVersionRow = Database['public']['Tables']['prompt_versions']['Row'];
 type CustomNodeRow = Database['public']['Tables']['custom_nodes']['Row'];
+type FolderRow = Database['public']['Tables']['folders']['Row'];
 type TranscriptSetRow = Database['public']['Tables']['transcript_sets']['Row'];
 type TranscriptRow = Database['public']['Tables']['transcripts']['Row'];
 type TranscriptFlowRow = Database['public']['Tables']['transcript_flows']['Row'];
@@ -39,6 +40,7 @@ interface LocalStorePayload {
   projects: Project[];
   customNodeTemplates: CustomNodeTemplate[];
   transcriptFlowDrafts?: TranscriptFlowDraft[];
+  folders?: Folder[];
 }
 
 export interface TranscriptFlowDraftDetail {
@@ -59,6 +61,7 @@ export interface TranscriptFlowDraftDetail {
 export interface TranscriptFlowDraft {
   transcriptSetId: string;
   projectId: string | null;
+  folderId: string | null;
   name: string;
   description: string;
   source: string;
@@ -84,6 +87,7 @@ interface ParsedTranscriptConnectionSeed {
 /* Store state */
 class Store {
   private projects: Project[] = [];
+  private folders: Folder[] = [];
   private customNodeTemplates: CustomNodeTemplate[] = [];
   private transcriptFlowDrafts: TranscriptFlowDraft[] = [];
   private transcriptSetIdByProjectId = new Map<string, string>();
@@ -110,6 +114,7 @@ class Store {
 
   reset(): void {
     this.projects = [];
+    this.folders = [];
     this.customNodeTemplates = [];
     this.transcriptFlowDrafts = [];
     this.transcriptSetIdByProjectId.clear();
@@ -130,7 +135,7 @@ class Store {
       const userId = await this.ensureSession();
 
       // 1. Fetch top-level account data in parallel
-      const [projectsRes, customNodesRes, transcriptSetsRes] = await Promise.all([
+      const [projectsRes, customNodesRes, transcriptSetsRes, foldersRes] = await Promise.all([
         supabase
           .from('projects')
           .select('*')
@@ -146,6 +151,11 @@ class Store {
           .select('*')
           .eq('owner_id', userId)
           .order('updated_at', { ascending: false }),
+        supabase
+          .from('folders')
+          .select('*')
+          .eq('owner_id', userId)
+          .order('sort_order', { ascending: true }),
       ]);
       this.assertNoError(projectsRes, 'fetch projects');
 
@@ -170,6 +180,16 @@ class Store {
         }
       } else {
         transcriptSetRows = toTypedRows(transcriptSetsRes.data, isTranscriptSetRow, 'transcript_sets');
+      }
+
+      if (foldersRes.error) {
+        if (isFolderTableMissing(foldersRes.error.message)) {
+          this.folders = [];
+        } else {
+          this.assertNoError(foldersRes, 'fetch folders');
+        }
+      } else {
+        this.folders = (foldersRes.data ?? []).filter(isFolderRow).map(toFolder);
       }
 
       // 2. Fetch project child rows in parallel
@@ -203,6 +223,7 @@ class Store {
         model: row.model,
         icon: row.icon,
         lastEdited: row.last_edited,
+        folderId: (row as Record<string, unknown>).folder_id as string | null ?? null,
         nodes: (nodesByProject[row.id] ?? []).map(toPromptNode),
         connections: (connsByProject[row.id] ?? []).map(toConnection),
         versions: (versByProject[row.id] ?? []).map(toVersion),
@@ -281,6 +302,7 @@ class Store {
     return transcriptSetRows.map((row) => ({
       transcriptSetId: row.id,
       projectId: row.project_id,
+      folderId: (row as Record<string, unknown>).folder_id as string | null ?? null,
       name: row.name,
       description: row.description,
       source: row.source,
@@ -305,16 +327,18 @@ class Store {
       try {
         const parsed: unknown = JSON.parse(raw);
         if (isProjectArray(parsed)) {
-          this.projects = parsed;
+          this.projects = parsed.map((p) => ({ ...p, folderId: p.folderId ?? null }));
           this.customNodeTemplates = [];
           this.transcriptFlowDrafts = [];
+          this.folders = [];
           this.transcriptSetIdByProjectId.clear();
           return;
         }
         if (isLocalStorePayload(parsed)) {
-          this.projects = parsed.projects;
+          this.projects = parsed.projects.map((p) => ({ ...p, folderId: p.folderId ?? null }));
           this.customNodeTemplates = parsed.customNodeTemplates;
-          this.transcriptFlowDrafts = parsed.transcriptFlowDrafts ?? [];
+          this.transcriptFlowDrafts = (parsed.transcriptFlowDrafts ?? []).map((d) => ({ ...d, folderId: d.folderId ?? null }));
+          this.folders = parsed.folders ?? [];
           this.rebuildTranscriptProjectLinkIndex();
           return;
         }
@@ -341,6 +365,7 @@ class Store {
       projects: this.projects,
       customNodeTemplates: this.customNodeTemplates,
       transcriptFlowDrafts: this.transcriptFlowDrafts,
+      folders: this.folders,
     };
     localStorage.setItem(this.storageKey(), JSON.stringify(payload));
   }
@@ -401,7 +426,7 @@ class Store {
   }
 
   private async insertProjectRemote(p: Project, ownerId: string): Promise<void> {
-    const res = await supabase.from('projects').insert({
+    const payloadWithFolder = {
       id: p.id,
       owner_id: ownerId,
       name: p.name,
@@ -409,7 +434,13 @@ class Store {
       model: p.model,
       icon: p.icon,
       last_edited: p.lastEdited,
-    });
+      folder_id: p.folderId ?? null,
+    };
+    let res = await supabase.from('projects').insert(payloadWithFolder);
+    if (res.error && isFolderIdColumnMissing(res.error.message)) {
+      const { folder_id: _f, ...payloadWithoutFolder } = payloadWithFolder;
+      res = await supabase.from('projects').insert(payloadWithoutFolder);
+    }
     this.assertNoError(res, 'insert project');
   }
 
@@ -419,16 +450,28 @@ class Store {
       return;
     }
 
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('store:auto-save-start'));
+    }
+
     this.remoteWriteChain = this.remoteWriteChain
       .then(async () => {
         if (this.persistenceStatus.mode !== 'database') return;
         await fn();
       })
+      .then(() => {
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('store:auto-save-complete'));
+        }
+      })
       .catch((err: unknown) => {
         this.setPersistenceFallback('background write', err);
+        if (typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('store:auto-save-complete'));
+        }
       });
 
-    this.saveLocalStorage(); // always keep localStorage in sync as fallback
+    this.saveLocalStorage();
   }
 
   /* Read operations (sync, from cache) */
@@ -460,6 +503,122 @@ class Store {
       .sort((left, right) => compareTranscriptDraftRecency(left, right));
   }
 
+  /* Folder operations */
+
+  getFolders(): Folder[] {
+    return this.folders.slice();
+  }
+
+  getFolder(id: string): Folder | undefined {
+    return this.folders.find((f) => f.id === id);
+  }
+
+  getPromptFlowProjectsInFolder(folderId: string | null): Project[] {
+    return this.projects.filter(
+      (p) => !this.transcriptSetIdByProjectId.has(p.id) && p.folderId === folderId,
+    );
+  }
+
+  getTranscriptFlowDraftsInFolder(folderId: string | null): TranscriptFlowDraft[] {
+    return this.transcriptFlowDrafts
+      .filter((d) => d.folderId === folderId)
+      .map((d) => cloneTranscriptFlowDraft(d))
+      .sort((a, b) => compareTranscriptDraftRecency(a, b));
+  }
+
+  createFolder(name: string, parentId: string | null = null): Folder {
+    const nowIso = new Date().toISOString();
+    const folder: Folder = {
+      id: uid(),
+      parentId,
+      name: name.trim() || 'New Folder',
+      sortOrder: this.folders.length,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+    this.folders.push(folder);
+    this.bg(async () => {
+      if (!this.currentUserId) throw new Error('No active user in store session.');
+      const res = await supabase.from('folders').insert({
+        id: folder.id,
+        owner_id: this.currentUserId,
+        parent_id: folder.parentId,
+        name: folder.name,
+        sort_order: folder.sortOrder,
+      });
+      if (res.error && isFolderTableMissing(res.error.message)) return;
+      this.assertNoError(res, 'insert folder');
+    });
+    return folder;
+  }
+
+  renameFolder(id: string, name: string): void {
+    const folder = this.folders.find((f) => f.id === id);
+    if (!folder) return;
+    folder.name = name.trim() || folder.name;
+    folder.updatedAt = new Date().toISOString();
+    this.bg(async () => {
+      const res = await supabase.from('folders').update({ name: folder.name, updated_at: folder.updatedAt }).eq('id', id);
+      if (res.error && isFolderTableMissing(res.error.message)) return;
+      this.assertNoError(res, 'rename folder');
+    });
+  }
+
+  deleteFolder(id: string): void {
+    const collectDescendantIds = (parentId: string): string[] => {
+      const children = this.folders.filter((f) => f.parentId === parentId);
+      const ids: string[] = [];
+      for (const child of children) {
+        ids.push(child.id);
+        ids.push(...collectDescendantIds(child.id));
+      }
+      return ids;
+    };
+    const idsToRemove = new Set([id, ...collectDescendantIds(id)]);
+
+    for (const p of this.projects) {
+      if (p.folderId && idsToRemove.has(p.folderId)) p.folderId = null;
+    }
+    for (const d of this.transcriptFlowDrafts) {
+      if (d.folderId && idsToRemove.has(d.folderId)) d.folderId = null;
+    }
+    this.folders = this.folders.filter((f) => !idsToRemove.has(f.id));
+
+    this.bg(async () => {
+      const res = await supabase.from('folders').delete().eq('id', id);
+      if (res.error && !isFolderTableMissing(res.error.message)) {
+        this.assertNoError(res, 'delete folder');
+      }
+    });
+  }
+
+  moveProjectToFolder(projectId: string, folderId: string | null): void {
+    const project = this.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    project.folderId = folderId;
+    this.bg(async () => {
+      const res = await supabase.from('projects').update({ folder_id: folderId }).eq('id', projectId);
+      if (res.error && isFolderIdColumnMissing(res.error.message)) return;
+      this.assertNoError(res, 'move project to folder');
+    });
+  }
+
+  moveTranscriptSetToFolder(transcriptSetId: string, folderId: string | null): void {
+    const draft = this.transcriptFlowDrafts.find((d) => d.transcriptSetId === transcriptSetId);
+    if (!draft) return;
+    draft.folderId = folderId;
+    this.bg(async () => {
+      const res = await supabase
+        .from('transcript_sets')
+        .update({ folder_id: folderId, updated_at: new Date().toISOString() })
+        .eq('id', transcriptSetId);
+      if (res.error && isFolderIdColumnMissing(res.error.message)) return;
+      if (res.error && !isTranscriptTableMissing(res.error.message, 'transcript_sets')) {
+        this.assertNoError(res, 'move transcript set to folder');
+      }
+    });
+  }
+
   registerTranscriptFlowDraft(
     transcriptSetId: string,
     flow: TranscriptFlowResult,
@@ -482,6 +641,7 @@ class Store {
       this.transcriptFlowDrafts.unshift({
         transcriptSetId,
         projectId: null,
+        folderId: null,
         name: `${projectName.trim() || flow.title || 'Transcript'} Transcript Set`,
         description: flow.summary,
         source: 'transcript-import',
@@ -504,6 +664,7 @@ class Store {
       draft = {
         transcriptSetId,
         projectId,
+        folderId: null,
         name: 'Transcript Set',
         description: '',
         source: 'transcript-import',
@@ -547,6 +708,7 @@ class Store {
       draft.latestFlow.flowTitle.trim() || draft.name.trim() || 'Transcript Flow',
       draft.latestFlow.flowSummary.trim() || draft.description,
       draft.latestFlow.model.trim() || 'GPT-4o',
+      draft.folderId,
     );
 
     const parsedNodes = parseStoredTranscriptNodes(draft.latestFlow.nodesJson);
@@ -639,10 +801,11 @@ class Store {
 
   /* Project mutations */
 
-  createProject(name: string, description: string, model: string): Project {
+  createProject(name: string, description: string, model: string, folderId: string | null = null): Project {
     const project: Project = {
       id: uid(), name, description, model,
       icon: 'schema', lastEdited: 'Just now',
+      folderId,
       nodes: [], connections: [], versions: [],
     };
     this.projects.unshift(project);
@@ -655,10 +818,10 @@ class Store {
     return project;
   }
 
-  async createTranscriptFlowProject(name: string, description: string, model: string): Promise<Project> {
+  async createTranscriptFlowProject(name: string, description: string, model: string, folderId: string | null = null): Promise<Project> {
     const normalizedName = name.trim() || 'Untitled Transcript Flow';
     const normalizedDescription = description.trim() || 'Manual transcript flow workspace.';
-    const project = this.createProject(normalizedName, normalizedDescription, model);
+    const project = this.createProject(normalizedName, normalizedDescription, model, folderId);
     const nowIso = new Date().toISOString();
 
     if (this.persistenceStatus.mode !== 'database') {
@@ -666,6 +829,7 @@ class Store {
       this.transcriptFlowDrafts.unshift({
         transcriptSetId: localTranscriptSetId,
         projectId: project.id,
+        folderId,
         name: `${normalizedName} Transcript Set`,
         description: normalizedDescription,
         source: 'manual-transcript-flow',
@@ -679,17 +843,28 @@ class Store {
 
     try {
       const ownerId = this.currentUserId ?? await this.ensureSession();
-      const transcriptSetRes = await supabase
+      const insertPayloadWithFolder = {
+        owner_id: ownerId,
+        project_id: null,
+        name: `${normalizedName} Transcript Set`,
+        description: normalizedDescription,
+        source: 'manual-transcript-flow',
+        folder_id: folderId,
+      };
+      let transcriptSetRes = await supabase
         .from('transcript_sets')
-        .insert({
-          owner_id: ownerId,
-          project_id: null,
-          name: `${normalizedName} Transcript Set`,
-          description: normalizedDescription,
-          source: 'manual-transcript-flow',
-        })
+        .insert(insertPayloadWithFolder)
         .select('*')
         .single();
+
+      if (transcriptSetRes.error && isFolderIdColumnMissing(transcriptSetRes.error.message)) {
+        const { folder_id: _f, ...payloadWithoutFolder } = insertPayloadWithFolder;
+        transcriptSetRes = await supabase
+          .from('transcript_sets')
+          .insert(payloadWithoutFolder)
+          .select('*')
+          .single();
+      }
 
       if (transcriptSetRes.error || !transcriptSetRes.data) {
         throw new Error(transcriptSetRes.error?.message ?? 'Failed to create transcript set.');
@@ -699,6 +874,7 @@ class Store {
       this.transcriptFlowDrafts.unshift({
         transcriptSetId: transcriptSet.id,
         projectId: project.id,
+        folderId: (transcriptSet as Record<string, unknown>).folder_id as string | null ?? null,
         name: transcriptSet.name,
         description: transcriptSet.description,
         source: transcriptSet.source,
@@ -715,6 +891,7 @@ class Store {
       this.transcriptFlowDrafts.unshift({
         transcriptSetId: localTranscriptSetId,
         projectId: project.id,
+        folderId,
         name: `${normalizedName} Transcript Set`,
         description: normalizedDescription,
         source: 'manual-transcript-flow',
@@ -1368,6 +1545,7 @@ function cloneTranscriptFlowDraft(draft: TranscriptFlowDraft): TranscriptFlowDra
   return {
     transcriptSetId: draft.transcriptSetId,
     projectId: draft.projectId,
+    folderId: draft.folderId,
     name: draft.name,
     description: draft.description,
     source: draft.source,
@@ -1818,6 +1996,13 @@ function isConnectionLabelColumnMissing(message: string): boolean {
   return normalized.includes('connections') && (normalized.includes('does not exist') || normalized.includes('schema cache'));
 }
 
+/** True when the remote schema has no folder_id column (migration not applied). */
+function isFolderIdColumnMissing(message: string): boolean {
+  const normalized = message.toLowerCase();
+  if (!normalized.includes('folder_id')) return false;
+  return normalized.includes('schema cache') || normalized.includes("could not find the 'folder_id'");
+}
+
 function isCustomNodesTableMissing(message: string): boolean {
   const normalized = message.toLowerCase();
   if (!normalized.includes('custom_nodes')) return false;
@@ -1828,6 +2013,34 @@ function isTranscriptTableMissing(message: string, tableName: string): boolean {
   const normalized = message.toLowerCase();
   if (!normalized.includes(tableName.toLowerCase())) return false;
   return normalized.includes('does not exist') || normalized.includes('schema cache');
+}
+
+function isFolderTableMissing(message: string): boolean {
+  const normalized = message.toLowerCase();
+  if (!normalized.includes('folders')) return false;
+  return normalized.includes('does not exist') || normalized.includes('schema cache');
+}
+
+function isFolderRow(value: unknown): value is FolderRow {
+  if (!isRecord(value)) return false;
+  return (
+    typeof value.id === 'string' &&
+    typeof value.owner_id === 'string' &&
+    (typeof value.parent_id === 'string' || value.parent_id === null) &&
+    typeof value.name === 'string' &&
+    typeof value.sort_order === 'number'
+  );
+}
+
+function toFolder(row: FolderRow): Folder {
+  return {
+    id: row.id,
+    parentId: row.parent_id,
+    name: row.name,
+    sortOrder: row.sort_order,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function isPromptNodeSyncMetaTableMissing(message: string): boolean {
