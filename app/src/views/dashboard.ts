@@ -458,10 +458,15 @@ export function renderDashboard(container: HTMLElement): void {
       button.addEventListener('click', async (event) => {
         event.stopPropagation();
         const projectId = button.dataset.id;
-        if (projectId && await customConfirm('Delete this project?')) {
-          store.deleteProject(projectId);
-          renderDashboard(container);
+        if (!projectId) return;
+        const limits = await loadLimits();
+        if (limits.isFreeTier) {
+          await customAlert('Deleting prompt flows is disabled on the free tier. Upgrade to Pro to manage flows without limits.');
+          return;
         }
+        if (!(await customConfirm('Delete this project?'))) return;
+        store.deleteProject(projectId);
+        renderDashboard(container);
       });
     });
 
@@ -470,6 +475,11 @@ export function renderDashboard(container: HTMLElement): void {
         event.stopPropagation();
         const transcriptSetId = button.dataset.transcriptSetId;
         if (!transcriptSetId) return;
+        const limits = await loadLimits();
+        if (limits.isFreeTier) {
+          await customAlert('Deleting transcript flows is disabled on the free tier. Upgrade to Pro to manage flows without limits.');
+          return;
+        }
         const linkedProjectId = button.dataset.projectId;
         const confirmText = linkedProjectId
           ? 'Delete this transcript flow and its linked project?'
