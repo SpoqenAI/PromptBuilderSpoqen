@@ -1,4 +1,4 @@
-import { customPrompt, customConfirm } from '../../dialogs';
+import { customPrompt, customConfirm, customAlert } from '../../dialogs';
 import { uid } from '../../models';
 import { getAutoNodeColor, withNodeColorMeta } from '../../node-colors';
 import type { TranscriptFlowNode } from '../../transcript-flow';
@@ -71,6 +71,18 @@ export function wireTranscriptImportEvents(
   let connectPointerStartY = 0;
   let connectPointerMoved = false;
   let suppressNextPortClick = false;
+
+  const quotaHandler = (event: Event): void => {
+    const detail = (event as CustomEvent<{ kind: string; message: string }>).detail;
+    if (!detail || detail.kind !== 'project_rls') return;
+    void (async () => {
+      await customAlert(detail.message);
+    })();
+  };
+  window.addEventListener('store:quota-error', quotaHandler);
+  documentCleanup.push(() => {
+    window.removeEventListener('store:quota-error', quotaHandler);
+  });
 
   const addDocumentListener = <K extends keyof DocumentEventMap>(
     type: K,

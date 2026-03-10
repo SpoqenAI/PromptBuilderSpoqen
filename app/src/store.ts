@@ -381,6 +381,24 @@ class Store {
       throw new Error('No authenticated session. Sign in to use cloud sync.');
     }
     this.currentUserId = userId;
+    // #region agent log
+    fetch('http://127.0.0.1:7785/ingest/35061230-0282-4351-9efc-c9b624f80bbf', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Debug-Session-Id': 'a4911e',
+      },
+      body: JSON.stringify({
+        sessionId: 'a4911e',
+        runId: 'initial',
+        hypothesisId: 'H1',
+        location: 'store.ts:ensureSession',
+        message: 'ensureSession resolved user id',
+        data: { userId },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
     return userId;
   }
 
@@ -399,11 +417,48 @@ class Store {
   private setPersistenceFallback(context: string, err: unknown): void {
     const error = getErrorMessage(err);
     const hint = getPersistenceHint(error);
+
+    // Special-case: free-tier / RLS failure on project inserts should not flip to local-only mode.
+    const lower = error.toLowerCase();
+    const isProjectRlsFailure =
+      lower.includes('insert project: new row violates row-level security policy for table \"projects\"')
+      || (context === 'insert project' && lower.includes('row-level security policy') && lower.includes('projects'));
+
+    if (isProjectRlsFailure && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('store:quota-error', {
+        detail: {
+          kind: 'project_rls',
+          message: 'You have reached the free tier limit for transcript flows. Upgrade your plan to create more.',
+        },
+      }));
+      // Do not enter local-fallback mode in this case.
+      return;
+    }
+
     this.persistenceStatus = {
       mode: 'local-fallback',
       error,
       hint,
     };
+
+    // #region agent log
+    fetch('http://127.0.0.1:7785/ingest/35061230-0282-4351-9efc-c9b624f80bbf', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Debug-Session-Id': 'a4911e',
+      },
+      body: JSON.stringify({
+        sessionId: 'a4911e',
+        runId: 'initial',
+        hypothesisId: 'H3',
+        location: 'store.ts:setPersistenceFallback',
+        message: 'Persistence fallback triggered',
+        data: { context, error, hint },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
 
     console.error(`Supabase ${context} failed, using localStorage fallback: ${error}`);
     if (hint) {
@@ -426,6 +481,29 @@ class Store {
   }
 
   private async insertProjectRemote(p: Project, ownerId: string): Promise<void> {
+    // #region agent log
+    fetch('http://127.0.0.1:7785/ingest/35061230-0282-4351-9efc-c9b624f80bbf', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Debug-Session-Id': 'a4911e',
+      },
+      body: JSON.stringify({
+        sessionId: 'a4911e',
+        runId: 'initial',
+        hypothesisId: 'H2',
+        location: 'store.ts:insertProjectRemote',
+        message: 'About to insert project',
+        data: {
+          projectId: p.id,
+          ownerId,
+          name: p.name,
+        },
+        timestamp: Date.now(),
+      }),
+    }).catch(() => {});
+    // #endregion
+
     const payloadWithFolder = {
       id: p.id,
       owner_id: ownerId,
