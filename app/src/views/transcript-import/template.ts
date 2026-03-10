@@ -28,6 +28,7 @@ interface TranscriptImportShellModel {
   userName: string;
   transcripts: TranscriptFile[];
   generationError: string;
+  validationWarnings: string[];
   persistenceMessage: { tone: MessageTone; text: string } | null;
   generatedPromptMarkdown: string;
   promptGenerationMessage: { tone: MessageTone; text: string } | null;
@@ -59,6 +60,7 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
     userName,
     transcripts,
     generationError,
+    validationWarnings,
     persistenceMessage,
     generatedPromptMarkdown,
     promptGenerationMessage,
@@ -196,6 +198,12 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
               ${generationError
     ? `<p id="transcript-generate-error" class="rounded-lg border border-red-200 dark:border-red-900/40 bg-red-50 dark:bg-red-950/30 px-3 py-2 text-xs text-red-700 dark:text-red-200">${esc(generationError)}</p>`
     : ''}
+              ${validationWarnings.length > 0
+    ? `<div class="rounded-lg border border-amber-200 dark:border-amber-900/40 bg-amber-50 dark:bg-amber-950/30 px-3 py-2 text-xs text-amber-700 dark:text-amber-200 space-y-1">
+                  <p class="font-semibold">Graph validation warnings:</p>
+                  <ul class="list-disc pl-4 space-y-0.5">${validationWarnings.map((w) => `<li>${esc(w)}</li>`).join('')}</ul>
+                </div>`
+    : ''}
               ${persistenceMessage
     ? `<p class="rounded-lg border px-3 py-2 text-xs ${messageClass(persistenceMessage.tone)}">${esc(persistenceMessage.text)}</p>`
     : ''}
@@ -211,13 +219,19 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
     })}
 
               <div class="flex flex-wrap gap-2 pt-1">
-                <button id="btn-generate-flow" class="flex-1 ui-btn ui-btn-primary !text-sm !py-2 disabled:opacity-50 disabled:cursor-not-allowed" ${canGenerate ? '' : 'disabled'}>
-                  ${isGenerating
-    ? processingProgress
+                ${isGenerating
+    ? `<button id="btn-generate-flow" class="flex-1 ui-btn ui-btn-primary !text-sm !py-2 disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+                    ${processingProgress
       ? `Generating (${processingProgress.processed}/${processingProgress.total})...`
-      : 'Generating...'
-    : 'Generate Flow'}
-                </button>
+      : 'Generating...'}
+                  </button>`
+    : generatedFlow
+      ? `<button class="flex-1 ui-btn !text-sm !py-2 border border-emerald-300 dark:border-emerald-700 bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-300 cursor-default" disabled>
+                    <span class="material-icons text-sm">check_circle</span> Flow Generated
+                  </button>`
+      : `<button id="btn-generate-flow" class="flex-1 ui-btn ui-btn-primary !text-sm !py-2 disabled:opacity-50 disabled:cursor-not-allowed" ${canGenerate ? '' : 'disabled'}>
+                    Generate Flow
+                  </button>`}
                 <button id="btn-clear-transcript" type="button" class="ui-btn ui-btn-ghost !text-sm !py-2">
                   Clear
                 </button>

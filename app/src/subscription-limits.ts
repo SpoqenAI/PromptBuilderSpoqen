@@ -5,7 +5,10 @@ const FREE_PROMPT_FLOW_LIMIT = 3;
 const FREE_TRANSCRIPTION_FLOW_LIMIT = 3;
 const FREE_TRANSCRIPT_SET_LIMIT = 3;
 
+export type UserRole = 'user' | 'beta' | 'admin';
+
 export interface SubscriptionLimits {
+  hasFullAccess: boolean;
   isFreeTier: boolean;
   promptFlowCount: number;
   promptFlowLimit: number;
@@ -22,7 +25,37 @@ export interface SubscriptionLimits {
   canUseImportTranscript: boolean;
 }
 
+const BYPASS_ROLES: ReadonlySet<string> = new Set<UserRole>(['admin', 'beta']);
+
+const FULL_ACCESS_LIMITS: SubscriptionLimits = {
+  hasFullAccess: true,
+  isFreeTier: false,
+  promptFlowCount: 0,
+  promptFlowLimit: FREE_PROMPT_FLOW_LIMIT,
+  canCreatePromptFlow: true,
+  transcriptionFlowCount: 0,
+  transcriptionFlowLimit: FREE_TRANSCRIPTION_FLOW_LIMIT,
+  canCreateTranscriptionFlow: true,
+  transcriptSetCount: 0,
+  transcriptSetLimit: FREE_TRANSCRIPT_SET_LIMIT,
+  canCreateTranscriptSet: true,
+  importPromptUsed: false,
+  importTranscriptUsed: false,
+  canUseImportPrompt: true,
+  canUseImportTranscript: true,
+};
+
 export async function getSubscriptionLimits(): Promise<SubscriptionLimits> {
+  const profileRes = await supabase
+    .from('user_profiles')
+    .select('user_role')
+    .maybeSingle();
+
+  const userRole = (profileRes.data as { user_role?: string } | null)?.user_role ?? 'user';
+  if (BYPASS_ROLES.has(userRole)) {
+    return { ...FULL_ACCESS_LIMITS };
+  }
+
   const [subscription, projectsRes, transcriptionFlowRes, transcriptSetRes, featureUsageRes] = await Promise.all([
     getSubscription(),
     supabase.from('projects').select('id', { count: 'exact', head: true }),
@@ -46,6 +79,7 @@ export async function getSubscriptionLimits(): Promise<SubscriptionLimits> {
   const importTranscriptUsed = usedFeatures.has('import_transcript');
 
   return {
+    hasFullAccess: false,
     isFreeTier,
     promptFlowCount,
     promptFlowLimit: FREE_PROMPT_FLOW_LIMIT,

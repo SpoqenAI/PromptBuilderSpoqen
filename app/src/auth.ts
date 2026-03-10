@@ -17,11 +17,6 @@ export interface OnboardingInput {
 
 export interface AccountProfileInput {
   fullName: string;
-  role: string;
-  heardAbout: string;
-  primaryGoal: string;
-  primaryUseCase: string;
-  teamSize: string;
 }
 
 export interface SignUpResult {
@@ -165,11 +160,6 @@ export async function updateCurrentUserProfile(input: AccountProfileInput): Prom
     user_id: user.id,
     email: user.email ?? '',
     full_name: input.fullName.trim(),
-    role: input.role.trim(),
-    heard_about: input.heardAbout.trim(),
-    primary_goal: input.primaryGoal.trim(),
-    primary_use_case: input.primaryUseCase.trim(),
-    team_size: input.teamSize.trim(),
     onboarding_completed: true,
     updated_at: new Date().toISOString(),
   };
@@ -221,6 +211,22 @@ export async function sendPasswordResetEmail(email: string): Promise<void> {
   });
   if (resetRes.error) {
     throw new Error(`password reset failed: ${resetRes.error.message}`);
+  }
+}
+
+export async function confirmCurrentPassword(email: string, password: string): Promise<void> {
+  const normalizedEmail = email.trim().toLowerCase();
+  const normalizedPassword = password.trim();
+  if (!normalizedEmail || !normalizedPassword) {
+    throw new Error('Password confirmation failed: missing email or password.');
+  }
+
+  const res = await supabase.auth.signInWithPassword({
+    email: normalizedEmail,
+    password: normalizedPassword,
+  });
+  if (res.error) {
+    throw new Error(`Password confirmation failed: ${res.error.message}`);
   }
 }
 

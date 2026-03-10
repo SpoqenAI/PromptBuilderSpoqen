@@ -15,6 +15,7 @@ export interface Database {
           model: string;
           icon: string;
           last_edited: string;
+          folder_id: string | null;
           created_at: string;
         };
         Insert: {
@@ -25,6 +26,7 @@ export interface Database {
           model?: string;
           icon?: string;
           last_edited?: string;
+          folder_id?: string | null;
           created_at?: string;
         };
         Update: {
@@ -35,6 +37,7 @@ export interface Database {
           model?: string;
           icon?: string;
           last_edited?: string;
+          folder_id?: string | null;
           created_at?: string;
         };
         Relationships: [];
@@ -236,6 +239,7 @@ export interface Database {
           primary_use_case: string;
           team_size: string;
           onboarding_completed: boolean;
+          user_role: string;
           created_at: string;
           updated_at: string;
         };
@@ -249,6 +253,7 @@ export interface Database {
           primary_use_case?: string;
           team_size?: string;
           onboarding_completed?: boolean;
+          user_role?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -262,6 +267,7 @@ export interface Database {
           primary_use_case?: string;
           team_size?: string;
           onboarding_completed?: boolean;
+          user_role?: string;
           created_at?: string;
           updated_at?: string;
         };
@@ -326,6 +332,7 @@ export interface Database {
           name: string;
           description: string;
           source: string;
+          folder_id: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -336,6 +343,7 @@ export interface Database {
           name: string;
           description?: string;
           source?: string;
+          folder_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -346,6 +354,7 @@ export interface Database {
           name?: string;
           description?: string;
           source?: string;
+          folder_id?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -499,6 +508,36 @@ export interface Database {
           reason?: string;
           support_count?: number;
           transition_rate?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      folders: {
+        Row: {
+          id: string;
+          owner_id: string;
+          parent_id: string | null;
+          name: string;
+          sort_order: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          owner_id?: string;
+          parent_id?: string | null;
+          name: string;
+          sort_order?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          owner_id?: string;
+          parent_id?: string | null;
+          name?: string;
+          sort_order?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -777,6 +816,10 @@ export interface Database {
         Returns: number;
       };
       user_can_create_transcript_set: {
+        Args: Record<string, never>;
+        Returns: boolean;
+      };
+      user_has_bypass_role: {
         Args: Record<string, never>;
         Returns: boolean;
       };

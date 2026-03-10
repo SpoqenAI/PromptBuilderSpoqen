@@ -37,6 +37,7 @@ export interface TranscriptImportState {
   userName: string;
   generatedFlow: TranscriptFlowResult | null;
   generationError: string;
+  validationWarnings: string[];
   isGenerating: boolean;
   isHydratingWorkspace: boolean;
   processingProgress: { processed: number; total: number } | null;

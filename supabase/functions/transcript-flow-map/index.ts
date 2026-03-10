@@ -31,6 +31,7 @@ type FlowNodeType =
 
 interface TranscriptFlowRequestBody {
   transcript?: unknown;
+  transcripts?: unknown;
   existingGraph?: unknown;
   maxNodes?: unknown;
   assistantName?: unknown;
@@ -76,6 +77,7 @@ interface InferredBranchPlan {
 
 const MIN_TRANSCRIPT_LENGTH = 20;
 const MAX_TRANSCRIPT_LENGTH = 120_000;
+const COMPACTION_TARGET_LENGTH = 100_000;
 const DEFAULT_MAX_NODES = 18;
 const MAX_ALLOWED_NODES = 40;
 const MIN_DECISION_BRANCH_COUNT = 2;
@@ -295,7 +297,8 @@ serve(async (req: Request) => {
 
   try {
     const body = await parseJson<TranscriptFlowRequestBody>(req);
-    const transcript = normalizeTranscript(body.transcript);
+    const transcriptResult = normalizeTranscriptInput(body);
+    const transcript = transcriptResult.text;
     const maxNodes = normalizeMaxNodes(body.maxNodes);
     const assistantName = normalizeSpeakerName(body.assistantName, 'Assistant');
     const userName = normalizeSpeakerName(body.userName, 'User');
@@ -304,12 +307,25 @@ serve(async (req: Request) => {
     const adminClient = createAdminClient();
     await requireUser(req, adminClient);
 
+    console.log(JSON.stringify({
+      event: 'transcript-flow-map:input',
+      originalLength: transcriptResult.originalLength,
+      effectiveLength: transcript.length,
+      turnCount: transcriptResult.turnCount,
+      wasCompacted: transcriptResult.wasCompacted,
+    }));
+
     const configuredModel = resolveTranscriptModel();
 
     let flow: FlowResult;
     let usedFallback = false;
     let warning: string | null = null;
     let model = configuredModel;
+
+    if (transcriptResult.wasCompacted) {
+      const compactionNote = `Transcript compacted from ${transcriptResult.originalLength} to ${transcript.length} chars. Low-value turns were summarized to fit context window.`;
+      warning = compactionNote;
+    }
 
     if (hasConfiguredLlmProvider()) {
       try {
@@ -320,6 +336,7 @@ serve(async (req: Request) => {
           assistantName,
           userName,
           model: configuredModel,
+          wasCompacted: transcriptResult.wasCompacted,
         });
         flow = normalizeFlowResult(aiResponse.payload, transcript, maxNodes, assistantName, userName);
         model = `${aiResponse.provider}:${aiResponse.model}`;
@@ -353,6 +370,12 @@ serve(async (req: Request) => {
       warning = warning ? `${warning} ${completionWarning}` : completionWarning;
     }
 
+    const validation = validateFlowGraphServer(flow.nodes, flow.connections);
+    if (!validation.isValid) {
+      const validationNote = `Graph validation: ${validation.issues.map((i) => i.detail).join('; ')}`;
+      warning = warning ? `${warning} ${validationNote}` : validationNote;
+    }
+
     return jsonResponse(200, {
       ...flow,
       model,
@@ -377,19 +400,48 @@ async function parseJson<T>(req: Request): Promise<T> {
   }
 }
 
-function normalizeTranscript(value: unknown): string {
-  if (typeof value !== 'string') {
+interface NormalizedTranscriptResult {
+  text: string;
+  wasCompacted: boolean;
+  originalLength: number;
+  turnCount: number;
+}
+
+function normalizeTranscriptInput(body: TranscriptFlowRequestBody): NormalizedTranscriptResult {
+  let raw: string;
+
+  if (Array.isArray(body.transcripts) && body.transcripts.length > 0) {
+    const parts: string[] = [];
+    for (let i = 0; i < body.transcripts.length; i++) {
+      const item = body.transcripts[i];
+      if (typeof item !== 'string') continue;
+      const cleaned = item.replace(/\r\n?/g, '\n').trim();
+      if (cleaned.length < MIN_TRANSCRIPT_LENGTH) continue;
+      parts.push(`=== TRANSCRIPT ${i + 1} of ${body.transcripts.length} ===\n${cleaned}`);
+    }
+    if (parts.length === 0) {
+      throw new Error(`At least one transcript must be ${MIN_TRANSCRIPT_LENGTH} characters.`);
+    }
+    raw = parts.join('\n\n---\n\n');
+  } else if (typeof body.transcript === 'string') {
+    raw = body.transcript.replace(/\r\n?/g, '\n').trim();
+  } else {
     throw new Error('Transcript is required.');
   }
 
-  const normalized = value.replace(/\r\n?/g, '\n').trim();
-  if (normalized.length < MIN_TRANSCRIPT_LENGTH) {
+  if (raw.length < MIN_TRANSCRIPT_LENGTH) {
     throw new Error(`Transcript must be at least ${MIN_TRANSCRIPT_LENGTH} characters.`);
   }
-  if (normalized.length > MAX_TRANSCRIPT_LENGTH) {
-    throw new Error(`Transcript exceeds ${MAX_TRANSCRIPT_LENGTH} characters.`);
+
+  const originalLength = raw.length;
+  const turnCount = (raw.match(/^[A-Za-z][A-Za-z0-9 _.-]{0,32}\s*:/gm) ?? []).length;
+
+  if (raw.length > MAX_TRANSCRIPT_LENGTH) {
+    raw = compactTranscript(raw, COMPACTION_TARGET_LENGTH);
+    return { text: raw, wasCompacted: true, originalLength, turnCount };
   }
-  return normalized;
+
+  return { text: raw, wasCompacted: false, originalLength, turnCount };
 }
 
 function normalizeMaxNodes(value: unknown): number | undefined {
@@ -418,6 +470,7 @@ async function generateFlowWithLlm(args: {
   assistantName: string;
   userName: string;
   model: string;
+  wasCompacted?: boolean;
 }): Promise<{ payload: unknown; provider: 'groq' | 'openai'; model: string; fallbackFailures: string[] }> {
   const temperature = resolveOptionalTemperature();
   const maxNodeLine = args.maxNodes !== undefined
@@ -498,6 +551,22 @@ async function generateFlowWithLlm(args: {
           '- Every connection\'s "reason" field should be a concise condition or transition label.',
           '- For decision branches: use "Yes", "No", "Condition met", "Caller verified", etc.',
           '- For sequential steps: use brief descriptions like "Next", "Proceed", "After greeting".',
+          ...(args.wasCompacted
+            ? [
+              '',
+              'COMPACTION NOTICE:',
+              '- Parts of this transcript have been summarized to fit context limits. Summarized sections appear as "[Summarized: ...]".',
+              '- Do NOT invent additional structure for summarized regions beyond what the summaries describe.',
+              '- Preserve ALL explicit decision points and failure modes present in the non-summarized text.',
+              '- When a summarized section mentions a decision or branch, represent it, but keep inferred coverage conservative for those areas.',
+            ]
+            : []),
+          '',
+          'MULTI-TRANSCRIPT SYNTHESIS:',
+          '- The input may contain multiple transcripts separated by "=== TRANSCRIPT N ===" headers.',
+          '- If multiple transcripts describe variants of the same process, unify them into ONE graph with decision branches for the differences.',
+          '- If transcripts represent distinct sub-flows, use subprocess nodes or separate end states, but keep them in a single graph.',
+          '- Do NOT duplicate the main spine per transcript. Merge overlapping paths and add branches only for genuine differences.',
           ...(args.existingGraph
             ? [
               '',
@@ -1188,7 +1257,12 @@ function buildFallbackFlow(
   assistantName: string,
   userName: string,
 ): FlowResult {
-  const turns = extractSpeakerTurns(transcript);
+  const transcriptSegments = transcript.split(/\n*===\s*TRANSCRIPT\s+\d+[^=]*===\s*\n*/i).filter((s) => s.trim().length > 0);
+  const allTurns: SpeakerTurn[] = [];
+  for (const segment of transcriptSegments) {
+    allTurns.push(...extractSpeakerTurns(segment.replace(/^---+$/gm, '').trim()));
+  }
+  const turns = allTurns.length > 0 ? allTurns : extractSpeakerTurns(transcript);
 
   const nodes: FlowNode[] = [];
   const maxConversationNodes = Math.max(1, maxNodes - 1);
@@ -1328,6 +1402,180 @@ function trimForLabel(value: string, maxLength: number): string {
   return `${value.slice(0, maxLength - 1)}...`;
 }
 
+/**
+ * Structure-aware transcript compaction. Splits the text into speaker turns,
+ * scores each turn by decision-relevance, and summarizes low-value turns
+ * to bring the total under `targetLength`.
+ */
+function compactTranscript(text: string, targetLength: number): string {
+  const speakerPattern = /^([A-Za-z][A-Za-z0-9 _.-]{0,32})\s*:\s*/;
+  const lines = text.split('\n');
+
+  interface Turn {
+    speaker: string;
+    text: string;
+    originalLines: string[];
+    score: number;
+  }
+
+  const turns: Turn[] = [];
+  for (const line of lines) {
+    const match = line.match(speakerPattern);
+    if (match) {
+      turns.push({
+        speaker: match[1].trim(),
+        text: line.slice(match[0].length).trim(),
+        originalLines: [line],
+        score: 0,
+      });
+    } else if (turns.length > 0) {
+      turns[turns.length - 1].text += ' ' + line.trim();
+      turns[turns.length - 1].originalLines.push(line);
+    } else {
+      turns.push({ speaker: '', text: line.trim(), originalLines: [line], score: 0 });
+    }
+  }
+
+  if (turns.length === 0) return text.slice(0, targetLength);
+
+  const decisionKeywords = /\b(yes|no|maybe|should|would|could|can|will|do you|are you|is it|if|whether|confirm|verify|check|decide|choose|option|alternative|transfer|escalat|cancel|refund|issue|problem|error|fail|sorry|unfortunately)\b/i;
+  const questionMark = /\?/;
+  const greetingPattern = /\b(hello|hi|hey|good morning|good afternoon|good evening|how are you|how can i help|thank you|thanks|bye|goodbye|have a great|is there anything else)\b/i;
+
+  for (const turn of turns) {
+    let s = 1;
+    if (questionMark.test(turn.text)) s += 3;
+    if (decisionKeywords.test(turn.text)) s += 2;
+    if (greetingPattern.test(turn.text)) s -= 2;
+    if (turn.text.length > 200) s += 1;
+    turn.score = Math.max(0, s);
+  }
+
+  // Keep first and last ~10% of turns at high priority
+  const protectedCount = Math.max(2, Math.ceil(turns.length * 0.1));
+  for (let i = 0; i < protectedCount && i < turns.length; i++) {
+    turns[i].score += 5;
+  }
+  for (let i = Math.max(0, turns.length - protectedCount); i < turns.length; i++) {
+    turns[i].score += 3;
+  }
+
+  const sorted = turns.map((t, i) => ({ turn: t, index: i })).sort((a, b) => a.turn.score - b.turn.score);
+  const summarized = new Set<number>();
+  let currentLength = turns.reduce((acc, t) => acc + t.originalLines.join('\n').length + 1, 0);
+
+  for (const { turn, index } of sorted) {
+    if (currentLength <= targetLength) break;
+    const originalLen = turn.originalLines.join('\n').length;
+    const summary = `[Summarized: ${turn.speaker ? turn.speaker + ' - ' : ''}${turn.text.slice(0, 60).trim()}...]`;
+    const savings = originalLen - summary.length;
+    if (savings <= 0) continue;
+    summarized.add(index);
+    currentLength -= savings;
+  }
+
+  const result: string[] = [];
+  for (let i = 0; i < turns.length; i++) {
+    if (summarized.has(i)) {
+      const t = turns[i];
+      result.push(`[Summarized: ${t.speaker ? t.speaker + ' - ' : ''}${t.text.slice(0, 60).trim()}...]`);
+    } else {
+      result.push(...turns[i].originalLines);
+    }
+  }
+
+  return result.join('\n');
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+interface GraphValidationIssue {
+  code: 'cycle' | 'orphan' | 'dangling';
+  nodeId: string;
+  detail: string;
+}
+
+function validateFlowGraphServer(
+  nodes: FlowNode[],
+  connections: FlowConnection[],
+): { isValid: boolean; issues: GraphValidationIssue[] } {
+  if (nodes.length === 0) return { isValid: true, issues: [] };
+
+  const issues: GraphValidationIssue[] = [];
+  const nodeIds = new Set(nodes.map((n) => n.id));
+
+  const outgoing = new Map<string, string[]>();
+  for (const id of nodeIds) outgoing.set(id, []);
+  for (const conn of connections) {
+    if (!nodeIds.has(conn.from) || !nodeIds.has(conn.to)) continue;
+    outgoing.get(conn.from)!.push(conn.to);
+  }
+
+  const WHITE = 0;
+  const GRAY = 1;
+  const BLACK = 2;
+  const color = new Map<string, number>();
+  for (const id of nodeIds) color.set(id, WHITE);
+  const cycleEdges = new Set<string>();
+
+  function dfs(nodeId: string): void {
+    color.set(nodeId, GRAY);
+    for (const neighbor of outgoing.get(nodeId) ?? []) {
+      const key = `${nodeId}->${neighbor}`;
+      if (color.get(neighbor) === GRAY && !cycleEdges.has(key)) {
+        cycleEdges.add(key);
+        issues.push({
+          code: 'cycle',
+          nodeId: neighbor,
+          detail: `Cycle: "${nodeId}" -> "${neighbor}".`,
+        });
+      } else if (color.get(neighbor) === WHITE) {
+        dfs(neighbor);
+      }
+    }
+    color.set(nodeId, BLACK);
+  }
+
+  for (const id of nodeIds) {
+    if (color.get(id) === WHITE) dfs(id);
+  }
+
+  const startTypes = new Set(['start', 'core-persona']);
+  const endTypes = new Set(['end', 'termination']);
+  const startNode = nodes.find((n) => startTypes.has(n.type)) ?? nodes[0];
+  const reachable = new Set<string>();
+  const stack = [startNode.id];
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    if (reachable.has(current)) continue;
+    reachable.add(current);
+    for (const neighbor of outgoing.get(current) ?? []) {
+      if (!reachable.has(neighbor)) stack.push(neighbor);
+    }
+  }
+
+  for (const node of nodes) {
+    if (!reachable.has(node.id)) {
+      issues.push({
+        code: 'orphan',
+        nodeId: node.id,
+        detail: `"${node.label}" unreachable from start.`,
+      });
+    }
+  }
+
+  for (const node of nodes) {
+    if (endTypes.has(node.type)) continue;
+    if ((outgoing.get(node.id) ?? []).length === 0) {
+      issues.push({
+        code: 'dangling',
+        nodeId: node.id,
+        detail: `"${node.label}" has no outgoing connections.`,
+      });
+    }
+  }
+
+  return { isValid: issues.length === 0, issues };
 }

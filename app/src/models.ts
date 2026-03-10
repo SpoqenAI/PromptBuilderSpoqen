@@ -1,3 +1,12 @@
+export interface Folder {
+  id: string;
+  parentId: string | null;
+  name: string;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface Project {
   id: string;
   name: string;
@@ -5,6 +14,7 @@ export interface Project {
   model: string;
   icon: string;
   lastEdited: string;
+  folderId: string | null;
   nodes: PromptNode[];
   connections: Connection[];
   versions: PromptVersion[];

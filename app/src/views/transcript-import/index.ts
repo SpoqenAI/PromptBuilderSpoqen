@@ -120,6 +120,7 @@ export function renderTranscriptImport(
         userName: state.userName,
         transcripts: state.transcripts,
         generationError: state.generationError,
+        validationWarnings: state.validationWarnings,
         persistenceMessage: state.persistenceMessage,
         generatedPromptMarkdown: state.generatedPromptMarkdown,
         promptGenerationMessage: state.promptGenerationMessage,

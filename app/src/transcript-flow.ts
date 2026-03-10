@@ -111,8 +111,9 @@ export async function generateTranscriptFlow(request: TranscriptFlowRequest): Pr
     const combinedTranscript = chunks[i];
     const accessToken = await resolveAccessToken();
 
-    const payload = {
+    const payload: Record<string, unknown> = {
       transcript: combinedTranscript,
+      transcripts: transcripts.length > 1 ? transcripts : undefined,
       existingGraph: existingGraph
         ?? (currentFlow ? { nodes: currentFlow.nodes, connections: currentFlow.connections } : undefined),
       maxNodes: normalizeMaxNodes(request.maxNodes),

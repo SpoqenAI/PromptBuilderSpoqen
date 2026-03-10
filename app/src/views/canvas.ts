@@ -358,9 +358,9 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           </div>
         </div>
         <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
-        <div class="flex items-center gap-1 text-xs text-slate-500">
-          <span class="material-icons text-sm">cloud_done</span>
-          <span>Saved</span>
+        <div id="save-status" class="flex items-center gap-1 text-xs text-slate-500 transition-opacity duration-300">
+          <span class="material-icons text-sm" id="save-status-icon">cloud_done</span>
+          <span id="save-status-text">Saved</span>
         </div>
       </div>
       <div class="ui-header-center">
@@ -462,8 +462,9 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
             </button>
           </div>
           <div class="px-4 py-3 space-y-2 text-[11px] text-slate-600 dark:text-slate-300">
-            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Right-click + drag:</span> Pan around the canvas.</div>
-            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Scroll:</span> Zoom in and out.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Two-finger scroll (trackpad):</span> Pan around the canvas.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Middle-click + drag:</span> Pan around the canvas.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Pinch-to-zoom (trackpad) or Ctrl + scroll:</span> Zoom in and out.</div>
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Drag between ports (either direction):</span> Connect nodes.</div>
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click one port, then another:</span> Connect without dragging.</div>
             <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click a connection, then press Delete:</span> Remove it.</div>
@@ -721,12 +722,19 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     armedByClick: boolean;
   }
   let connectionDraft: ConnectionDraft | null = null;
-  let tempLine: SVGLineElement | null = null;
+  let tempLine: SVGPathElement | null = null;
+  let tempLineStartX = 0;
+  let tempLineStartY = 0;
   let connectPointerStartX = 0;
   let connectPointerStartY = 0;
   let connectPointerMoved = false;
   let suppressNextPortClick = false;
   let selectedConnectionId: string | null = null;
+
+  function buildBezierCurve(x1: number, y1: number, x2: number, y2: number): string {
+    const dx = Math.abs(x2 - x1) * 0.5;
+    return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+  }
 
   function suppressPortClickOnce(): void {
     suppressNextPortClick = true;
@@ -805,14 +813,14 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     connectPointerMoved = false;
 
     const start = getPortCenter(portEl);
-    tempLine = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-    tempLine.setAttribute('x1', String(start.x));
-    tempLine.setAttribute('y1', String(start.y));
-    tempLine.setAttribute('x2', String(start.x));
-    tempLine.setAttribute('y2', String(start.y));
+    tempLineStartX = start.x;
+    tempLineStartY = start.y;
+    tempLine = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    tempLine.setAttribute('d', buildBezierCurve(start.x, start.y, start.x, start.y));
     tempLine.setAttribute('stroke', '#23956F');
     tempLine.setAttribute('stroke-width', '2');
     tempLine.setAttribute('stroke-dasharray', '6,3');
+    tempLine.setAttribute('fill', 'none');
     tempLine.setAttribute('opacity', '0.6');
     svgEl.appendChild(tempLine);
     highlightConnectionTargets(connectionDraft);
@@ -1244,8 +1252,9 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       connectPointerMoved = true;
     }
     const canvasRect = canvasArea.getBoundingClientRect();
-    tempLine.setAttribute('x2', String(e.clientX - canvasRect.left));
-    tempLine.setAttribute('y2', String(e.clientY - canvasRect.top));
+    const endX = e.clientX - canvasRect.left;
+    const endY = e.clientY - canvasRect.top;
+    tempLine.setAttribute('d', buildBezierCurve(tempLineStartX, tempLineStartY, endX, endY));
   });
 
   addManagedListener(document, 'mouseup', (e: MouseEvent) => {
@@ -1332,12 +1341,28 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     const canvasRect = canvasArea.getBoundingClientRect();
     let selectedConnectionStillExists = false;
 
+    // Arrowhead marker definition
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    marker.setAttribute('id', 'connection-arrow');
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '10');
+    marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '8');
+    marker.setAttribute('orient', 'auto-start-reverse');
+    const arrowPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    arrowPath.setAttribute('d', 'M 0 1.5 L 10 5 L 0 8.5 Z');
+    arrowPath.setAttribute('fill', '#23956F');
+    marker.appendChild(arrowPath);
+    defs.appendChild(marker);
+    svgEl.appendChild(defs);
+
     for (const conn of project!.connections) {
       const fromEl = nodesContainer.querySelector<HTMLElement>(`[data-node-id="${conn.from}"]`);
       const toEl = nodesContainer.querySelector<HTMLElement>(`[data-node-id="${conn.to}"]`);
       if (!fromEl || !toEl) continue;
 
-      // Use port positions for more accurate connections
       const outPort = fromEl.querySelector('.port-out');
       const inPort = toEl.querySelector('.port-in');
       if (!outPort || !inPort) continue;
@@ -1350,8 +1375,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       const x2 = toRect.left + toRect.width / 2 - canvasRect.left;
       const y2 = toRect.top + toRect.height / 2 - canvasRect.top;
 
-      const dx = Math.abs(x2 - x1) * 0.5;
-      const curve = `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+      const curve = buildBezierCurve(x1, y1, x2, y2);
       const isSelected = conn.id === selectedConnectionId;
       if (isSelected) selectedConnectionStillExists = true;
       const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -1359,6 +1383,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       path.setAttribute('stroke', '#23956F');
       path.setAttribute('stroke-width', '2');
       path.setAttribute('fill', 'none');
+      path.setAttribute('marker-end', 'url(#connection-arrow)');
       path.dataset.connectionId = conn.id;
       path.dataset.fromNodeId = conn.from;
       path.dataset.toNodeId = conn.to;
@@ -1370,7 +1395,6 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       // Wide transparent path for reliable click targets.
       const hitPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
       hitPath.setAttribute('d', curve);
-      // Use near-transparent painted stroke so hit-testing works consistently across browsers.
       hitPath.setAttribute('stroke', '#23956F');
       hitPath.setAttribute('stroke-opacity', '0.001');
       hitPath.setAttribute('stroke-width', '14');
@@ -1407,38 +1431,61 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           const labelText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           labelText.textContent = connectionLabel;
           labelText.setAttribute('x', String(midpoint.x));
-          labelText.setAttribute('y', String(midpoint.y - 8));
-          labelText.setAttribute('font-size', '10');
-          labelText.setAttribute('font-weight', isSelected ? '700' : '600');
+          labelText.setAttribute('y', String(midpoint.y - 10));
+          labelText.setAttribute('font-size', '13');
+          labelText.setAttribute('font-weight', '700');
           labelText.setAttribute('text-anchor', 'middle');
           labelText.setAttribute('fill', isSelected ? '#0f766e' : '#1f2937');
           labelText.style.pointerEvents = 'none';
           svgEl.appendChild(labelText);
 
           const labelBox = labelText.getBBox();
+          const bgPadX = 10;
+          const bgPadY = 6;
           const labelBackground = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-          labelBackground.setAttribute('x', String(labelBox.x - 4));
-          labelBackground.setAttribute('y', String(labelBox.y - 2));
-          labelBackground.setAttribute('width', String(labelBox.width + 8));
-          labelBackground.setAttribute('height', String(labelBox.height + 4));
-          labelBackground.setAttribute('rx', '4');
+          labelBackground.setAttribute('x', String(labelBox.x - bgPadX));
+          labelBackground.setAttribute('y', String(labelBox.y - bgPadY));
+          labelBackground.setAttribute('width', String(labelBox.width + bgPadX * 2));
+          labelBackground.setAttribute('height', String(labelBox.height + bgPadY * 2));
+          labelBackground.setAttribute('rx', '6');
           labelBackground.setAttribute('fill', isSelected ? 'rgba(20, 184, 166, 0.20)' : 'rgba(255,255,255,0.92)');
           labelBackground.setAttribute('stroke', isSelected ? 'rgba(15, 118, 110, 0.45)' : 'rgba(31,41,55,0.25)');
           labelBackground.style.pointerEvents = 'none';
           svgEl.insertBefore(labelBackground, labelText);
+
+          // Enlarged hit-rect over the label for easy clicking/editing
+          const labelHitRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          labelHitRect.setAttribute('x', String(labelBox.x - bgPadX));
+          labelHitRect.setAttribute('y', String(labelBox.y - bgPadY));
+          labelHitRect.setAttribute('width', String(labelBox.width + bgPadX * 2));
+          labelHitRect.setAttribute('height', String(labelBox.height + bgPadY * 2));
+          labelHitRect.setAttribute('rx', '6');
+          labelHitRect.setAttribute('fill', 'transparent');
+          labelHitRect.style.cursor = 'pointer';
+          labelHitRect.style.pointerEvents = 'all';
+          labelHitRect.addEventListener('click', (e: MouseEvent) => {
+            e.stopPropagation();
+            selectedConnectionId = conn.id;
+            drawConnections();
+          });
+          labelHitRect.addEventListener('dblclick', (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            selectedConnectionId = conn.id;
+            void editConnectionLabel(conn.id);
+          });
+          svgEl.appendChild(labelHitRect);
         }
       }
 
-      // Dots at endpoints
-      for (const [cx, cy] of [[x1, y1], [x2, y2]]) {
-        const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-        circle.setAttribute('cx', String(cx));
-        circle.setAttribute('cy', String(cy));
-        circle.setAttribute('r', '5');
-        circle.setAttribute('fill', '#23956F');
-        circle.style.pointerEvents = 'none';
-        svgEl.appendChild(circle);
-      }
+      // Dot at source endpoint
+      const srcCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      srcCircle.setAttribute('cx', String(x1));
+      srcCircle.setAttribute('cy', String(y1));
+      srcCircle.setAttribute('r', '5');
+      srcCircle.setAttribute('fill', '#23956F');
+      srcCircle.style.pointerEvents = 'none';
+      svgEl.appendChild(srcCircle);
 
       // Animated flow dot along the path
       const flowDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
@@ -1463,7 +1510,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   applyViewportTransform();
   renderNodes();
 
-  // -- Viewport controls: right-click drag pan + button zoom --
+  // -- Viewport controls: middle/right-click drag pan + trackpad pan + ctrl-zoom --
   let isPanning = false;
   let panStartMouseX = 0;
   let panStartMouseY = 0;
@@ -1475,7 +1522,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   });
 
   canvasArea.addEventListener('mousedown', (e: MouseEvent) => {
-    if (e.button !== 2) return;
+    if (e.button !== 1 && e.button !== 2) return;
     isPanning = true;
     panStartMouseX = e.clientX;
     panStartMouseY = e.clientY;
@@ -1558,16 +1605,21 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     setHelpPanelOpen(false);
   });
 
-  // Mouse wheel / trackpad zoom around cursor
+  // Trackpad pan (two-finger scroll) / ctrl-pinch zoom
   canvasArea.addEventListener('wheel', (e: WheelEvent) => {
     e.preventDefault();
-    const rect = canvasArea.getBoundingClientRect();
-    const focalX = e.clientX - rect.left;
-    const focalY = e.clientY - rect.top;
-    // Exponential scaling feels smoother across mouse wheels and trackpads.
-    const sensitivity = e.ctrlKey ? 0.0025 : 0.0012;
-    const scaleFactor = Math.exp(-normalizeWheelDelta(e) * sensitivity);
-    zoomAt(zoom * scaleFactor, focalX, focalY);
+    if (e.ctrlKey || e.metaKey) {
+      const rect = canvasArea.getBoundingClientRect();
+      const focalX = e.clientX - rect.left;
+      const focalY = e.clientY - rect.top;
+      const scaleFactor = Math.exp(-normalizeWheelDelta(e) * 0.0025);
+      zoomAt(zoom * scaleFactor, focalX, focalY);
+    } else {
+      panX -= e.deltaX;
+      panY -= e.deltaY;
+      applyViewportTransform();
+      scheduleDrawConnections();
+    }
   }, { passive: false });
 
   const MIN_TRANSCRIPT_ITERATION_LENGTH = 20;
@@ -2269,6 +2321,35 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       terminalPanel.removeAttribute('data-open');
       setTimeout(() => terminalPanel.classList.add('hidden'), 300);
     }
+  });
+
+  // Auto-save status indicator
+  const saveStatusIcon = container.querySelector<HTMLElement>('#save-status-icon');
+  const saveStatusText = container.querySelector<HTMLElement>('#save-status-text');
+  const saveStatusEl = container.querySelector<HTMLElement>('#save-status');
+  let saveCompleteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const onAutoSaveStart = (): void => {
+    if (saveCompleteTimer) { clearTimeout(saveCompleteTimer); saveCompleteTimer = null; }
+    if (saveStatusIcon) saveStatusIcon.textContent = 'sync';
+    if (saveStatusText) saveStatusText.textContent = 'Auto-saving\u2026';
+    saveStatusEl?.classList.remove('opacity-60');
+  };
+
+  const onAutoSaveComplete = (): void => {
+    if (saveStatusIcon) saveStatusIcon.textContent = 'cloud_done';
+    if (saveStatusText) saveStatusText.textContent = 'Saved';
+    if (saveCompleteTimer) clearTimeout(saveCompleteTimer);
+    saveCompleteTimer = setTimeout(() => {
+      saveStatusEl?.classList.add('opacity-60');
+    }, 2000);
+  };
+
+  window.addEventListener('store:auto-save-start', onAutoSaveStart);
+  window.addEventListener('store:auto-save-complete', onAutoSaveComplete);
+  registerTeardown(() => {
+    window.removeEventListener('store:auto-save-start', onAutoSaveStart);
+    window.removeEventListener('store:auto-save-complete', onAutoSaveComplete);
   });
 
   // Theme toggle

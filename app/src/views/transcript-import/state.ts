@@ -14,6 +14,7 @@ export function createTranscriptImportState(): TranscriptImportState {
     userName: 'User',
     generatedFlow: null,
     generationError: '',
+    validationWarnings: [],
     isGenerating: false,
     isHydratingWorkspace: false,
     processingProgress: null,
@@ -47,6 +48,7 @@ export function createTranscriptImportState(): TranscriptImportState {
 export function clearTranscriptSession(state: TranscriptImportState): void {
   state.transcripts = [];
   state.generationError = '';
+  state.validationWarnings = [];
   state.processingProgress = null;
   state.generatedFlow = null;
   state.isHydratingWorkspace = false;
