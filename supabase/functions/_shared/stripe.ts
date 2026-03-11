@@ -63,12 +63,16 @@ export async function stripeRequest<T>(
 const INDIVIDUAL_PRICE_IDS = new Set(
   (Deno.env.get('STRIPE_INDIVIDUAL_PRICE_ID') ?? '').split(',').map(s => s.trim()).filter(Boolean),
 );
+const GROWTH_PRICE_IDS = new Set(
+  (Deno.env.get('STRIPE_GROWTH_PRICE_ID') ?? '').split(',').map(s => s.trim()).filter(Boolean),
+);
 const ENTERPRISE_PRICE_IDS = new Set(
   (Deno.env.get('STRIPE_ENTERPRISE_PRICE_ID') ?? '').split(',').map(s => s.trim()).filter(Boolean),
 );
 
-export function resolveTier(priceId: string): 'individual' | 'enterprise' {
+export function resolveTier(priceId: string): 'individual' | 'growth' | 'enterprise' {
   if (ENTERPRISE_PRICE_IDS.has(priceId)) return 'enterprise';
+  if (GROWTH_PRICE_IDS.has(priceId)) return 'growth';
   if (INDIVIDUAL_PRICE_IDS.has(priceId)) return 'individual';
   return 'individual';
 }
@@ -77,7 +81,7 @@ export function isAllowedPriceId(priceId: string): boolean {
   if (priceId.startsWith('prod_')) {
     return false;
   }
-  return INDIVIDUAL_PRICE_IDS.has(priceId) || ENTERPRISE_PRICE_IDS.has(priceId);
+  return INDIVIDUAL_PRICE_IDS.has(priceId) || GROWTH_PRICE_IDS.has(priceId) || ENTERPRISE_PRICE_IDS.has(priceId);
 }
 
 // Stripe webhook signature verification (HMAC-SHA256)

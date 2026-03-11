@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 
-export type SubscriptionTier = 'individual' | 'enterprise';
+export type SubscriptionTier = 'individual' | 'growth' | 'enterprise';
 export type SubscriptionStatus =
   | 'active'
   | 'canceled'
@@ -141,7 +141,12 @@ export function formatPeriodEnd(isoDate: string | null): string {
 }
 
 export function tierLabel(tier: SubscriptionTier): string {
-  return tier === 'enterprise' ? 'Enterprise' : 'Individual';
+  const labels: Record<SubscriptionTier, string> = {
+    individual: 'Individual',
+    growth: 'Growth',
+    enterprise: 'Enterprise',
+  };
+  return labels[tier] ?? 'Individual';
 }
 
 export function statusLabel(status: SubscriptionStatus): string {

@@ -738,6 +738,54 @@ export interface Database {
         };
         Relationships: [];
       };
+      user_credits: {
+        Row: {
+          user_id: string;
+          credits_remaining: number;
+          credits_allowance: number;
+          period_end: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          user_id: string;
+          credits_remaining?: number;
+          credits_allowance?: number;
+          period_end?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          user_id?: string;
+          credits_remaining?: number;
+          credits_allowance?: number;
+          period_end?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      plan_members: {
+        Row: {
+          id: string;
+          owner_id: string;
+          member_user_id: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          owner_id: string;
+          member_user_id: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          owner_id?: string;
+          member_user_id?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
       feature_usage: {
         Row: {
           id: string;

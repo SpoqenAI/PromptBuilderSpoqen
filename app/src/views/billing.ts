@@ -12,10 +12,23 @@ import {
   type SubscriptionTier,
 } from '../billing';
 import { getSubscriptionLimits, type SubscriptionLimits } from '../subscription-limits';
+import { getUserCredits, type UserCredits } from '../credits';
+import {
+  getPlanMembers,
+  getPlanOwner,
+  addPlanMember,
+  removePlanMember,
+  addCreditsToMember,
+  type PlanMember,
+  type PlanOwnerInfo,
+} from '../team';
 
 export function renderBilling(container: HTMLElement): void {
   let subscription: Subscription | null = null;
   let limits: SubscriptionLimits | null = null;
+  let credits: UserCredits | null = null;
+  let planMembers: PlanMember[] = [];
+  let planOwner: PlanOwnerInfo | null = null;
   let loading = true;
   let actionLoading = false;
   let errorMessage = '';
@@ -42,7 +55,7 @@ export function renderBilling(container: HTMLElement): void {
     if (subscription) {
       return 'Your subscription is managed by Stripe. Use Manage Subscription to update payment details or cancel.';
     }
-    return 'You\'re on the free plan. Limits: 3 prompt flows, 3 transcript flows, 3 transcript sets, 1 import each.';
+    return 'You\'re on the Free plan with 25 credits/month. Upgrade anytime to unlock more credits and features.';
   }
 
   function render(): void {
@@ -67,7 +80,7 @@ export function renderBilling(container: HTMLElement): void {
       </header>
 
       <main class="flex-1 min-h-0 overflow-y-auto custom-scrollbar">
-        <div class="max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <div class="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
           ${successMessage ? `<div class="mb-6 rounded-lg border border-green-300 bg-green-50 dark:border-green-700 dark:bg-green-950 px-4 py-3 text-sm text-green-800 dark:text-green-200">${successMessage}</div>` : ''}
           ${errorMessage ? `<div class="mb-6 rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">${errorMessage}</div>` : ''}
           ${statusBanner && !successMessage && !errorMessage ? `<div class="mb-6 rounded-lg border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/50 px-4 py-3 text-sm text-slate-700 dark:text-slate-300">${statusBanner}</div>` : ''}
@@ -96,9 +109,37 @@ export function renderBilling(container: HTMLElement): void {
       return renderTeamBetaCard();
     }
     if (subscription) {
-      return renderCurrentPlan(subscription);
+      return renderCurrentPlan(subscription) + renderCreditTracker() + renderTeamSection();
     }
-    return renderPricingCards();
+    return renderPricingCards() + renderCreditTracker() + renderPlanOwnerBanner();
+  }
+
+  function renderCreditTracker(): string {
+    if (!credits) return '';
+    const pct = credits.creditsAllowance > 0
+      ? Math.round((credits.creditsRemaining / credits.creditsAllowance) * 100)
+      : 0;
+    const barColor = pct > 25 ? 'bg-primary' : pct > 10 ? 'bg-amber-500' : 'bg-red-500';
+    const periodNote = credits.periodEnd
+      ? `Resets ${formatPeriodEnd(credits.periodEnd)}`
+      : 'Resets at the start of your next billing cycle';
+
+    return `
+      <div class="rounded-xl border border-card-border dark:border-primary/20 bg-white dark:bg-slate-900 p-6 shadow-sm mt-8">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-200">Credit Usage</h3>
+          <span class="text-xs text-slate-500 dark:text-slate-400">${periodNote}</span>
+        </div>
+        <div class="flex items-end justify-between mb-2">
+          <p class="text-2xl font-bold text-slate-900 dark:text-slate-100">${credits.creditsRemaining}<span class="text-sm font-normal text-slate-400"> / ${credits.creditsAllowance}</span></p>
+          <span class="text-xs text-slate-500 dark:text-slate-400">${pct}% remaining</span>
+        </div>
+        <div class="w-full h-2.5 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+          <div class="${barColor} h-full rounded-full transition-all" style="width: ${pct}%"></div>
+        </div>
+        <p class="text-[11px] text-slate-400 dark:text-slate-500 mt-3">Credits are consumed by prompt operations. ${subscription ? 'Purchase additional credit packs via Manage Subscription.' : 'Upgrade to a paid plan for more credits.'}</p>
+      </div>
+    `;
   }
 
   function renderTeamBetaCard(): string {
@@ -163,7 +204,7 @@ export function renderBilling(container: HTMLElement): void {
           <button id="btn-manage-subscription" type="button" class="rounded-lg bg-primary text-white px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors disabled:opacity-50" ${actionLoading ? 'disabled' : ''}>
             ${actionLoading ? 'Loading...' : 'Manage Subscription'}
           </button>
-          ${sub.tier === 'individual' ? `
+          ${sub.tier !== 'enterprise' ? `
             <button id="btn-upgrade-enterprise" type="button" class="rounded-lg border border-primary text-primary px-4 py-2 text-sm font-medium hover:bg-primary/5 transition-colors disabled:opacity-50" ${actionLoading ? 'disabled' : ''}>
               Upgrade to Enterprise
             </button>
@@ -183,6 +224,12 @@ export function renderBilling(container: HTMLElement): void {
   }
 
   function renderPricingCards(): string {
+    const freeFeatures = [
+      '3 prompt flows',
+      '3 transcript flows',
+      '3 transcript sets',
+      '1 import each (prompt & transcript)',
+    ];
     const individualFeatures = [
       'Unlimited prompt flows',
       'Unlimited transcript flows & imports',
@@ -191,39 +238,71 @@ export function renderBilling(container: HTMLElement): void {
       'Version history & diff',
       'Session replay (Sentry)',
     ];
-    const enterpriseFeatures = [
+    const growthFeatures = [
       'Everything in Individual',
+      'Team collaboration (up to 5 seats)',
+      'Shared prompt libraries',
       'Priority support',
       'Advanced analytics',
+    ];
+    const enterpriseFeatures = [
+      'Everything in Growth',
+      'Unlimited seats',
       'Custom node templates',
       'Prompt optimization runs',
-      'Team collaboration (coming soon)',
+      'Dedicated support & SLA',
+      'SSO & advanced security (coming soon)',
     ];
+
+    const isOnFree = !subscription && !limits?.hasFullAccess;
+    const fullAccess = limits?.hasFullAccess ?? false;
 
     return `
       <div class="text-center mb-8">
         <h2 class="text-2xl font-bold text-slate-900 dark:text-slate-100">Choose your plan</h2>
-        <p class="text-sm text-slate-500 dark:text-slate-400 mt-2">Get started with Spoqen and unlock the full power of prompt engineering.</p>
+        <p class="text-sm text-slate-500 dark:text-slate-400 mt-2">Every plan includes a monthly credit allowance. Need more? Purchase additional credit packs anytime.</p>
       </div>
 
-      <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        ${renderPricingCard({
+          tier: null,
+          title: 'Free',
+          description: 'Get started with core features.',
+          credits: '25 credits / month',
+          features: freeFeatures,
+          cta: isOnFree ? 'Current plan' : 'Free forever',
+          highlight: false,
+          disabled: true,
+        })}
         ${renderPricingCard({
           tier: 'individual',
           title: 'Individual',
           description: 'For solo builders and prompt engineers.',
+          credits: '100 credits / month',
           features: individualFeatures,
           cta: 'Get Started',
           highlight: false,
-          disabled: limits?.hasFullAccess ?? false,
+          disabled: fullAccess,
+        })}
+        ${renderPricingCard({
+          tier: 'growth',
+          title: 'Growth',
+          description: 'For startups with a team of 3\u20135.',
+          credits: '500 credits / month',
+          features: growthFeatures,
+          cta: 'Get Started',
+          highlight: true,
+          disabled: fullAccess,
         })}
         ${renderPricingCard({
           tier: 'enterprise',
           title: 'Enterprise',
           description: 'For teams building production voice AI.',
+          credits: 'Custom credits',
           features: enterpriseFeatures,
           cta: 'Get Started',
-          highlight: true,
-          disabled: limits?.hasFullAccess ?? false,
+          highlight: false,
+          disabled: fullAccess,
         })}
       </div>
       <p class="text-center text-xs text-slate-500 dark:text-slate-400 mt-4">No long-term commitment. Cancel anytime in Stripe.</p>
@@ -231,9 +310,10 @@ export function renderBilling(container: HTMLElement): void {
   }
 
   function renderPricingCard(card: {
-    tier: SubscriptionTier;
+    tier: SubscriptionTier | null;
     title: string;
     description: string;
+    credits: string;
     features: string[];
     cta: string;
     highlight: boolean;
@@ -243,21 +323,26 @@ export function renderBilling(container: HTMLElement): void {
       ? 'border-primary ring-1 ring-primary/20'
       : 'border-card-border dark:border-primary/20';
     const badge = card.highlight
-      ? '<span class="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary text-white text-[10px] font-bold px-3 py-1 uppercase tracking-wider">Popular</span>'
+      ? '<span class="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-primary text-white text-[10px] font-bold px-3 py-1 uppercase tracking-wider">Most popular</span>'
       : '';
 
+    const isFree = card.tier === null;
     const btnDisabled = card.disabled || actionLoading;
-    const btnContent = card.disabled
-      ? 'Full access (team/beta)'
-      : card.cta;
+    let btnContent: string;
+    if (limits?.hasFullAccess && !isFree) {
+      btnContent = 'Full access (team/beta)';
+    } else {
+      btnContent = card.cta;
+    }
 
     return `
       <div class="relative rounded-xl border ${borderClass} bg-white dark:bg-slate-900 p-6 shadow-sm flex flex-col">
         ${badge}
         <h3 class="text-lg font-bold text-slate-900 dark:text-slate-100">${card.title}</h3>
-        <p class="text-sm text-slate-500 dark:text-slate-400 mt-1 mb-5">${card.description}</p>
+        <p class="text-sm text-slate-500 dark:text-slate-400 mt-1">${card.description}</p>
+        <p class="text-sm font-semibold text-primary mt-2 mb-4">${card.credits}</p>
 
-        <ul class="space-y-2 mb-6 flex-1">
+        <ul class="space-y-2 mb-4 flex-1">
           ${card.features.map(f => `
             <li class="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-300">
               <span class="material-icons-outlined text-primary text-base mt-0.5">check_circle</span>
@@ -266,11 +351,102 @@ export function renderBilling(container: HTMLElement): void {
           `).join('')}
         </ul>
 
-        <button data-tier="${card.tier}" type="button" class="btn-subscribe w-full rounded-lg ${card.highlight ? 'bg-primary text-white hover:bg-primary/90' : 'border border-primary text-primary hover:bg-primary/5'} px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed" ${btnDisabled ? 'disabled' : ''} title="${card.disabled ? 'Billing is handled by your team; your account already has full access.' : ''}">
+        <p class="text-[11px] text-slate-400 dark:text-slate-500 mb-3">${isFree ? 'Need more? Subscribe to buy credit packs.' : 'Run out? Purchase additional credit packs anytime.'}</p>
+
+        <button ${isFree ? '' : `data-tier="${card.tier}"`} type="button" class="${isFree ? '' : 'btn-subscribe '}w-full rounded-lg ${card.highlight ? 'bg-primary text-white hover:bg-primary/90' : 'border border-primary text-primary hover:bg-primary/5'} px-4 py-2.5 text-sm font-semibold transition-colors disabled:opacity-50 disabled:cursor-not-allowed" ${btnDisabled ? 'disabled' : ''} title="${card.disabled && !isFree ? 'Billing is handled by your team; your account already has full access.' : ''}">
           ${actionLoading && !card.disabled ? 'Loading...' : btnContent}
         </button>
       </div>
     `;
+  }
+
+  function renderPlanOwnerBanner(): string {
+    if (!planOwner) return '';
+    const ownerDisplay = planOwner.fullName || planOwner.email;
+    return `
+      <div class="rounded-xl border border-card-border dark:border-primary/20 bg-white dark:bg-slate-900 p-5 shadow-sm mt-8">
+        <div class="flex items-center gap-3">
+          <span class="material-icons-outlined text-primary text-xl">group</span>
+          <div>
+            <p class="text-sm font-semibold text-slate-800 dark:text-slate-200">Your plan is managed by ${escapeAttr(ownerDisplay)}</p>
+            <p class="text-xs text-slate-500 dark:text-slate-400 mt-0.5">Contact your plan administrator for changes to your subscription or to request additional credits.</p>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderTeamSection(): string {
+    const isTeamTier = subscription && (subscription.tier === 'growth' || subscription.tier === 'enterprise');
+    if (!isTeamTier) {
+      return renderPlanOwnerBanner();
+    }
+
+    if (planMembers.length === 0 && !planOwner) {
+      return `
+        <div class="rounded-xl border border-card-border dark:border-primary/20 bg-white dark:bg-slate-900 p-6 shadow-sm mt-8">
+          <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-3">Team Members</h3>
+          <p class="text-xs text-slate-500 dark:text-slate-400 mb-4">Add team members to share your plan. They'll get their own credit allowance that you can manage.</p>
+          <div class="flex gap-2">
+            <input id="add-member-email" type="email" placeholder="Enter email address" class="flex-1 rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:ring-1 focus:ring-primary focus:border-primary outline-none" />
+            <button id="btn-add-member" type="button" class="rounded-lg bg-primary text-white px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors">Add</button>
+          </div>
+          <p id="add-member-error" class="text-xs text-red-500 mt-2 hidden"></p>
+        </div>
+      `;
+    }
+
+    if (planOwner && planMembers.length === 0) {
+      return renderPlanOwnerBanner();
+    }
+
+    const memberRows = planMembers.map(m => `
+      <tr class="border-t border-card-border dark:border-primary/10">
+        <td class="py-3 pr-3">
+          <p class="text-sm font-medium text-slate-800 dark:text-slate-200">${escapeAttr(m.fullName || m.email)}</p>
+          ${m.fullName ? `<p class="text-[11px] text-slate-400">${escapeAttr(m.email)}</p>` : ''}
+        </td>
+        <td class="py-3 px-3 text-sm text-slate-600 dark:text-slate-300">
+          ${m.creditsRemaining !== null ? `${m.creditsRemaining} / ${m.creditsAllowance ?? '—'}` : 'No data'}
+        </td>
+        <td class="py-3 pl-3 text-right">
+          <div class="flex items-center justify-end gap-2">
+            <button class="btn-add-credits-member text-xs text-primary hover:text-primary/80 font-medium" data-member-user-id="${escapeAttr(m.memberUserId)}">Add credits</button>
+            <button class="btn-remove-member text-xs text-red-500 hover:text-red-600 font-medium" data-membership-id="${escapeAttr(m.id)}">Remove</button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+
+    return `
+      <div class="rounded-xl border border-card-border dark:border-primary/20 bg-white dark:bg-slate-900 p-6 shadow-sm mt-8">
+        <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-4">Team Members</h3>
+        <table class="w-full text-left">
+          <thead>
+            <tr class="text-[11px] text-slate-400 uppercase tracking-wider">
+              <th class="pb-2 pr-3 font-medium">Member</th>
+              <th class="pb-2 px-3 font-medium">Credits</th>
+              <th class="pb-2 pl-3 text-right font-medium">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${memberRows}
+          </tbody>
+        </table>
+        <div class="mt-4 pt-4 border-t border-card-border dark:border-primary/10">
+          <p class="text-xs text-slate-500 dark:text-slate-400 mb-3">Add a new team member by email</p>
+          <div class="flex gap-2">
+            <input id="add-member-email" type="email" placeholder="Enter email address" class="flex-1 rounded-lg border border-card-border dark:border-primary/20 bg-white dark:bg-slate-800 px-3 py-2 text-sm focus:ring-1 focus:ring-primary focus:border-primary outline-none" />
+            <button id="btn-add-member" type="button" class="rounded-lg bg-primary text-white px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors">Add</button>
+          </div>
+          <p id="add-member-error" class="text-xs text-red-500 mt-2 hidden"></p>
+        </div>
+      </div>
+    `;
+  }
+
+  function escapeAttr(str: string): string {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
   function renderFaqFooter(): string {
@@ -287,8 +463,12 @@ export function renderBilling(container: HTMLElement): void {
             <dd class="text-xs text-slate-500 dark:text-slate-400 mt-1">Click Manage Subscription to open the Stripe Customer Portal. There you can cancel or update your plan.</dd>
           </div>
           <div>
+            <dt class="text-xs font-medium text-slate-700 dark:text-slate-300">How do credits work?</dt>
+            <dd class="text-xs text-slate-500 dark:text-slate-400 mt-1">Every plan includes a monthly credit allowance that resets each billing cycle. If you run out, you can purchase additional credit packs through the Stripe Customer Portal (click Manage Subscription). Free-tier users can upgrade to a paid plan to access credit packs.</dd>
+          </div>
+          <div>
             <dt class="text-xs font-medium text-slate-700 dark:text-slate-300">How do limits work on the free plan?</dt>
-            <dd class="text-xs text-slate-500 dark:text-slate-400 mt-1">Free users can create up to 3 prompt flows, 3 transcript flows, 3 transcript sets, and use each import feature once. Upgrade to Pro for unlimited access.</dd>
+            <dd class="text-xs text-slate-500 dark:text-slate-400 mt-1">Free users receive 25 credits per month and can create up to 3 prompt flows, 3 transcript flows, 3 transcript sets, and use each import feature once. Upgrade for more credits and unlimited access.</dd>
           </div>
         </dl>
         <p class="text-xs text-slate-500 dark:text-slate-400 mt-4">Need help? Email support@spoqen.com</p>
@@ -307,6 +487,58 @@ export function renderBilling(container: HTMLElement): void {
 
     container.querySelector('#btn-change-plan')?.addEventListener('click', () => {
       void handleAction(() => createPortalSession());
+    });
+
+    container.querySelector('#btn-add-member')?.addEventListener('click', () => {
+      const input = container.querySelector<HTMLInputElement>('#add-member-email');
+      const errorEl = container.querySelector<HTMLElement>('#add-member-error');
+      const email = input?.value?.trim();
+      if (!email) return;
+      void (async () => {
+        const result = await addPlanMember(email);
+        if (result.success) {
+          planMembers = await getPlanMembers();
+          render();
+        } else {
+          if (errorEl) {
+            errorEl.textContent = result.error ?? 'Failed to add member.';
+            errorEl.classList.remove('hidden');
+          }
+        }
+      })();
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.btn-remove-member').forEach(btn => {
+      const membershipId = btn.dataset.membershipId;
+      if (!membershipId) return;
+      btn.addEventListener('click', () => {
+        void (async () => {
+          await removePlanMember(membershipId);
+          planMembers = await getPlanMembers();
+          render();
+        })();
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.btn-add-credits-member').forEach(btn => {
+      const memberUserId = btn.dataset.memberUserId;
+      if (!memberUserId) return;
+      btn.addEventListener('click', () => {
+        const amountStr = prompt('How many credits to add?', '50');
+        if (!amountStr) return;
+        const amount = parseInt(amountStr, 10);
+        if (isNaN(amount) || amount <= 0) return;
+        void (async () => {
+          const result = await addCreditsToMember(memberUserId, amount);
+          if (result.success) {
+            planMembers = await getPlanMembers();
+            render();
+          } else {
+            errorMessage = result.error ?? 'Failed to add credits.';
+            render();
+          }
+        })();
+      });
     });
 
     container.querySelectorAll<HTMLButtonElement>('.btn-subscribe').forEach(btn => {
@@ -339,12 +571,20 @@ export function renderBilling(container: HTMLElement): void {
 
   void (async () => {
     try {
-      const [subRes, limitsRes] = await Promise.all([
+      const [subRes, limitsRes, creditsRes, planOwnerRes] = await Promise.all([
         getSubscription(),
         getSubscriptionLimits(),
+        getUserCredits(),
+        getPlanOwner(),
       ]);
       subscription = subRes;
       limits = limitsRes;
+      credits = creditsRes;
+      planOwner = planOwnerRes;
+
+      if (subRes && (subRes.tier === 'growth' || subRes.tier === 'enterprise')) {
+        planMembers = await getPlanMembers();
+      }
     } catch (err) {
       console.error('Failed to load subscription:', err);
     }

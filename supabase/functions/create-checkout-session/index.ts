@@ -34,9 +34,12 @@ serve(async (req: Request) => {
     let priceId = typeof body.priceId === 'string' ? body.priceId.trim() : '';
 
     if (!priceId && typeof body.tier === 'string') {
-      const tierEnvKey = body.tier === 'enterprise'
-        ? 'STRIPE_ENTERPRISE_PRICE_ID'
-        : 'STRIPE_INDIVIDUAL_PRICE_ID';
+      const tierEnvKeys: Record<string, string> = {
+        enterprise: 'STRIPE_ENTERPRISE_PRICE_ID',
+        growth: 'STRIPE_GROWTH_PRICE_ID',
+        individual: 'STRIPE_INDIVIDUAL_PRICE_ID',
+      };
+      const tierEnvKey = tierEnvKeys[body.tier] ?? 'STRIPE_INDIVIDUAL_PRICE_ID';
       const envVal = Deno.env.get(tierEnvKey) ?? '';
       priceId = envVal.split(',')[0]?.trim() ?? '';
     }

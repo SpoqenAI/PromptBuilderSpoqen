@@ -412,7 +412,7 @@ export function renderDashboard(container: HTMLElement): void {
     // Click on project card → open canvas
     container.querySelectorAll<HTMLElement>('.prompt-project-card').forEach((card) => {
       card.addEventListener('click', (event) => {
-        if ((event.target as HTMLElement).closest('.delete-project,.move-to-folder-select')) return;
+        if ((event.target as HTMLElement).closest('.delete-project,.rename-project,.move-to-folder-select')) return;
         const projectId = card.dataset.projectId;
         if (projectId) router.navigate(`/project/${projectId}`);
       });
@@ -437,7 +437,7 @@ export function renderDashboard(container: HTMLElement): void {
 
     container.querySelectorAll<HTMLElement>('.transcript-project-card').forEach((card) => {
       card.addEventListener('click', (event) => {
-        if ((event.target as HTMLElement).closest('.delete-transcript-flow,.open-transcript-entry,.move-to-folder-select')) return;
+        if ((event.target as HTMLElement).closest('.delete-transcript-flow,.rename-transcript-flow,.open-transcript-entry,.move-to-folder-select')) return;
         const transcriptSetId = card.dataset.transcriptSetId;
         if (!transcriptSetId) return;
         void openTranscriptEntry(transcriptSetId, card.dataset.projectId ?? null);
@@ -451,6 +451,38 @@ export function renderDashboard(container: HTMLElement): void {
         const transcriptSetId = button.dataset.transcriptSetId;
         if (!transcriptSetId) return;
         void openTranscriptEntry(transcriptSetId, button.dataset.projectId ?? null);
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.rename-project').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const projectId = btn.dataset.id;
+        if (!projectId) return;
+        const currentName = btn.dataset.name ?? '';
+        void (async () => {
+          const newName = await customPrompt('Rename project:', currentName);
+          if (newName !== null && newName.trim()) {
+            store.renameProject(projectId, newName.trim());
+            renderDashboard(container);
+          }
+        })();
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.rename-transcript-flow').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const transcriptSetId = btn.dataset.transcriptSetId;
+        if (!transcriptSetId) return;
+        const currentName = btn.dataset.name ?? '';
+        void (async () => {
+          const newName = await customPrompt('Rename transcript flow:', currentName);
+          if (newName !== null && newName.trim()) {
+            store.renameTranscriptSet(transcriptSetId, newName.trim());
+            renderDashboard(container);
+          }
+        })();
       });
     });
 
@@ -877,9 +909,14 @@ function renderPromptFlowCard(project: Project, folders: Folder[]): string {
       <div class="project-card-body p-5 flex-1 flex flex-col">
         <div class="flex justify-between items-start mb-2 gap-2">
           <h3 class="font-semibold text-slate-800 dark:text-slate-100 group-hover:text-primary transition-colors">${escapeHtml(project.name)}</h3>
-          <button class="delete-project text-slate-400 hover:text-red-500 dark:hover:text-red-400 shrink-0" data-id="${escapeHtml(project.id)}" title="Delete project">
-            <span class="material-icons-outlined text-lg">delete_outline</span>
-          </button>
+          <div class="flex items-center gap-0.5 shrink-0">
+            <button class="rename-project text-slate-400 hover:text-primary shrink-0" data-id="${escapeHtml(project.id)}" data-name="${escapeHtml(project.name)}" title="Rename project">
+              <span class="material-icons-outlined text-[16px]">edit</span>
+            </button>
+            <button class="delete-project text-slate-400 hover:text-red-500 dark:hover:text-red-400 shrink-0" data-id="${escapeHtml(project.id)}" title="Delete project">
+              <span class="material-icons-outlined text-lg">delete_outline</span>
+            </button>
+          </div>
         </div>
         <p class="project-description text-sm text-neutral-gray dark:text-neutral-gray/80 line-clamp-2 mb-4">${escapeHtml(project.description)}</p>
         <div class="mt-auto">
@@ -932,9 +969,14 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft, folders: Folder[]):
       <div class="project-card-body p-5 flex-1 flex flex-col">
         <div class="flex items-start justify-between gap-2 mb-2">
           <h3 class="font-semibold text-slate-800 dark:text-slate-100 group-hover:text-primary transition-colors">${escapeHtml(flowTitle)}</h3>
-          <button class="delete-transcript-flow text-slate-400 hover:text-red-500 dark:hover:text-red-400 shrink-0" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}" data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}" title="Delete transcript flow">
-            <span class="material-icons-outlined text-lg">delete_outline</span>
-          </button>
+          <div class="flex items-center gap-0.5 shrink-0">
+            <button class="rename-transcript-flow text-slate-400 hover:text-primary shrink-0" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}" data-name="${escapeHtml(flowTitle)}" title="Rename transcript flow">
+              <span class="material-icons-outlined text-[16px]">edit</span>
+            </button>
+            <button class="delete-transcript-flow text-slate-400 hover:text-red-500 dark:hover:text-red-400 shrink-0" data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}" data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}" title="Delete transcript flow">
+              <span class="material-icons-outlined text-lg">delete_outline</span>
+            </button>
+          </div>
         </div>
         <p class="project-description text-sm text-neutral-gray dark:text-neutral-gray/80 line-clamp-2 mb-4">${escapeHtml(flowSummary)}</p>
         <div class="mt-auto space-y-3">

@@ -114,7 +114,7 @@ For authenticated checks (recommended once you have a stable test user), provide
 
 ## 3c. Stripe Subscription Billing
 
-The app supports Individual and Enterprise subscription tiers via Stripe.
+The app supports Individual, Growth, and Enterprise subscription tiers via Stripe.
 
 ### Set Stripe function secrets
 
@@ -122,17 +122,19 @@ The app supports Individual and Enterprise subscription tiers via Stripe.
 supabase secrets set STRIPE_SECRET_KEY=<your-stripe-secret-key>
 supabase secrets set STRIPE_WEBHOOK_SECRET=<your-stripe-webhook-signing-secret>
 supabase secrets set STRIPE_INDIVIDUAL_PRICE_ID=<price_xxx>
+supabase secrets set STRIPE_GROWTH_PRICE_ID=<price_zzz>
 supabase secrets set STRIPE_ENTERPRISE_PRICE_ID=<price_yyy>
 ```
 
 - `STRIPE_SECRET_KEY`: Stripe API secret key (starts with `sk_test_` or `sk_live_`).
 - `STRIPE_WEBHOOK_SECRET`: Signing secret from the Stripe webhook endpoint settings (starts with `whsec_`).
-- `STRIPE_INDIVIDUAL_PRICE_ID` / `STRIPE_ENTERPRISE_PRICE_ID`: Recurring price IDs from Stripe Dashboard (Products).
+- `STRIPE_INDIVIDUAL_PRICE_ID` / `STRIPE_GROWTH_PRICE_ID` / `STRIPE_ENTERPRISE_PRICE_ID`: Recurring price IDs from Stripe Dashboard (Products).
 
 ### Stripe Products Setup
 
-1. In the [Stripe Dashboard](https://dashboard.stripe.com/products), create two Products:
+1. In the [Stripe Dashboard](https://dashboard.stripe.com/products), create three Products:
    - **Spoqen Individual** — with a recurring Price (monthly or yearly).
+   - **Spoqen Growth** — with a recurring Price (monthly or yearly).
    - **Spoqen Enterprise** — with a recurring Price (monthly or yearly).
 2. Copy each Price ID and set as Supabase secrets above.
 

@@ -520,16 +520,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         </div>
       </div>
 
-      <!-- Right Properties Panel (Collapsed) -->
+      <!-- Right Panel (Collapsed) -->
       <aside class="hidden lg:flex w-12 border-l border-primary/10 bg-white dark:bg-background-dark/50 flex-col items-center py-4 gap-4 shrink-0">
-        <button class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Properties">
-          <span class="material-icons text-lg">tune</span>
-        </button>
         <button id="btn-toggle-terminal" class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Agent Terminal">
           <span class="material-icons text-lg">terminal</span>
-        </button>
-        <button class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Logs">
-          <span class="material-icons text-lg">list_alt</span>
         </button>
         <div class="mt-auto">
           <button id="btn-canvas-help" class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Canvas help" aria-expanded="false" aria-controls="canvas-help-panel">

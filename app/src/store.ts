@@ -670,6 +670,48 @@ class Store {
     });
   }
 
+  renameProject(projectId: string, name: string): void {
+    const project = this.projects.find((p) => p.id === projectId);
+    if (!project) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    project.name = trimmed;
+    project.lastEdited = 'Just now';
+    this.syncTranscriptDraftCacheFromProject(project);
+    this.bg(async () => {
+      const res = await supabase.from('projects').update({ name: trimmed, last_edited: 'Just now' }).eq('id', projectId);
+      this.assertNoError(res, 'rename project');
+    });
+  }
+
+  renameTranscriptSet(transcriptSetId: string, name: string): void {
+    const draft = this.transcriptFlowDrafts.find((d) => d.transcriptSetId === transcriptSetId);
+    if (!draft) return;
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    draft.name = trimmed;
+    draft.updatedAt = new Date().toISOString();
+    if (draft.projectId) {
+      const linkedProject = this.projects.find((p) => p.id === draft.projectId);
+      if (linkedProject) {
+        linkedProject.name = trimmed;
+        linkedProject.lastEdited = 'Just now';
+      }
+    }
+    this.bg(async () => {
+      const res = await supabase
+        .from('transcript_sets')
+        .update({ name: trimmed, updated_at: new Date().toISOString() })
+        .eq('id', transcriptSetId);
+      if (res.error && isTranscriptTableMissing(res.error.message, 'transcript_sets')) return;
+      this.assertNoError(res, 'rename transcript set');
+      if (draft.projectId) {
+        const projRes = await supabase.from('projects').update({ name: trimmed, last_edited: 'Just now' }).eq('id', draft.projectId);
+        this.assertNoError(projRes, 'rename linked project');
+      }
+    });
+  }
+
   moveProjectToFolder(projectId: string, folderId: string | null): void {
     const project = this.projects.find((p) => p.id === projectId);
     if (!project) return;
