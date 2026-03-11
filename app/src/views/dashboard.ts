@@ -852,6 +852,65 @@ export function renderDashboard(container: HTMLElement): void {
       });
     });
 
+    // -- Drag-and-drop: cards/folders → sidebar folder targets --
+    const DROP_HOVER_CLASSES = ['ring-1', 'ring-primary/40', 'bg-primary/5'];
+    let currentDrag: { kind: 'project' | 'transcriptSet' | 'folder'; id: string } | null = null;
+
+    container.querySelectorAll<HTMLElement>('[draggable="true"][data-drag-kind]').forEach((el) => {
+      el.addEventListener('dragstart', (e) => {
+        const kind = el.dataset.dragKind as 'project' | 'transcriptSet' | 'folder' | undefined;
+        const id = el.dataset.dragId;
+        if (!kind || !id) return;
+        currentDrag = { kind, id };
+        e.dataTransfer?.setData('text/plain', JSON.stringify(currentDrag));
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = 'move';
+        el.classList.add('opacity-50');
+      });
+      el.addEventListener('dragend', () => {
+        currentDrag = null;
+        el.classList.remove('opacity-50');
+        container.querySelectorAll('.drop-hover-active').forEach((t) => {
+          DROP_HOVER_CLASSES.forEach((c) => t.classList.remove(c));
+          t.classList.remove('drop-hover-active');
+        });
+      });
+    });
+
+    container.querySelectorAll<HTMLElement>('.folder-tree-item').forEach((target) => {
+      target.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+        if (!target.classList.contains('drop-hover-active')) {
+          DROP_HOVER_CLASSES.forEach((c) => target.classList.add(c));
+          target.classList.add('drop-hover-active');
+        }
+      });
+      target.addEventListener('dragleave', () => {
+        DROP_HOVER_CLASSES.forEach((c) => target.classList.remove(c));
+        target.classList.remove('drop-hover-active');
+      });
+      target.addEventListener('drop', (e) => {
+        e.preventDefault();
+        DROP_HOVER_CLASSES.forEach((c) => target.classList.remove(c));
+        target.classList.remove('drop-hover-active');
+        if (!currentDrag) return;
+        const rawTargetId = target.dataset.folderId ?? '';
+        const isRootTarget = rawTargetId === '__root__' || rawTargetId === '__all__';
+        const targetFolderId = isRootTarget ? null : rawTargetId || null;
+
+        if (currentDrag.kind === 'project') {
+          store.moveProjectToFolder(currentDrag.id, targetFolderId);
+        } else if (currentDrag.kind === 'transcriptSet') {
+          store.moveTranscriptSetToFolder(currentDrag.id, targetFolderId);
+        } else if (currentDrag.kind === 'folder') {
+          if (currentDrag.id === targetFolderId) return;
+          store.moveFolder(currentDrag.id, targetFolderId);
+        }
+        currentDrag = null;
+        renderDashboard(container);
+      });
+    });
+
     // Theme toggle
     wireThemeToggle(container);
     wireDashboardAccountInteractions(container);
@@ -901,7 +960,7 @@ function renderPromptFlowCard(project: Project, folders: Folder[]): string {
   const folderName = project.folderId ? store.getFolder(project.folderId)?.name : null;
 
   return `
-    <div class="dashboard-search-card prompt-project-card project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden flex flex-col" data-project-id="${escapeHtml(project.id)}">
+    <div class="dashboard-search-card prompt-project-card project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 cursor-pointer overflow-hidden flex flex-col" draggable="true" data-drag-kind="project" data-drag-id="${escapeHtml(project.id)}" data-project-id="${escapeHtml(project.id)}">
       <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
         <div class="absolute inset-0 opacity-10 group-hover:opacity-20 transition-opacity" style="background-image: radial-gradient(#23956F 1.5px, transparent 1.5px); background-size: 12px 12px;"></div>
         ${thumbnailHtml}
@@ -960,6 +1019,7 @@ function renderTranscriptFlowCard(flow: TranscriptFlowDraft, folders: Folder[]):
 
   return `
     <div class="dashboard-search-card transcript-project-card cursor-pointer project-card group bg-white dark:bg-slate-800/50 border border-card-border dark:border-primary/10 rounded-xl transition-all duration-200 overflow-hidden flex flex-col"
+      draggable="true" data-drag-kind="transcriptSet" data-drag-id="${escapeHtml(flow.transcriptSetId)}"
       data-project-id="${linkedProjectId ? escapeHtml(linkedProjectId) : ''}"
       data-transcript-set-id="${escapeHtml(flow.transcriptSetId)}">
       <div class="project-card-hero h-32 bg-slate-50 dark:bg-slate-900/50 relative overflow-hidden flex items-center justify-center border-b border-card-border dark:border-primary/5">
@@ -1170,6 +1230,7 @@ function renderFolderTree(
           ${chevron}
           <button
             data-folder-id="${escapeHtml(folder.id)}"
+            draggable="true" data-drag-kind="folder" data-drag-id="${escapeHtml(folder.id)}"
             class="folder-tree-item flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-sm transition-colors truncate ${isSelected ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
           >
             <span class="material-icons-outlined text-[16px]">${isExpanded ? 'folder_open' : 'folder'}</span>

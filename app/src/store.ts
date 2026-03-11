@@ -670,6 +670,31 @@ class Store {
     });
   }
 
+  moveFolder(folderId: string, nextParentId: string | null): void {
+    const folder = this.folders.find((f) => f.id === folderId);
+    if (!folder) return;
+    if (folder.parentId === nextParentId) return;
+    if (nextParentId === folderId) return;
+    if (nextParentId !== null) {
+      const isDescendant = (parentId: string, targetId: string): boolean => {
+        const children = this.folders.filter((f) => f.parentId === parentId);
+        for (const child of children) {
+          if (child.id === targetId) return true;
+          if (isDescendant(child.id, targetId)) return true;
+        }
+        return false;
+      };
+      if (isDescendant(folderId, nextParentId)) return;
+    }
+    folder.parentId = nextParentId;
+    folder.updatedAt = new Date().toISOString();
+    this.bg(async () => {
+      const res = await supabase.from('folders').update({ parent_id: nextParentId, updated_at: folder.updatedAt }).eq('id', folderId);
+      if (res.error && isFolderTableMissing(res.error.message)) return;
+      this.assertNoError(res, 'move folder');
+    });
+  }
+
   renameProject(projectId: string, name: string): void {
     const project = this.projects.find((p) => p.id === projectId);
     if (!project) return;

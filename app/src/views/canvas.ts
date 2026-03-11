@@ -1616,6 +1616,33 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     }
   }, { passive: false });
 
+  // Safari/macOS trackpad pinch-to-zoom uses gesture events.
+  // TypeScript DOM lib doesn't include GestureEvent, so we treat it as unknown.
+  let gestureStartZoom = zoom;
+  const onGestureStart = (event: Event): void => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = event as any;
+    gestureStartZoom = zoom;
+    if (typeof e?.preventDefault === 'function') e.preventDefault();
+  };
+  const onGestureChange = (event: Event): void => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = event as any;
+    if (typeof e?.preventDefault === 'function') e.preventDefault();
+    if (typeof e?.scale !== 'number') return;
+    const rect = canvasArea.getBoundingClientRect();
+    const focalX = (typeof e.clientX === 'number' ? e.clientX : rect.left + rect.width / 2) - rect.left;
+    const focalY = (typeof e.clientY === 'number' ? e.clientY : rect.top + rect.height / 2) - rect.top;
+    zoomAt(gestureStartZoom * e.scale, focalX, focalY);
+  };
+
+  canvasArea.addEventListener('gesturestart', onGestureStart as EventListener, { passive: false } as AddEventListenerOptions);
+  canvasArea.addEventListener('gesturechange', onGestureChange as EventListener, { passive: false } as AddEventListenerOptions);
+  registerTeardown(() => {
+    canvasArea.removeEventListener('gesturestart', onGestureStart as EventListener);
+    canvasArea.removeEventListener('gesturechange', onGestureChange as EventListener);
+  });
+
   const MIN_TRANSCRIPT_ITERATION_LENGTH = 20;
   let transcriptCorpusTexts: string[] = [];
   let stagedTranscriptFiles: StagedTranscriptFile[] = [];
