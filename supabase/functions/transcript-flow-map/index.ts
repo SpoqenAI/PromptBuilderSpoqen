@@ -78,8 +78,8 @@ interface InferredBranchPlan {
 const MIN_TRANSCRIPT_LENGTH = 20;
 const MAX_TRANSCRIPT_LENGTH = 120_000;
 const COMPACTION_TARGET_LENGTH = 100_000;
-const DEFAULT_MAX_NODES = 18;
-const MAX_ALLOWED_NODES = 40;
+const DEFAULT_MAX_NODES = 10;
+const MAX_ALLOWED_NODES = 26;
 const MIN_DECISION_BRANCH_COUNT = 2;
 const INFERRED_BRANCH_REASON_CANDIDATES = [
   'No',
@@ -473,9 +473,8 @@ async function generateFlowWithLlm(args: {
   wasCompacted?: boolean;
 }): Promise<{ payload: unknown; provider: 'groq' | 'openai'; model: string; fallbackFailures: string[] }> {
   const temperature = resolveOptionalTemperature();
-  const maxNodeLine = args.maxNodes !== undefined
-    ? `Maximum node count: ${args.maxNodes}`
-    : 'Use as many nodes as needed to accurately represent the conversation flow.';
+  const effectiveMaxNodes = args.maxNodes ?? DEFAULT_MAX_NODES;
+  const maxNodeLine = `Maximum node count: ${effectiveMaxNodes}. Aim for 6-12 high-level nodes. Only exceed this range when the transcript genuinely has that many distinct phases.`;
   const requestBody: Record<string, unknown> = {
     model: args.model,
     messages: [
@@ -484,14 +483,16 @@ async function generateFlowWithLlm(args: {
         content: args.existingGraph
           ? [
             'You are a process flow diagram specialist. You map call transcripts into EXISTING flow diagrams using BPMN / ISO 5807 conventions.',
-            'You will receive an existing JSON graph. Return the UNIFIED graph incorporating any new branches or edge cases found in the new transcript.',
-            'Preserve the existing graph structure while backfilling missing plausible alternatives on decision points across the unified graph.',
-            'Use your professional judgment to infer realistic branch outcomes even when they are implied instead of explicitly spoken.',
+            'You will receive an existing JSON graph. Return the UNIFIED graph incorporating any genuinely new branches found in the new transcript.',
+            'Preserve the existing graph structure. Only add nodes when a materially different step or outcome is observed.',
+            'Reuse existing nodes whenever a new step is semantically equivalent to one already in the graph.',
+            'Keep the map at a high level: 6-12 nodes that represent the major phases of the call, not every individual utterance.',
           ].join(' ')
           : [
             'You are a process flow diagram specialist. You map call center / assistant transcripts into structured process flow diagrams using BPMN / ISO 5807 conventions.',
-            'Return a clean, hierarchical flow graph with concise nodes representing major states, decisions, and outcomes.',
-            'Use your professional judgment to infer realistic branch outcomes beyond literal transcript wording.',
+            'Return a clean, high-level flow graph with concise nodes representing major phases, decisions, and outcomes — not every utterance.',
+            'Prefer 6-12 nodes. Only create a node when it materially changes the state or outcome of the call.',
+            'When two steps describe the same intent or action, reuse a single node instead of creating duplicates.',
           ].join(' '),
       },
       {
@@ -520,22 +521,23 @@ async function generateFlowWithLlm(args: {
           'STRUCTURAL RULES:',
           '- The flow MUST start with a "start" node and terminate at "end" node(s).',
           '- Use "decision" nodes for ALL branching logic. Do NOT branch from "process" nodes.',
-          '- Every "decision" node must have 2+ outgoing connections with clear condition labels in the "reason" field.',
+          '- Every "decision" node must have 2-3 outgoing connections with clear condition labels in the "reason" field.',
           '- The "golden path" (most common happy path) should form the main vertical spine of the graph.',
           '- Edge cases, exceptions, and escalations should branch OFF the main spine.',
-          '- Prefer DEPTH (detailed steps along the path) over BREADTH (many parallel paths).',
+          '- Prefer a SMALL number of high-level steps (6-12 nodes) that summarize the call phases. Only introduce a node when it materially changes the state or outcome.',
           '- Node ids should be stable identifiers: n1, n2, n3, etc.',
-          '- Node labels should be SHORT action phrases (3-6 words): "Verify Caller Identity", "Check Account Status".',
-          '- Node content should contain the detailed description or prompt text for that step.',
+          '- Node labels must be GENERIC process actions (3-6 words) such as "Verify Identity" or "Offer Discount". Do NOT use verbatim transcript quotes or ultra-specific wording as labels.',
+          '- Use the node "content" field to capture transcript-specific wording and detail, not the label.',
           '- Every node content MUST include both sides of the interaction using short sections like "Agent:" and "User:".',
+          '- When two steps describe the same intent or action, reuse a single node id and connect branches to that node instead of creating duplicates.',
           '- For open-ended user replies, bucket likely categories (for example: "Yes / No / Unclear" or "Ready / Not ready / Needs details").',
           '',
           'INFERENCE RULES (IMPORTANT):',
-          '- Use model judgment to infer likely alternative outcomes at each decision, even when not explicitly spoken in the transcript.',
-          '- This is a comprehensive branch pass: prefer broad but realistic decision coverage over narrow literal extraction.',
-          '- Keep inferred branches plausible for the question/context; do NOT invent impossible domain facts.',
-          '- If a decision question is binary (yes/no style) and only one side is observed, add the opposite side plus an "Unclear/Needs clarification" side.',
-          '- Inferred decision branches should lead to distinct handling nodes (reuse existing compatible nodes when possible; otherwise create new inferred handling nodes).',
+          '- Infer branches ONLY when they are clearly implied by the transcript or are standard practice in this domain.',
+          '- Do NOT invent domain-specific facts that are not supported by the transcript.',
+          '- Avoid adding more than 2-3 branches per decision node.',
+          '- If a decision question is binary (yes/no style) and only one side is observed, add the opposite side. Only add "Unclear/Needs clarification" when it is a realistic outcome.',
+          '- Inferred decision branches should reuse existing compatible nodes whenever possible rather than creating new handling nodes.',
           '- Mark inferred branches with "isInferred": true and a concise "inferenceType" label (for example: "negative", "unclear", "missing-info", "eligibility-fail").',
           '- Every connection must include both "isInferred" and "inferenceType". For observed branches use "isInferred": false and "inferenceType": null.',
           '- Keep explicit/observed branches as-is. Inferred branches should extend coverage, not replace observed transitions.',
@@ -549,7 +551,9 @@ async function generateFlowWithLlm(args: {
           '',
           'CONNECTION LABELS:',
           '- Every connection\'s "reason" field should be a concise condition or transition label.',
-          '- For decision branches: use "Yes", "No", "Condition met", "Caller verified", etc.',
+          '- For each decision, prefer a small, stable set of branch labels (e.g. "Yes", "No", "Unclear") rather than inventing many nuanced options.',
+          '- Reuse downstream nodes when different branches result in the same handling path (e.g. different "No" reasons that still lead to the same "End Call" step).',
+          '- Do NOT create separate nodes when two branches lead to identical actions; connect both branches to the same node instead.',
           '- For sequential steps: use brief descriptions like "Next", "Proceed", "After greeting".',
           ...(args.wasCompacted
             ? [
@@ -618,10 +622,12 @@ async function generateFlowWithLlm(args: {
   return response;
 }
 
+const DEFAULT_TRANSCRIPT_TEMPERATURE = 0.3;
+
 function resolveOptionalTemperature(): number | null {
   const raw = (Deno.env.get('OPENAI_TRANSCRIPT_TEMPERATURE') ?? '').trim();
   if (!raw || raw.toLowerCase() === 'default') {
-    return null;
+    return DEFAULT_TRANSCRIPT_TEMPERATURE;
   }
 
   const parsed = Number(raw);
@@ -690,12 +696,106 @@ function normalizeFlowResult(
     }
   }
 
+  const deduped = deduplicateNodes(nodes, connections);
+
   return {
     title,
     summary,
-    nodes,
-    connections,
+    nodes: deduped.nodes,
+    connections: deduped.connections,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Node deduplication – collapse semantically equivalent nodes into one
+// ---------------------------------------------------------------------------
+
+const STOPWORDS = new Set([
+  'the', 'a', 'an', 'of', 'to', 'for', 'in', 'on', 'with', 'and', 'or',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'customer', 'caller', 'user', 'agent',
+]);
+
+function canonicalNodeKey(label: string, type: string): string {
+  const tokens = label
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, '')
+    .split(/\s+/)
+    .filter((t) => t.length > 0 && !STOPWORDS.has(t));
+  tokens.sort();
+  return `${tokens.join(' ')}|${type}`;
+}
+
+function tokenJaccard(a: string, b: string): number {
+  const setA = new Set(a.split(' '));
+  const setB = new Set(b.split(' '));
+  if (setA.size === 0 && setB.size === 0) return 1;
+  let intersection = 0;
+  for (const t of setA) {
+    if (setB.has(t)) intersection += 1;
+  }
+  const union = setA.size + setB.size - intersection;
+  return union === 0 ? 1 : intersection / union;
+}
+
+function deduplicateNodes(
+  nodes: FlowNode[],
+  connections: FlowConnection[],
+): { nodes: FlowNode[]; connections: FlowConnection[] } {
+  const groups = new Map<string, FlowNode[]>();
+  for (const node of nodes) {
+    const key = canonicalNodeKey(node.label, node.type);
+    const group = groups.get(key);
+    if (group) {
+      group.push(node);
+    } else {
+      groups.set(key, [node]);
+    }
+  }
+
+  const mergeMap = new Map<string, string>();
+
+  for (const group of groups.values()) {
+    if (group.length < 2) continue;
+    const canonical = group[0];
+    for (let i = 1; i < group.length; i++) {
+      const dup = group[i];
+      const keyA = canonicalNodeKey(canonical.label, canonical.type);
+      const keyB = canonicalNodeKey(dup.label, dup.type);
+      const tokensA = keyA.split('|')[0];
+      const tokensB = keyB.split('|')[0];
+      if (tokenJaccard(tokensA, tokensB) < 0.8) continue;
+      mergeMap.set(dup.id, canonical.id);
+    }
+  }
+
+  if (mergeMap.size === 0) {
+    return { nodes, connections };
+  }
+
+  const resolve = (id: string): string => mergeMap.get(id) ?? id;
+  const keptIds = new Set<string>();
+  const dedupedNodes: FlowNode[] = [];
+  for (const node of nodes) {
+    if (mergeMap.has(node.id)) continue;
+    if (keptIds.has(node.id)) continue;
+    keptIds.add(node.id);
+    dedupedNodes.push(node);
+  }
+
+  const seenConns = new Set<string>();
+  const dedupedConns: FlowConnection[] = [];
+  for (const conn of connections) {
+    const from = resolve(conn.from);
+    const to = resolve(conn.to);
+    if (from === to) continue;
+    const key = `${from}->${to}->${(conn.reason ?? '').toLowerCase().trim()}`;
+    if (seenConns.has(key)) continue;
+    seenConns.add(key);
+    dedupedConns.push({ ...conn, from, to });
+  }
+
+  return { nodes: dedupedNodes, connections: dedupedConns };
 }
 
 function normalizeFlowNode(raw: unknown, index: number, ids: ReadonlySet<string>): FlowNode | null {
@@ -801,9 +901,7 @@ function ensureDecisionBranchCompleteness(
     if (!isDecisionLikeNode(node)) continue;
 
     let outgoing = connections.filter((connection) => connection.from === node.id);
-    const desiredCount = isLikelyBinaryDecisionNode(node, outgoing)
-      ? 3
-      : MIN_DECISION_BRANCH_COUNT;
+    const desiredCount = MIN_DECISION_BRANCH_COUNT;
 
     const plannedCoverage = inferMissingBranchPlans(node, outgoing);
     for (const plan of plannedCoverage) {
@@ -934,13 +1032,6 @@ function inferMissingBranchPlans(decisionNode: FlowNode, outgoing: FlowConnectio
         category: 'negative',
       });
     }
-    if (!hasReasonCategory(outgoing, 'unclear')) {
-      plans.push({
-        reason: 'Unclear / needs clarification',
-        inferenceType: 'unclear',
-        category: 'unclear',
-      });
-    }
     return plans;
   }
 
@@ -1051,13 +1142,6 @@ function resolveInferredTargetNodeId(args: {
   nodeIds: Set<string>;
   maxNodes: number;
 }): string | null {
-  if (args.nodes.length < args.maxNodes) {
-    const syntheticNode = createInferredHandlingNode(args.decisionNode, args.plan, args.nodeIds);
-    args.nodes.push(syntheticNode);
-    args.nodeIds.add(syntheticNode.id);
-    return syntheticNode.id;
-  }
-
   const existingOutgoing = args.connections.filter((connection) => connection.from === args.decisionNodeId);
   const categoryMatchedTarget = existingOutgoing.find((connection) => (
     connection.to !== args.decisionNodeId
@@ -1080,6 +1164,13 @@ function resolveInferredTargetNodeId(args: {
   const terminalTarget = args.nodes.find((node) => isTerminalNode(node) && node.id !== args.decisionNodeId)?.id ?? null;
   if (terminalTarget) {
     return terminalTarget;
+  }
+
+  if (args.nodes.length < args.maxNodes) {
+    const syntheticNode = createInferredHandlingNode(args.decisionNode, args.plan, args.nodeIds);
+    args.nodes.push(syntheticNode);
+    args.nodeIds.add(syntheticNode.id);
+    return syntheticNode.id;
   }
 
   const anyTarget = args.nodes.find((node) => (

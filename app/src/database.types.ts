@@ -828,6 +828,126 @@ export interface Database {
         };
         Relationships: [];
       };
+      organizations: {
+        Row: {
+          id: string;
+          name: string;
+          owner_user_id: string;
+          stripe_customer_id: string | null;
+          stripe_subscription_id: string | null;
+          subscription_plan: string | null;
+          subscription_period_start: string | null;
+          subscription_period_end: string | null;
+          monthly_credits: number;
+          top_up_credits: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name?: string;
+          owner_user_id: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          subscription_plan?: string | null;
+          subscription_period_start?: string | null;
+          subscription_period_end?: string | null;
+          monthly_credits?: number;
+          top_up_credits?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          owner_user_id?: string;
+          stripe_customer_id?: string | null;
+          stripe_subscription_id?: string | null;
+          subscription_plan?: string | null;
+          subscription_period_start?: string | null;
+          subscription_period_end?: string | null;
+          monthly_credits?: number;
+          top_up_credits?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      organization_members: {
+        Row: {
+          id: string;
+          organization_id: string;
+          member_user_id: string;
+          role: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          member_user_id: string;
+          role?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          member_user_id?: string;
+          role?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      organization_invites: {
+        Row: {
+          id: string;
+          organization_id: string;
+          email: string;
+          invited_by: string;
+          accepted_at: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          email: string;
+          invited_by: string;
+          accepted_at?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          email?: string;
+          invited_by?: string;
+          accepted_at?: string | null;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
+      org_billing_events: {
+        Row: {
+          id: string;
+          organization_id: string;
+          event_type: string;
+          period_key: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          organization_id: string;
+          event_type: string;
+          period_key: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          organization_id?: string;
+          event_type?: string;
+          period_key?: string;
+          created_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {

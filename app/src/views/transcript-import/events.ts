@@ -454,6 +454,13 @@ export function wireTranscriptImportEvents(
     render();
   });
 
+  container.querySelector<HTMLSelectElement>('#detail-level')?.addEventListener('change', (e) => {
+    const value = (e.target as HTMLSelectElement).value;
+    if (value === 'low' || value === 'medium' || value === 'high') {
+      state.detailLevel = value;
+    }
+  });
+
   container.querySelector<HTMLButtonElement>('#btn-generate-flow')?.addEventListener('click', () => {
     onGenerateFlow();
   });

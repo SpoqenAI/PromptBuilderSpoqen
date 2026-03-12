@@ -12,6 +12,7 @@ export function createTranscriptImportState(): TranscriptImportState {
     transcripts: [],
     assistantName: 'Assistant',
     userName: 'User',
+    detailLevel: 'low',
     generatedFlow: null,
     generationError: '',
     validationWarnings: [],

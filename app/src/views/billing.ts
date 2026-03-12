@@ -22,6 +22,12 @@ import {
   type PlanMember,
   type PlanOwnerInfo,
 } from '../team';
+import {
+  getOrgBillingSummary,
+  formatLockDate,
+  getSeatUnitPrice,
+  type OrgBillingSummary,
+} from '../org-billing';
 
 export function renderBilling(container: HTMLElement): void {
   let subscription: Subscription | null = null;
@@ -29,6 +35,7 @@ export function renderBilling(container: HTMLElement): void {
   let credits: UserCredits | null = null;
   let planMembers: PlanMember[] = [];
   let planOwner: PlanOwnerInfo | null = null;
+  let orgSummary: OrgBillingSummary | null = null;
   let loading = true;
   let actionLoading = false;
   let errorMessage = '';
@@ -109,7 +116,7 @@ export function renderBilling(container: HTMLElement): void {
       return renderTeamBetaCard();
     }
     if (subscription) {
-      return renderCurrentPlan(subscription) + renderCreditTracker() + renderTeamSection();
+      return renderCurrentPlan(subscription) + renderOrgSeatsSummary() + renderCreditTracker() + renderTeamSection();
     }
     return renderPricingCards() + renderCreditTracker() + renderPlanOwnerBanner();
   }
@@ -234,9 +241,7 @@ export function renderBilling(container: HTMLElement): void {
       'Unlimited prompt flows',
       'Unlimited transcript flows & imports',
       'Transcript import & flow mapping',
-      'GitHub sync',
       'Version history & diff',
-      'Session replay (Sentry)',
     ];
     const growthFeatures = [
       'Everything in Individual',
@@ -247,8 +252,6 @@ export function renderBilling(container: HTMLElement): void {
     ];
     const enterpriseFeatures = [
       'Everything in Growth',
-      'Unlimited seats',
-      'Custom node templates',
       'Prompt optimization runs',
       'Dedicated support & SLA',
       'SSO & advanced security (coming soon)',
@@ -260,7 +263,9 @@ export function renderBilling(container: HTMLElement): void {
     return `
       <div class="text-center mb-8">
         <h2 class="text-2xl font-bold text-slate-900 dark:text-slate-100">Choose your plan</h2>
-        <p class="text-sm text-slate-500 dark:text-slate-400 mt-2">Every plan includes a monthly credit allowance. Need more? Purchase additional credit packs anytime.</p>
+        <p class="text-sm text-slate-500 dark:text-slate-400 mt-2">
+          Seat-based billing with monthly credits per seat. Need more? Purchase additional credit packs anytime.
+        </p>
       </div>
 
       <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -268,7 +273,7 @@ export function renderBilling(container: HTMLElement): void {
           tier: null,
           title: 'Free',
           description: 'Get started with core features.',
-          credits: '25 credits / month',
+          credits: '25 credits / month (1 seat)',
           features: freeFeatures,
           cta: isOnFree ? 'Current plan' : 'Free forever',
           highlight: false,
@@ -278,7 +283,7 @@ export function renderBilling(container: HTMLElement): void {
           tier: 'individual',
           title: 'Individual',
           description: 'For solo builders and prompt engineers.',
-          credits: '100 credits / month',
+          credits: 'From $20/seat · 100 credits/seat/mo',
           features: individualFeatures,
           cta: 'Get Started',
           highlight: false,
@@ -288,7 +293,7 @@ export function renderBilling(container: HTMLElement): void {
           tier: 'growth',
           title: 'Growth',
           description: 'For startups with a team of 3\u20135.',
-          credits: '500 credits / month',
+          credits: 'Graduated pricing · 500 credits/seat/mo',
           features: growthFeatures,
           cta: 'Get Started',
           highlight: true,
@@ -298,14 +303,13 @@ export function renderBilling(container: HTMLElement): void {
           tier: 'enterprise',
           title: 'Enterprise',
           description: 'For teams building production voice AI.',
-          credits: 'Custom credits',
+          credits: 'Custom seat-based pricing & credits',
           features: enterpriseFeatures,
           cta: 'Get Started',
           highlight: false,
           disabled: fullAccess,
         })}
       </div>
-      <p class="text-center text-xs text-slate-500 dark:text-slate-400 mt-4">No long-term commitment. Cancel anytime in Stripe.</p>
     `;
   }
 
@@ -412,7 +416,7 @@ export function renderBilling(container: HTMLElement): void {
         <td class="py-3 pl-3 text-right">
           <div class="flex items-center justify-end gap-2">
             <button class="btn-add-credits-member text-xs text-primary hover:text-primary/80 font-medium" data-member-user-id="${escapeAttr(m.memberUserId)}">Add credits</button>
-            <button class="btn-remove-member text-xs text-red-500 hover:text-red-600 font-medium" data-membership-id="${escapeAttr(m.id)}">Remove</button>
+            <button class="btn-remove-member text-xs text-red-500 hover:text-red-600 font-medium disabled:opacity-40 disabled:cursor-not-allowed" data-membership-id="${escapeAttr(m.id)}" ${orgSummary?.isLocked ? 'disabled title="Seat removal is locked for this billing period."' : ''}>Remove</button>
           </div>
         </td>
       </tr>
@@ -440,6 +444,56 @@ export function renderBilling(container: HTMLElement): void {
             <button id="btn-add-member" type="button" class="rounded-lg bg-primary text-white px-4 py-2 text-sm font-medium hover:bg-primary/90 transition-colors">Add</button>
           </div>
           <p id="add-member-error" class="text-xs text-red-500 mt-2 hidden"></p>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderOrgSeatsSummary(): string {
+    if (!orgSummary) return '';
+    const unitPrice = getSeatUnitPrice(orgSummary.totalSeats);
+    const lockLabel = orgSummary.lockDate ? formatLockDate(orgSummary.lockDate) : 'N/A';
+    const lockStatus = orgSummary.isLocked
+      ? '<span class="inline-flex items-center gap-1 text-amber-600 dark:text-amber-400 text-xs font-semibold"><span class="material-icons-outlined text-sm">lock</span>Locked</span>'
+      : '<span class="inline-flex items-center gap-1 text-green-600 dark:text-green-400 text-xs font-semibold"><span class="material-icons-outlined text-sm">lock_open</span>Open</span>';
+
+    return `
+      <div class="rounded-xl border border-card-border dark:border-primary/20 bg-white dark:bg-slate-900 p-6 shadow-sm mt-8">
+        <h3 class="text-sm font-semibold text-slate-800 dark:text-slate-200 mb-4">Organization Seats</h3>
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 mb-4">
+          <div>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider mb-1">Total Seats</p>
+            <p class="text-lg font-bold text-slate-900 dark:text-slate-100">${orgSummary.totalSeats}</p>
+          </div>
+          <div>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider mb-1">Active Members</p>
+            <p class="text-lg font-bold text-slate-900 dark:text-slate-100">${orgSummary.activeMembers}</p>
+          </div>
+          <div>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider mb-1">Open Slots</p>
+            <p class="text-lg font-bold text-primary">${orgSummary.openSlots}</p>
+          </div>
+          <div>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider mb-1">Per Seat</p>
+            <p class="text-lg font-bold text-slate-900 dark:text-slate-100">$${unitPrice}/mo</p>
+          </div>
+        </div>
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-4 border-t border-card-border dark:border-primary/10">
+          <div>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider mb-1">Org Credits</p>
+            <p class="text-sm text-slate-700 dark:text-slate-300">
+              <span class="font-semibold">${orgSummary.monthlyCredits}</span> monthly +
+              <span class="font-semibold">${orgSummary.topUpCredits}</span> top-up
+            </p>
+          </div>
+          <div>
+            <p class="text-[11px] text-slate-400 uppercase tracking-wider mb-1">Seat Change Lock</p>
+            <div class="flex items-center gap-2">
+              ${lockStatus}
+              <span class="text-xs text-slate-500 dark:text-slate-400">${lockLabel}</span>
+            </div>
+            <p class="text-[10px] text-slate-400 mt-1">Remove seats before this date each period. After lock, removals take effect next period.</p>
+          </div>
         </div>
       </div>
     `;
@@ -571,16 +625,18 @@ export function renderBilling(container: HTMLElement): void {
 
   void (async () => {
     try {
-      const [subRes, limitsRes, creditsRes, planOwnerRes] = await Promise.all([
+      const [subRes, limitsRes, creditsRes, planOwnerRes, orgRes] = await Promise.all([
         getSubscription(),
         getSubscriptionLimits(),
         getUserCredits(),
         getPlanOwner(),
+        getOrgBillingSummary(),
       ]);
       subscription = subRes;
       limits = limitsRes;
       credits = creditsRes;
       planOwner = planOwnerRes;
+      orgSummary = orgRes;
 
       if (subRes && (subRes.tier === 'growth' || subRes.tier === 'enterprise')) {
         planMembers = await getPlanMembers();

@@ -16,7 +16,13 @@ import { DEFAULT_PROJECT_NAME } from './constants';
 import { shortId } from './format';
 import { buildGeneratingThoughtSequence } from './generating-thoughts';
 import { buildFlowRenderState } from './layout';
-import type { TranscriptImportState } from './types';
+import type { DetailLevel, TranscriptImportState } from './types';
+
+const DETAIL_LEVEL_NODES: Record<DetailLevel, number> = {
+  low: 8,
+  medium: 14,
+  high: 22,
+};
 
 interface GenerateFlowDeps {
   render: () => void;
@@ -55,6 +61,7 @@ export async function generateFlow(
   try {
     const flow = await generateTranscriptFlow({
       transcripts: state.transcripts.map((transcript) => transcript.content),
+      maxNodes: DETAIL_LEVEL_NODES[state.detailLevel],
       assistantName: state.assistantName.trim() || undefined,
       userName: state.userName.trim() || undefined,
       existingGraph,

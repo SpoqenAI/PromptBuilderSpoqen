@@ -131,20 +131,26 @@ export function renderDashboard(container: HTMLElement): void {
           </div>
         </div>
         <nav class="flex-1 overflow-y-auto custom-scrollbar px-1.5 pb-4">
-          <button
-            data-folder-id="__all__"
-            class="folder-tree-item w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors ${selectedFolderId === undefined ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
-          >
-            <span class="material-icons-outlined text-[16px]">folder_special</span>
-            <span class="truncate">All Items</span>
-          </button>
-          <button
-            data-folder-id="__root__"
-            class="folder-tree-item w-full text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors ${selectedFolderId === null ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
-          >
-            <span class="material-icons-outlined text-[16px]">snippet_folder</span>
-            <span class="truncate">Unfiled</span>
-          </button>
+          <div class="flex items-center" style="padding-left:0px">
+            <span class="w-5"></span>
+            <button
+              data-folder-id="__all__"
+              class="folder-tree-item flex-1 text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors ${selectedFolderId === undefined ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
+            >
+              <span class="material-icons-outlined text-[16px]">folder_special</span>
+              <span class="truncate">All Items</span>
+            </button>
+          </div>
+          <div class="flex items-center" style="padding-left:0px">
+            <span class="w-5"></span>
+            <button
+              data-folder-id="__root__"
+              class="folder-tree-item flex-1 text-left flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-sm transition-colors ${selectedFolderId === null ? 'bg-primary/10 text-primary font-semibold' : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'}"
+            >
+              <span class="material-icons-outlined text-[16px]">snippet_folder</span>
+              <span class="truncate">Unfiled</span>
+            </button>
+          </div>
           ${renderFolderTree(allFolders, null, 0, selectedFolderId)}
         </nav>
       </aside>

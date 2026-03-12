@@ -1,6 +1,7 @@
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createAdminClient } from '../_shared/supabase.ts';
 import { verifyStripeSignature, stripeRequest, resolveTier } from '../_shared/stripe.ts';
+import { sentryCaptureError } from '../_shared/sentry.ts';
 
 interface StripeEvent {
   id: string;
@@ -59,6 +60,9 @@ serve(async (req: Request) => {
       case 'customer.subscription.deleted':
         await handleSubscriptionDeleted(admin, event.data.object);
         break;
+      case 'invoice.paid':
+        await handleInvoicePaid(admin, event.data.object);
+        break;
       case 'invoice.payment_failed':
         await handlePaymentFailed(admin, event.data.object);
         break;
@@ -67,6 +71,7 @@ serve(async (req: Request) => {
     }
   } catch (err) {
     console.error(`Webhook handler error (${event.type}):`, err);
+    await sentryCaptureError(err, { op: `webhook-${event.type}`, functionName: 'stripe-webhook' });
     return new Response('Webhook handler error.', { status: 500 });
   }
 
@@ -167,6 +172,74 @@ async function handlePaymentFailed(
     .from('subscriptions')
     .update({ status: 'past_due', updated_at: new Date().toISOString() })
     .eq('stripe_subscription_id', subscriptionId);
+}
+
+/**
+ * On invoice.paid: reset monthly credits for the org, update period timestamps,
+ * and sync organization_id into Stripe subscription metadata for fast lookups.
+ */
+async function handleInvoicePaid(
+  admin: ReturnType<typeof createAdminClient>,
+  invoice: Record<string, unknown>,
+): Promise<void> {
+  const subscriptionId = invoice.subscription as string | undefined;
+  if (!subscriptionId) return;
+
+  const sub = await stripeRequest<StripeSubscription>('GET', `/subscriptions/${subscriptionId}`);
+  const quantity = sub.items?.data?.[0]?.quantity ?? 1;
+
+  const periodStart = sub.current_period_start
+    ? new Date(sub.current_period_start * 1000).toISOString()
+    : null;
+  const periodEnd = sub.current_period_end
+    ? new Date(sub.current_period_end * 1000).toISOString()
+    : null;
+
+  // Try fast lookup by metadata first, then fall back to DB search
+  let orgId = sub.metadata?.organization_id;
+
+  if (!orgId) {
+    const { data: orgRow } = await admin
+      .from('organizations')
+      .select('id')
+      .eq('stripe_subscription_id', sub.id)
+      .maybeSingle();
+    orgId = orgRow?.id;
+  }
+
+  if (!orgId) {
+    console.warn('invoice.paid: no organization found for subscription', sub.id);
+    return;
+  }
+
+  // Sync organization_id into Stripe subscription metadata for future fast lookups
+  if (!sub.metadata?.organization_id || sub.metadata.organization_id !== orgId) {
+    try {
+      await stripeRequest('POST', `/subscriptions/${sub.id}`, {
+        [`metadata[organization_id]`]: orgId,
+      });
+    } catch (metaErr) {
+      await sentryCaptureError(metaErr, {
+        op: 'syncSubscriptionMetadataOrgId',
+        subscriptionId: sub.id,
+        orgId,
+      });
+    }
+  }
+
+  // Reset monthly credits: allocation based on seat count (100 credits per seat)
+  const CREDITS_PER_SEAT = 100;
+  const newMonthlyAllocation = quantity * CREDITS_PER_SEAT;
+
+  await admin
+    .from('organizations')
+    .update({
+      monthly_credits: newMonthlyAllocation,
+      subscription_period_start: periodStart,
+      subscription_period_end: periodEnd,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', orgId);
 }
 
 interface UpsertArgs {

@@ -13,6 +13,7 @@ import {
 } from './format';
 import { defaultNodeSize, edgeGeometry } from './layout';
 import type {
+  DetailLevel,
   FlowRenderState,
   MessageTone,
   TranscriptFile,
@@ -48,6 +49,7 @@ interface TranscriptImportShellModel {
   nodesSectionCollapsed: boolean;
   nodeSearchQuery: string;
   selectedConnectionIndex: number | null;
+  detailLevel: DetailLevel;
 }
 
 export function renderTranscriptImportShell(model: TranscriptImportShellModel): string {
@@ -80,6 +82,7 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
     nodesSectionCollapsed,
     nodeSearchQuery,
     selectedConnectionIndex,
+    detailLevel,
   } = model;
 
   return `
@@ -217,6 +220,15 @@ export function renderTranscriptImportShell(model: TranscriptImportShellModel): 
       workspaceSavedAt,
       isHydratingWorkspace,
     })}
+
+              <div class="flex items-center gap-2 pt-1">
+                <label for="detail-level" class="text-xs text-slate-500 dark:text-slate-400 whitespace-nowrap">Detail:</label>
+                <select id="detail-level" class="ui-input !text-xs !py-1 !px-2 w-auto min-w-[90px]">
+                  <option value="low"${detailLevel === 'low' ? ' selected' : ''}>Low</option>
+                  <option value="medium"${detailLevel === 'medium' ? ' selected' : ''}>Medium</option>
+                  <option value="high"${detailLevel === 'high' ? ' selected' : ''}>High</option>
+                </select>
+              </div>
 
               <div class="flex flex-wrap gap-2 pt-1">
                 ${isGenerating

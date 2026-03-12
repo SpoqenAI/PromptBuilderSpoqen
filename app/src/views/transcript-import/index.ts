@@ -140,6 +140,7 @@ export function renderTranscriptImport(
         nodesSectionCollapsed: state.sidebar.nodesCollapsed,
         nodeSearchQuery: state.sidebar.nodeSearchQuery,
         selectedConnectionIndex: state.selectedConnectionIndex,
+        detailLevel: state.detailLevel,
       });
     });
 

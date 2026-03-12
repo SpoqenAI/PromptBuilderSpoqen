@@ -42,9 +42,9 @@ describe('transcript flow normalization', () => {
 
   it('normalizes max node values to allowed bounds', () => {
     expect(utils.normalizeMaxNodes(undefined)).toBeUndefined();
-    expect(utils.normalizeMaxNodes(Number.NaN)).toBe(18);
+    expect(utils.normalizeMaxNodes(Number.NaN)).toBe(10);
     expect(utils.normalizeMaxNodes(2)).toBe(6);
-    expect(utils.normalizeMaxNodes(90)).toBe(40);
+    expect(utils.normalizeMaxNodes(90)).toBe(26);
     expect(utils.normalizeMaxNodes(19.8)).toBe(19);
   });
 

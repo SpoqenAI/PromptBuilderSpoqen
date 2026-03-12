@@ -54,7 +54,7 @@ interface TranscriptFlowApiResponse {
   error?: unknown;
 }
 
-const DEFAULT_MAX_NODES = 18;
+const DEFAULT_MAX_NODES = 10;
 const MIN_TRANSCRIPT_LENGTH = 20;
 const MAX_BATCH_CHARS = 40_000; // stay under Edge Function's 120K limit with headroom for existingGraph JSON
 const MAX_TRANSCRIPTS_PER_BATCH = 5;
@@ -370,7 +370,7 @@ function normalizeMaxNodes(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
   if (!Number.isFinite(value)) return DEFAULT_MAX_NODES;
   const rounded = Math.trunc(value as number);
-  return Math.max(6, Math.min(40, rounded));
+  return Math.max(6, Math.min(26, rounded));
 }
 
 function normalizeOptionalText(value: string | undefined): string | undefined {

@@ -644,6 +644,15 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     return event.deltaY;
   }
 
+  function normalizeWheelDeltas(event: WheelEvent): { dx: number; dy: number } {
+    const dx = event.deltaX;
+    const dy = event.deltaY;
+
+    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return { dx: dx * 16, dy: dy * 16 };
+    if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return { dx: dx * window.innerWidth, dy: dy * window.innerHeight };
+    return { dx, dy };
+  }
+
   function estimateLabelPixelWidth(label: string): number {
     const text = label.trim().length > 0 ? label : 'Node';
     if (!nodeLabelMeasureCtx) return text.length * 7;
@@ -1034,49 +1043,197 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     }
   });
 
+  // Hover mini-toolbar (diagrams.net-style) for quickly extending flows.
+  let hoveredNodeId: string | null = null;
+  let hoverToolbarHideTimer: number | null = null;
+  const hoverToolbar = document.createElement('div');
+  hoverToolbar.className = [
+    'absolute',
+    'z-[60]',
+    'hidden',
+    'pointer-events-auto',
+    'rounded-lg',
+    'border',
+    'border-card-border',
+    'dark:border-primary/20',
+    'bg-white',
+    'dark:bg-slate-900',
+    'shadow-lg',
+    'px-2',
+    'py-1.5',
+    'flex',
+    'items-center',
+    'gap-1.5',
+  ].join(' ');
+  hoverToolbar.innerHTML = `
+    <button type="button" data-action="add-step" class="text-xs font-semibold px-2 py-1 rounded-md border border-primary/25 text-primary hover:bg-primary/5">+ Step</button>
+    <button type="button" data-action="add-decision" class="text-xs font-semibold px-2 py-1 rounded-md border border-primary/25 text-primary hover:bg-primary/5">+ Decision</button>
+    <button type="button" data-action="connect" class="text-xs font-semibold px-2 py-1 rounded-md bg-primary text-white hover:bg-primary/90">Connect</button>
+  `;
+  canvasArea.appendChild(hoverToolbar);
+  registerTeardown(() => hoverToolbar.remove());
+
+  function hideHoverToolbar(): void {
+    hoveredNodeId = null;
+    hoverToolbar.classList.add('hidden');
+  }
+
+  function scheduleHideHoverToolbar(delayMs = 140): void {
+    if (hoverToolbarHideTimer !== null) window.clearTimeout(hoverToolbarHideTimer);
+    hoverToolbarHideTimer = window.setTimeout(() => {
+      hoverToolbarHideTimer = null;
+      hideHoverToolbar();
+    }, delayMs);
+  }
+
+  hoverToolbar.addEventListener('mouseenter', () => {
+    if (hoverToolbarHideTimer !== null) window.clearTimeout(hoverToolbarHideTimer);
+    hoverToolbarHideTimer = null;
+  });
+  hoverToolbar.addEventListener('mouseleave', () => scheduleHideHoverToolbar(120));
+  hoverToolbar.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+  });
+
+  function showHoverToolbarForNode(nodeId: string, nodeEl: HTMLElement): void {
+    hoveredNodeId = nodeId;
+    if (hoverToolbarHideTimer !== null) window.clearTimeout(hoverToolbarHideTimer);
+    hoverToolbarHideTimer = null;
+
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const rect = nodeEl.getBoundingClientRect();
+    const left = rect.right - canvasRect.left - 6;
+    const top = rect.top - canvasRect.top - 6;
+    hoverToolbar.style.left = `${Math.max(8, left)}px`;
+    hoverToolbar.style.top = `${Math.max(8, top)}px`;
+    hoverToolbar.classList.remove('hidden');
+  }
+
+  hoverToolbar.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (!hoveredNodeId) return;
+
+    const action = btn.dataset.action;
+    const fromNode = project!.nodes.find((n) => n.id === hoveredNodeId);
+    if (!fromNode) return;
+
+    if (action === 'connect') {
+      armConnectionFromPort(fromNode.id, 'out');
+      return;
+    }
+
+    const fromSize = getNodeVisualSize(fromNode);
+    const newNodeId = uid();
+    const isDecision = action === 'add-decision';
+    const label = isDecision ? 'Decision' : 'Step';
+    const icon = isDecision ? 'call_split' : 'bolt';
+    const type = isDecision ? 'logic-branch' : 'static-context';
+    const newNode: PromptNode = {
+      id: newNodeId,
+      type,
+      label,
+      icon,
+      content: '',
+      meta: {},
+      x: fromNode.x + fromSize.width + 180,
+      y: fromNode.y,
+    };
+
+    store.addNode(projectId, newNode);
+    store.addConnection(projectId, fromNode.id, newNodeId);
+    renderNodes();
+    drawConnections();
+    // Keep toolbar visible over the newly created node on next render.
+    scheduleHideHoverToolbar(0);
+  });
+
   function renderNodes(): void {
     clearConnectionDraft();
     nodesContainer.querySelectorAll('.canvas-node').forEach(el => el.remove());
     const hint = nodesContainer.querySelector('#empty-hint');
     if (project!.nodes.length > 0 && hint) hint.remove();
 
+    // Transcript workspace: apply business-flow shapes.
+    const incomingCount = new Map<string, number>();
+    const outgoingCount = new Map<string, number>();
+    for (const n of project!.nodes) {
+      incomingCount.set(n.id, 0);
+      outgoingCount.set(n.id, 0);
+    }
+    for (const c of project!.connections) {
+      if (incomingCount.has(c.to)) incomingCount.set(c.to, (incomingCount.get(c.to) ?? 0) + 1);
+      if (outgoingCount.has(c.from)) outgoingCount.set(c.from, (outgoingCount.get(c.from) ?? 0) + 1);
+    }
+
+    const computeBusinessShape = (nodeId: string, nodeType: string): 'oval' | 'diamond' | 'square' => {
+      if (!isTranscriptWorkspace) return 'square';
+      if (nodeType === 'logic-branch') return 'diamond';
+      const inCount = incomingCount.get(nodeId) ?? 0;
+      const outCount = outgoingCount.get(nodeId) ?? 0;
+      if (nodeType === 'termination' || outCount === 0) return 'oval';
+      if (inCount === 0) return 'oval';
+      return 'square';
+    };
+
     for (const node of project!.nodes) {
       const size = getNodeVisualSize(node);
       const colorStyles = buildNodeColorStyles(readNodeColorMeta(node.meta));
+      const businessShape = computeBusinessShape(node.id, node.type);
       const el = document.createElement('div');
-      el.className = 'canvas-node pointer-events-auto bg-white dark:bg-slate-900 border rounded-lg shadow-xl node-glow';
+      el.className = 'canvas-node pointer-events-auto';
       el.dataset.nodeId = node.id;
       el.style.left = `${node.x}px`;
       el.style.top = `${node.y}px`;
       el.style.width = `${size.width}px`;
-      el.style.borderColor = colorStyles.border;
+      el.style.height = `${size.height}px`;
       el.innerHTML = `
-        <div class="node-header p-3 flex items-center justify-between cursor-grab active:cursor-grabbing rounded-t-lg" style="background:${colorStyles.headerBackground}; border-bottom:1px solid ${colorStyles.headerBorder};">
-          <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0">
-            <span class="material-icons text-sm" style="color:${colorStyles.icon};">${node.icon}</span>
-            <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
-          </h2>
-          <div class="flex items-center gap-1">
-            <button class="node-save-template text-slate-400 hover:text-primary p-0.5" title="Save as custom node template">
-              <span class="material-icons text-xs">bookmark_add</span>
-            </button>
-            <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
-              <span class="material-icons text-xs">close</span>
-            </button>
+        <!-- Ports live outside the clipped surface so diamonds don't chop them -->
+        <div class="port-in port absolute -left-[7px] top-1/2 -translate-y-1/2 z-20" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
+        <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-20" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
+
+        <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow overflow-hidden h-full"
+          style="
+            border-color:${colorStyles.border};
+            ${isTranscriptWorkspace && businessShape === 'oval' ? 'border-radius:9999px;' : 'border-radius:12px;'}
+            ${isTranscriptWorkspace && businessShape === 'diamond' ? 'clip-path:polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); border-radius:0px;' : ''}
+          "
+        >
+          <div class="node-header p-3 flex items-center justify-between cursor-grab active:cursor-grabbing"
+            style="
+              background:${colorStyles.headerBackground};
+              border-bottom:1px solid ${colorStyles.headerBorder};
+              ${isTranscriptWorkspace && businessShape === 'oval' ? 'border-top-left-radius:9999px; border-top-right-radius:9999px;' : ''}
+            "
+          >
+            <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0">
+              <span class="material-icons text-sm" style="color:${colorStyles.icon};">${node.icon}</span>
+              <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
+            </h2>
+            <div class="flex items-center gap-1">
+              <button class="node-save-template text-slate-400 hover:text-primary p-0.5" title="Save as custom node template">
+                <span class="material-icons text-xs">bookmark_add</span>
+              </button>
+              <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
+                <span class="material-icons text-xs">close</span>
+              </button>
+            </div>
           </div>
-        </div>
-        <div class="relative">
-          <!-- Input port (left side) -->
-          <div class="port-in port absolute -left-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
-          <!-- Content preview -->
-          <div class="p-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono leading-relaxed max-h-24 overflow-hidden">
-            ${escapeHTML(node.content).substring(0, 120)}${node.content.length > 120 ? '…' : ''}
+          <div class="relative">
+            <div class="p-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono leading-relaxed max-h-24 overflow-hidden">
+              ${escapeHTML(node.content).substring(0, 120)}${node.content.length > 120 ? '…' : ''}
+            </div>
           </div>
-          <!-- Output port (right side) -->
-          <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-10" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
-        </div>
-        <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center rounded-b-lg border-t" style="border-top-color:${colorStyles.footerBorder};">
-          <span class="text-[9px] font-mono" style="color:${colorStyles.tokenText};">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
+          <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center border-t"
+            style="
+              border-top-color:${colorStyles.footerBorder};
+              ${isTranscriptWorkspace && businessShape === 'oval' ? 'border-bottom-left-radius:9999px; border-bottom-right-radius:9999px;' : ''}
+            "
+          >
+            <span class="text-[9px] font-mono" style="color:${colorStyles.tokenText};">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
+          </div>
         </div>
       `;
       nodesContainer.appendChild(el);
@@ -1085,6 +1242,11 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       let isDragging = false, didDrag = false, startX = 0, startY = 0, origX = node.x, origY = node.y;
       let dragListenersActive = false;
       const header = el.querySelector('.node-header') as HTMLElement;
+      // Hover toolbar (transcript workspace only)
+      if (isTranscriptWorkspace) {
+        el.addEventListener('mouseenter', () => showHoverToolbarForNode(node.id, el));
+        el.addEventListener('mouseleave', () => scheduleHideHoverToolbar());
+      }
       const onMouseMove = (e: MouseEvent) => {
         if (!isDragging) return;
         if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) {
@@ -1422,11 +1584,17 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
         const pathLength = path.getTotalLength();
         if (Number.isFinite(pathLength) && pathLength > 0) {
           const midpoint = path.getPointAtLength(pathLength / 2);
+          const fromNodeRect = fromEl.getBoundingClientRect();
+          const toNodeRect = toEl.getBoundingClientRect();
+          const avgNodeWidth = (fromNodeRect.width + toNodeRect.width) / 2;
+          const sizeFactor = clamp(0.85 + (avgNodeWidth - 240) / 520, 0.85, 1.25);
+          const zoomFactor = clamp(Math.pow(zoom, 0.65), 0.8, 1.55);
+          const fontSizePx = clamp(11 * sizeFactor * zoomFactor, 10, 18);
           const labelText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
           labelText.textContent = connectionLabel;
           labelText.setAttribute('x', String(midpoint.x));
-          labelText.setAttribute('y', String(midpoint.y - 10));
-          labelText.setAttribute('font-size', '13');
+          labelText.setAttribute('y', String(midpoint.y - (8 + fontSizePx * 0.35)));
+          labelText.setAttribute('font-size', String(fontSizePx));
           labelText.setAttribute('font-weight', '700');
           labelText.setAttribute('text-anchor', 'middle');
           labelText.setAttribute('fill', isSelected ? '#0f766e' : '#1f2937');
@@ -1434,8 +1602,8 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
           svgEl.appendChild(labelText);
 
           const labelBox = labelText.getBBox();
-          const bgPadX = 10;
-          const bgPadY = 6;
+          const bgPadX = Math.round(8 * zoomFactor);
+          const bgPadY = Math.round(5 * zoomFactor);
           const labelBackground = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
           labelBackground.setAttribute('x', String(labelBox.x - bgPadX));
           labelBackground.setAttribute('y', String(labelBox.y - bgPadY));
@@ -1609,8 +1777,14 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       const scaleFactor = Math.exp(-normalizeWheelDelta(e) * 0.0025);
       zoomAt(zoom * scaleFactor, focalX, focalY);
     } else {
-      panX -= e.deltaX;
-      panY -= e.deltaY;
+      let { dx, dy } = normalizeWheelDeltas(e);
+      // Some devices/browsers map horizontal trackpad movement to shift+wheel (deltaX≈0, deltaY carries horizontal intent).
+      if (e.shiftKey && Math.abs(dx) < 0.01 && Math.abs(dy) > 0) {
+        dx = dy;
+        dy = 0;
+      }
+      panX -= dx;
+      panY -= dy;
       applyViewportTransform();
       scheduleDrawConnections();
     }
