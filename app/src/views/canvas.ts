@@ -19,6 +19,7 @@ import {
   getAutoNodeColor,
   readNodeColorMeta,
   withNodeColorMeta,
+  type NodeColorStyles,
 } from '../node-colors';
 import { resolveNodeIcon } from '../node-icons';
 import {
@@ -608,6 +609,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   const nodeLabelMeasureCanvas = document.createElement('canvas');
   const nodeLabelMeasureCtx = nodeLabelMeasureCanvas.getContext('2d');
   const nodeVisualSizeById = new Map<string, NodeVisualSize>();
+  const nodeBusinessShapeById = new Map<string, 'oval' | 'diamond' | 'square'>();
   const initialSidebarCollapsed = readCanvasSidebarCollapsedState(projectId);
   const storedInitialSidebarWidth = readCanvasSidebarWidthState(projectId) ?? recommendedSidebarWidth;
   const initialSidebarWidth = Math.max(MIN_CANVAS_SIDEBAR_WIDTH, Math.min(MAX_CANVAS_SIDEBAR_WIDTH, storedInitialSidebarWidth));
@@ -663,10 +665,14 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   function getNodeVisualSize(node: PromptNode): NodeVisualSize {
     const cached = nodeVisualSizeById.get(node.id);
     const labelWidth = estimateLabelPixelWidth(node.label);
-    const nextSize: NodeVisualSize = {
-      width: Math.max(NODE_MIN_WIDTH, labelWidth + NODE_DECORATION_WIDTH),
-      height: NODE_VISUAL_HEIGHT,
-    };
+    let width = Math.max(NODE_MIN_WIDTH, labelWidth + NODE_DECORATION_WIDTH);
+    let height = NODE_VISUAL_HEIGHT;
+    const shape = nodeBusinessShapeById.get(node.id);
+    if (shape === 'diamond') {
+      width = Math.max(width, 200);
+      height = Math.max(width, 200);
+    }
+    const nextSize: NodeVisualSize = { width, height };
     if (cached && cached.width === nextSize.width && cached.height === nextSize.height) {
       return cached;
     }
@@ -1150,38 +1156,116 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     scheduleHideHoverToolbar(0);
   });
 
+  function rebuildBusinessShapeCache(): void {
+    nodeBusinessShapeById.clear();
+    if (!isTranscriptWorkspace || !project) return;
+    const incomingCount = new Map<string, number>();
+    const outgoingCount = new Map<string, number>();
+    for (const n of project.nodes) {
+      incomingCount.set(n.id, 0);
+      outgoingCount.set(n.id, 0);
+    }
+    for (const c of project.connections) {
+      if (incomingCount.has(c.to)) incomingCount.set(c.to, (incomingCount.get(c.to) ?? 0) + 1);
+      if (outgoingCount.has(c.from)) outgoingCount.set(c.from, (outgoingCount.get(c.from) ?? 0) + 1);
+    }
+    for (const n of project.nodes) {
+      let shape: 'oval' | 'diamond' | 'square' = 'square';
+      if (n.type === 'logic-branch') {
+        shape = 'diamond';
+      } else if (n.type === 'termination' || (outgoingCount.get(n.id) ?? 0) === 0) {
+        shape = 'oval';
+      } else if ((incomingCount.get(n.id) ?? 0) === 0) {
+        shape = 'oval';
+      }
+      nodeBusinessShapeById.set(n.id, shape);
+    }
+  }
+
+  function buildDiamondNodeHtml(node: PromptNode, cs: NodeColorStyles, size: NodeVisualSize): string {
+    const safeW = Math.floor(size.width * 0.46);
+    const safeH = Math.floor(size.height * 0.46);
+    return `
+      <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow h-full flex items-center justify-center cursor-grab active:cursor-grabbing"
+        style="border-color:${cs.border}; clip-path:polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); border-radius:0; background:${cs.headerBackground};"
+      >
+        <div class="flex flex-col items-center text-center gap-1 select-none pointer-events-none"
+          style="max-width:${safeW}px; max-height:${safeH}px; overflow:hidden;"
+        >
+          <span class="material-icons text-base" style="color:${cs.icon};">${node.icon}</span>
+          <span class="text-[11px] font-bold leading-tight text-slate-800 dark:text-slate-100">${escapeHTML(node.label)}</span>
+        </div>
+        <button class="node-delete absolute top-1/2 right-[22%] -translate-y-1/2 text-slate-400 hover:text-red-500 p-0.5 opacity-0 group-hover:opacity-100 pointer-events-auto z-10" title="Delete node">
+          <span class="material-icons text-xs">close</span>
+        </button>
+      </div>`;
+  }
+
+  function buildOvalNodeHtml(node: PromptNode, cs: NodeColorStyles): string {
+    return `
+      <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow h-full flex flex-col overflow-hidden"
+        style="border-color:${cs.border}; border-radius:9999px;"
+      >
+        <div class="node-header flex-1 flex items-center justify-center cursor-grab active:cursor-grabbing px-6"
+          style="background:${cs.headerBackground};"
+        >
+          <h2 class="text-xs font-bold flex items-center gap-2 select-none">
+            <span class="material-icons text-sm" style="color:${cs.icon};">${node.icon}</span>
+            <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
+          </h2>
+          <button class="node-delete absolute top-1 right-3 text-slate-400 hover:text-red-500 p-0.5 z-10" title="Delete node">
+            <span class="material-icons text-xs">close</span>
+          </button>
+        </div>
+      </div>`;
+  }
+
+  function buildRectNodeHtml(node: PromptNode, cs: NodeColorStyles): string {
+    return `
+      <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow overflow-hidden h-full"
+        style="border-color:${cs.border}; border-radius:12px;"
+      >
+        <div class="node-header p-3 flex items-center justify-between cursor-grab active:cursor-grabbing"
+          style="background:${cs.headerBackground}; border-bottom:1px solid ${cs.headerBorder};"
+        >
+          <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0">
+            <span class="material-icons text-sm" style="color:${cs.icon};">${node.icon}</span>
+            <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
+          </h2>
+          <div class="flex items-center gap-1">
+            <button class="node-save-template text-slate-400 hover:text-primary p-0.5" title="Save as custom node template">
+              <span class="material-icons text-xs">bookmark_add</span>
+            </button>
+            <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
+              <span class="material-icons text-xs">close</span>
+            </button>
+          </div>
+        </div>
+        <div class="relative">
+          <div class="p-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono leading-relaxed max-h-24 overflow-hidden">
+            ${escapeHTML(node.content).substring(0, 120)}${node.content.length > 120 ? '…' : ''}
+          </div>
+        </div>
+        <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center border-t"
+          style="border-top-color:${cs.footerBorder};"
+        >
+          <span class="text-[9px] font-mono" style="color:${cs.tokenText};">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
+        </div>
+      </div>`;
+  }
+
   function renderNodes(): void {
     clearConnectionDraft();
     nodesContainer.querySelectorAll('.canvas-node').forEach(el => el.remove());
     const hint = nodesContainer.querySelector('#empty-hint');
     if (project!.nodes.length > 0 && hint) hint.remove();
 
-    // Transcript workspace: apply business-flow shapes.
-    const incomingCount = new Map<string, number>();
-    const outgoingCount = new Map<string, number>();
-    for (const n of project!.nodes) {
-      incomingCount.set(n.id, 0);
-      outgoingCount.set(n.id, 0);
-    }
-    for (const c of project!.connections) {
-      if (incomingCount.has(c.to)) incomingCount.set(c.to, (incomingCount.get(c.to) ?? 0) + 1);
-      if (outgoingCount.has(c.from)) outgoingCount.set(c.from, (outgoingCount.get(c.from) ?? 0) + 1);
-    }
-
-    const computeBusinessShape = (nodeId: string, nodeType: string): 'oval' | 'diamond' | 'square' => {
-      if (!isTranscriptWorkspace) return 'square';
-      if (nodeType === 'logic-branch') return 'diamond';
-      const inCount = incomingCount.get(nodeId) ?? 0;
-      const outCount = outgoingCount.get(nodeId) ?? 0;
-      if (nodeType === 'termination' || outCount === 0) return 'oval';
-      if (inCount === 0) return 'oval';
-      return 'square';
-    };
+    rebuildBusinessShapeCache();
 
     for (const node of project!.nodes) {
-      const size = getNodeVisualSize(node);
       const colorStyles = buildNodeColorStyles(readNodeColorMeta(node.meta));
-      const businessShape = computeBusinessShape(node.id, node.type);
+      const businessShape = nodeBusinessShapeById.get(node.id) ?? 'square';
+      const size = getNodeVisualSize(node);
       const el = document.createElement('div');
       el.className = 'canvas-node pointer-events-auto';
       el.dataset.nodeId = node.id;
@@ -1189,52 +1273,17 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       el.style.top = `${node.y}px`;
       el.style.width = `${size.width}px`;
       el.style.height = `${size.height}px`;
+
+      const nodeInnerHtml = isTranscriptWorkspace && businessShape === 'diamond'
+        ? buildDiamondNodeHtml(node, colorStyles, size)
+        : isTranscriptWorkspace && businessShape === 'oval'
+          ? buildOvalNodeHtml(node, colorStyles)
+          : buildRectNodeHtml(node, colorStyles);
+
       el.innerHTML = `
-        <!-- Ports live outside the clipped surface so diamonds don't chop them -->
         <div class="port-in port absolute -left-[7px] top-1/2 -translate-y-1/2 z-20" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
         <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-20" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
-
-        <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow overflow-hidden h-full"
-          style="
-            border-color:${colorStyles.border};
-            ${isTranscriptWorkspace && businessShape === 'oval' ? 'border-radius:9999px;' : 'border-radius:12px;'}
-            ${isTranscriptWorkspace && businessShape === 'diamond' ? 'clip-path:polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); border-radius:0px;' : ''}
-          "
-        >
-          <div class="node-header p-3 flex items-center justify-between cursor-grab active:cursor-grabbing"
-            style="
-              background:${colorStyles.headerBackground};
-              border-bottom:1px solid ${colorStyles.headerBorder};
-              ${isTranscriptWorkspace && businessShape === 'oval' ? 'border-top-left-radius:9999px; border-top-right-radius:9999px;' : ''}
-            "
-          >
-            <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0">
-              <span class="material-icons text-sm" style="color:${colorStyles.icon};">${node.icon}</span>
-              <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
-            </h2>
-            <div class="flex items-center gap-1">
-              <button class="node-save-template text-slate-400 hover:text-primary p-0.5" title="Save as custom node template">
-                <span class="material-icons text-xs">bookmark_add</span>
-              </button>
-              <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
-                <span class="material-icons text-xs">close</span>
-              </button>
-            </div>
-          </div>
-          <div class="relative">
-            <div class="p-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono leading-relaxed max-h-24 overflow-hidden">
-              ${escapeHTML(node.content).substring(0, 120)}${node.content.length > 120 ? '…' : ''}
-            </div>
-          </div>
-          <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center border-t"
-            style="
-              border-top-color:${colorStyles.footerBorder};
-              ${isTranscriptWorkspace && businessShape === 'oval' ? 'border-bottom-left-radius:9999px; border-bottom-right-radius:9999px;' : ''}
-            "
-          >
-            <span class="text-[9px] font-mono" style="color:${colorStyles.tokenText};">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
-          </div>
-        </div>
+        ${nodeInnerHtml}
       `;
       nodesContainer.appendChild(el);
 
