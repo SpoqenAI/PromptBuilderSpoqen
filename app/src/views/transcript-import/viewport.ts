@@ -1,6 +1,6 @@
 import {
   cloneLayout,
-  computeCanvasGeometry,
+  computeCanvasGeometryPublic as computeCanvasGeometry,
   defaultNodeSize,
   edgeGeometry,
 } from './layout';

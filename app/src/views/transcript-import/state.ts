@@ -12,13 +12,11 @@ export function createTranscriptImportState(): TranscriptImportState {
     transcripts: [],
     assistantName: 'Assistant',
     userName: 'User',
-    detailLevel: 'low',
     generatedFlow: null,
     generationError: '',
     validationWarnings: [],
     isGenerating: false,
     isHydratingWorkspace: false,
-    processingProgress: null,
     flowRevision: 0,
     selectedConnectionIndex: null,
     transcriptSetId: null,
@@ -50,7 +48,6 @@ export function clearTranscriptSession(state: TranscriptImportState): void {
   state.transcripts = [];
   state.generationError = '';
   state.validationWarnings = [];
-  state.processingProgress = null;
   state.generatedFlow = null;
   state.isHydratingWorkspace = false;
   state.nodePositionOverrides = {};

@@ -1,377 +1,305 @@
-import type { PromptNode } from '../../models';
+import { store } from '../../store';
 import { uid } from '../../models';
+import type { PromptNode, NodeType } from '../../models';
 import { resolveNodeIcon } from '../../node-icons';
 import {
-  getAutoNodeColor,
-  readNodeColorMeta,
-  withNodeColorMeta,
-} from '../../node-colors';
-import { router } from '../../router';
-import { store } from '../../store';
-import { persistTranscriptFlowArtifacts } from '../../transcript-artifacts';
-import { generatePromptFromFlow } from '../../prompt-generation';
-import { generateTranscriptFlow } from '../../transcript-flow';
-import { validateFlowGraph } from '../../transcript-flow-validation';
-import { DEFAULT_PROJECT_NAME } from './constants';
-import { shortId } from './format';
-import { buildGeneratingThoughtSequence } from './generating-thoughts';
-import { buildFlowRenderState } from './layout';
-import type { DetailLevel, TranscriptImportState } from './types';
+  generateTranscriptFlow,
+} from '../../transcript-flow';
+import type { TranscriptFlowResult, TranscriptFlowNode } from '../../transcript-flow';
+import type { TranscriptImportState } from './types';
 
-const DETAIL_LEVEL_NODES: Record<DetailLevel, number> = {
-  low: 8,
-  medium: 14,
-  high: 22,
-};
+// ---------------------------------------------------------------------------
+// Generate Flow (calls the Gemini agent edge function)
+// ---------------------------------------------------------------------------
 
-interface GenerateFlowDeps {
+interface GenerateFlowCallbacks {
   render: () => void;
-  onFlowGenerated?: () => void;
+  onFlowGenerated: () => Promise<void> | void;
 }
 
 export async function generateFlow(
   state: TranscriptImportState,
-  deps: GenerateFlowDeps,
+  callbacks: GenerateFlowCallbacks,
 ): Promise<void> {
-  if (state.isGenerating) return;
-
   if (state.transcripts.length === 0) {
-    state.generationError = 'Please upload at least one transcript.';
-    deps.render();
+    state.generationError = 'Add at least one transcript before generating.';
+    callbacks.render();
     return;
   }
-
-  const existingGraph = state.generatedFlow
-    ? {
-      nodes: state.generatedFlow.nodes,
-      connections: state.generatedFlow.connections,
-    }
-    : undefined;
+  if (state.isGenerating) return;
 
   state.isGenerating = true;
-  state.generatingThoughts = buildGeneratingThoughtSequence();
   state.generationError = '';
   state.validationWarnings = [];
   state.persistenceMessage = null;
   state.generatedPromptMarkdown = '';
   state.promptGenerationMessage = null;
-  state.processingProgress = null;
-  deps.render();
+  callbacks.render();
 
   try {
-    const flow = await generateTranscriptFlow({
-      transcripts: state.transcripts.map((transcript) => transcript.content),
-      maxNodes: DETAIL_LEVEL_NODES[state.detailLevel],
-      assistantName: state.assistantName.trim() || undefined,
-      userName: state.userName.trim() || undefined,
-      existingGraph,
-      onProgress: (processed, total, partialFlow) => {
-        state.processingProgress = { processed, total };
-        if (partialFlow) {
-          state.generatedFlow = partialFlow;
-        }
-        deps.render();
-      },
+    const result = await generateTranscriptFlow({
+      transcripts: state.transcripts.map((t) => t.content),
+      assistantName: state.assistantName.trim() || 'Assistant',
+      userName: state.userName.trim() || 'User',
     });
 
-    const validation = validateFlowGraph(flow.nodes, flow.connections);
-    state.validationWarnings = validation.issues.map((issue) => issue.detail);
-
-    state.generatedFlow = flow;
-    state.selectedConnectionIndex = null;
+    state.generatedFlow = result;
+    state.flowRevision += 1;
     state.nodePositionOverrides = {};
     state.latestRenderedLayout = {};
     state.latestRenderedNodeSizes = {};
-    state.viewport.zoom = null;
-    state.viewport.panX = null;
-    state.viewport.panY = null;
-    state.flowRevision += 1;
+    state.selectedConnectionIndex = null;
 
-    if (
-      state.projectName.trim().length === 0
-      || state.projectName === DEFAULT_PROJECT_NAME
-    ) {
-      state.projectName = flow.title;
+    if (result.warning) {
+      state.validationWarnings = [result.warning];
     }
 
-    try {
-      const persisted = await persistTranscriptFlowArtifacts({
-        transcript: state.transcripts.map((transcript) => transcript.content).join('\n\n---\n\n'),
-        flow,
-        projectName: state.projectName.trim() || flow.title || DEFAULT_PROJECT_NAME,
-        transcriptSetId: state.transcriptSetId,
-        metadata: {
-          assistantName: state.assistantName.trim() || 'Assistant',
-          userName: state.userName.trim() || 'User',
-          projectModel: state.projectModel,
-          nodeCountStrategy: 'ai-decides',
-          transcriptCount: state.transcripts.length,
-        },
-      });
-      state.transcriptSetId = persisted.transcriptSetId;
-      store.registerTranscriptFlowDraft(
-        persisted.transcriptSetId,
-        flow,
-        persisted.transcriptFlowId,
-        state.projectName.trim() || flow.title || DEFAULT_PROJECT_NAME,
+    if (!state.transcriptSetId) {
+      state.transcriptSetId = await store.ensureTranscriptImportWorkspace(
+        state.projectName.trim() || result.title || 'Transcript Flow',
+        result.summary || 'Editable transcript flow workspace.',
       );
-
-      // Auto-link (or auto-create) a canvas project after every successful transcript flow generation.
-      // This removes the old two-step "generate then manually create canvas copy" default flow.
-      const linkedProject = store.createProjectFromTranscriptFlowDraft(persisted.transcriptSetId);
-      state.persistenceMessage = {
-        tone: linkedProject ? 'success' : 'info',
-        text: linkedProject
-          ? `Saved transcript artifacts (set ${shortId(persisted.transcriptSetId)}, flow ${shortId(persisted.transcriptFlowId)}) and linked Canvas project (${shortId(linkedProject.id)}).`
-          : `Saved transcript artifacts (set ${shortId(persisted.transcriptSetId)}, flow ${shortId(persisted.transcriptFlowId)}). Canvas project auto-link did not complete.`,
-      };
-    } catch (persistErr) {
-      state.persistenceMessage = {
-        tone: 'error',
-        text:
-          persistErr instanceof Error
-            ? persistErr.message
-            : 'Failed to persist transcript artifacts.',
-      };
     }
-    deps.onFlowGenerated?.();
+
+    store.registerTranscriptFlowDraft(
+      state.transcriptSetId,
+      result,
+      uid(),
+      state.projectName.trim() || result.title || 'Transcript Flow',
+    );
+
+    state.persistenceMessage = {
+      tone: 'success',
+      text: `Flow generated: ${result.nodes.length} nodes, ${result.connections.length} connections (${result.iterations} iterations, ${result.toolCalls} tool calls).`,
+    };
+
+    await callbacks.onFlowGenerated();
   } catch (err) {
-    state.generationError =
-      err instanceof Error
-        ? err.message
-        : 'Failed to generate flow from transcript.';
+    state.generationError = err instanceof Error ? err.message : 'Flow generation failed.';
   } finally {
     state.isGenerating = false;
-    deps.render();
+    callbacks.render();
   }
+}
+
+// ---------------------------------------------------------------------------
+// Generate Prompt from Flow
+// ---------------------------------------------------------------------------
+
+interface PromptCallbacks {
+  render: () => void;
 }
 
 export async function generatePromptFromCurrentFlow(
   state: TranscriptImportState,
-  deps: GenerateFlowDeps,
+  callbacks: PromptCallbacks,
 ): Promise<void> {
-  if (!state.generatedFlow || state.isGeneratingPrompt) return;
+  const flow = state.generatedFlow;
+  if (!flow || flow.nodes.length === 0) {
+    state.promptGenerationMessage = {
+      tone: 'error',
+      text: 'No flow to generate a prompt from.',
+    };
+    callbacks.render();
+    return;
+  }
 
   state.isGeneratingPrompt = true;
   state.promptGenerationMessage = null;
-  deps.render();
+  callbacks.render();
 
   try {
-    let promptMarkdown = '';
-    if (state.transcriptSetId) {
-      const generated = await generatePromptFromFlow({
-        transcriptSetId: state.transcriptSetId,
-        mode: 'flow-template',
-      });
-      promptMarkdown = generated.promptMarkdown;
-      if (generated.warning) {
-        state.promptGenerationMessage = {
-          tone: 'info',
-          text: generated.warning,
-        };
-      }
-    } else {
-      promptMarkdown = assemblePromptFromGeneratedFlow(state.generatedFlow);
-      state.promptGenerationMessage = {
-        tone: 'info',
-        text: 'Generated prompt from in-memory flow (not yet linked to a transcript set).',
-      };
-    }
-
-    state.generatedPromptMarkdown = promptMarkdown;
-    if (!state.promptGenerationMessage) {
-      state.promptGenerationMessage = {
-        tone: 'success',
-        text: 'Prompt generated from flow.',
-      };
-    }
+    const markdown = assemblePromptFromFlow(flow, state.assistantName, state.userName);
+    state.generatedPromptMarkdown = markdown;
+    state.promptGenerationMessage = {
+      tone: 'success',
+      text: 'Prompt generated from current flow.',
+    };
   } catch (err) {
     state.promptGenerationMessage = {
       tone: 'error',
-      text: err instanceof Error ? err.message : 'Failed to generate prompt from flow.',
+      text: err instanceof Error ? err.message : 'Failed to generate prompt.',
     };
   } finally {
     state.isGeneratingPrompt = false;
-    deps.render();
+    callbacks.render();
   }
 }
 
-interface CreateProjectDeps {
+// ---------------------------------------------------------------------------
+// Create Canvas Project from Flow
+// ---------------------------------------------------------------------------
+
+interface CreateProjectCallbacks {
   render: () => void;
   cleanupViewportAndNavigate: () => void;
 }
 
 export function createProjectFromGeneratedFlow(
   state: TranscriptImportState,
-  deps: CreateProjectDeps,
+  callbacks: CreateProjectCallbacks,
 ): void {
-  if (!state.generatedFlow) return;
-
-  const normalizedProjectName =
-    state.projectName.trim() || state.generatedFlow.title || DEFAULT_PROJECT_NAME;
-  const project = store.createProject(
-    normalizedProjectName,
-    state.generatedFlow.summary,
-    state.projectModel,
-  );
-
-  const layout = buildFlowRenderState(
-    state.generatedFlow,
-    state.nodePositionOverrides,
-  ).layout;
-  const nodeIdMap = new Map<string, string>();
-
-  for (const [index, generatedNode] of state.generatedFlow.nodes.entries()) {
-    const position = layout[generatedNode.id] ?? { x: 80, y: 80 };
-    const seededColor = readNodeColorMeta(generatedNode.meta) ?? getAutoNodeColor(index);
-    const promptNode: PromptNode = {
-      id: uid(),
-      type: generatedNode.type,
-      label: generatedNode.label,
-      icon: resolveNodeIcon(generatedNode.icon, generatedNode.type),
-      x: position.x,
-      y: position.y,
-      content: generatedNode.content,
-      meta: withNodeColorMeta(generatedNode.meta, seededColor),
+  const flow = state.generatedFlow;
+  if (!flow || flow.nodes.length === 0) {
+    state.persistenceMessage = {
+      tone: 'error',
+      text: 'No flow to create a project from.',
     };
-
-    store.addNode(project.id, promptNode);
-    nodeIdMap.set(generatedNode.id, promptNode.id);
+    callbacks.render();
+    return;
   }
 
-  for (const connection of state.generatedFlow.connections) {
-    const from = nodeIdMap.get(connection.from);
-    const to = nodeIdMap.get(connection.to);
-    if (!from || !to || from === to) continue;
-    store.addConnection(project.id, from, to, connection.reason);
-  }
+  try {
+    const projectName = state.projectName.trim() || flow.title || 'Imported Flow';
+    const projectModel = state.projectModel.trim() || 'GPT-4o';
 
-  store.saveAssembledVersion(project.id, 'Initial transcript flow import');
-  if (state.transcriptSetId) {
-    store.linkTranscriptSetToProject(
-      state.transcriptSetId,
-      project.id,
-      state.generatedFlow,
+    const project = store.createProject(
+      projectName,
+      flow.summary || 'Generated from transcript flow.',
+      projectModel,
     );
+
+    // Add nodes to the project
+    for (const flowNode of flow.nodes) {
+      const canvasType = mapFlowTypeToCanvasType(flowNode.type);
+      const canvasIcon = mapFlowTypeToIcon(flowNode.type);
+      const promptNode: PromptNode = {
+        id: flowNode.id,
+        type: canvasType,
+        label: flowNode.label,
+        icon: resolveNodeIcon(canvasIcon, canvasType),
+        x: 0,
+        y: 0,
+        content: flowNode.label,
+        meta: {},
+      };
+      store.addNode(project.id, promptNode);
+    }
+
+    // Add connections
+    for (const conn of flow.connections) {
+      store.addConnection(project.id, conn.from, conn.to, conn.label || '');
+    }
+
+    // Link transcript set to the project
+    if (state.transcriptSetId) {
+      store.linkTranscriptSetToProject(state.transcriptSetId, project.id, flow);
+    }
+
+    state.persistenceMessage = {
+      tone: 'success',
+      text: `Canvas project "${projectName}" created and linked.`,
+    };
+    callbacks.render();
+  } catch (err) {
+    state.persistenceMessage = {
+      tone: 'error',
+      text: err instanceof Error ? err.message : 'Failed to create project.',
+    };
+    callbacks.render();
   }
-  deps.cleanupViewportAndNavigate();
-  router.navigate(`/project/${project.id}`);
 }
 
-function assemblePromptFromGeneratedFlow(flow: NonNullable<TranscriptImportState['generatedFlow']>): string {
-  const nodeById = new Map(flow.nodes.map((node) => [node.id, node]));
-  const outgoingByNode = new Map<string, Array<{
-    to: string;
-    reason: string;
-    isInferred: boolean;
-    inferenceType: string;
-  }>>();
-  for (const connection of flow.connections) {
-    const bucket = outgoingByNode.get(connection.from) ?? [];
-    bucket.push({
-      to: connection.to,
-      reason: connection.reason,
-      isInferred: connection.isInferred === true,
-      inferenceType: typeof connection.inferenceType === 'string' ? connection.inferenceType.trim() : '',
-    });
-    outgoingByNode.set(connection.from, bucket);
+// ---------------------------------------------------------------------------
+// Prompt Assembly
+// ---------------------------------------------------------------------------
+
+function assemblePromptFromFlow(
+  flow: TranscriptFlowResult,
+  assistantName: string,
+  userName: string,
+): string {
+  const lines: string[] = [];
+  lines.push(`# ${flow.title || 'Call Flow'}`);
+  lines.push('');
+  if (flow.summary) {
+    lines.push(flow.summary);
+    lines.push('');
   }
 
-  const inboundCounts = new Map<string, number>();
-  for (const node of flow.nodes) {
-    inboundCounts.set(node.id, 0);
-  }
-  for (const connection of flow.connections) {
-    inboundCounts.set(connection.to, (inboundCounts.get(connection.to) ?? 0) + 1);
-  }
-  const startNode = flow.nodes.find((node) => (inboundCounts.get(node.id) ?? 0) === 0) ?? flow.nodes[0];
-  const personaSignal = collectSignal(flow.nodes, ['core-persona', 'tone-guidelines', 'language-model', 'style-module']);
-  const missionSignal = collectSignal(flow.nodes, ['mission-objective', 'process', 'start']);
+  lines.push('## Process Flow');
+  lines.push('');
 
-  const lines: string[] = [
-    '# Voice Agent System Prompt',
-    '',
-    'You are a real-time voice AI agent. Treat this prompt as behavior policy, not a fixed script.',
-    'Adapt naturally to user language while preserving branch logic and completion outcomes.',
-    '',
-    '## Identity and Persona',
-    personaSignal || 'Maintain a calm, precise, and helpful tone.',
-    '',
-    '## Mission',
-    missionSignal || 'Move the user to a successful resolution or the correct escalation path.',
-    '',
-    '## Operating Rules',
-    '1. Start at the entry state and route by user intent.',
-    '2. Ask clarifying questions when user input is ambiguous.',
-    '3. Confirm key decisions and required details before advancing.',
-    '4. Use escalation paths when policy or capability limits are reached.',
-    '',
-    '## State Machine',
-    `Start state: ${startNode.label} (${startNode.id})`,
-    '',
-  ];
+  const nodeMap = new Map(flow.nodes.map((n) => [n.id, n]));
+  const outgoing = new Map<string, typeof flow.connections>();
+  for (const conn of flow.connections) {
+    const list = outgoing.get(conn.from) ?? [];
+    list.push(conn);
+    outgoing.set(conn.from, list);
+  }
 
-  for (const node of flow.nodes) {
-    lines.push(`### ${node.label} (${node.id})`);
-    lines.push(`Type: ${node.type}`);
-    lines.push(`Policy: ${summarizePolicy(node.content, node.label)}`);
-    const outgoing = outgoingByNode.get(node.id) ?? [];
-    if (outgoing.length === 0) {
-      lines.push('Next: [end]');
-    } else {
-      lines.push('Transitions:');
-      for (const edge of outgoing) {
-        const targetLabel = nodeById.get(edge.to)?.label ?? edge.to;
-        const inferredSuffix = edge.isInferred
-          ? ` (inferred${edge.inferenceType ? `:${edge.inferenceType}` : ''})`
-          : '';
-        lines.push(`- If "${edge.reason || 'Next'}" then go to ${targetLabel} (${edge.to})${inferredSuffix}.`);
+  // Walk from start
+  const startNode = flow.nodes.find((n) => n.type === 'start');
+  const visited = new Set<string>();
+  const queue: string[] = [];
+
+  if (startNode) {
+    queue.push(startNode.id);
+  } else if (flow.nodes.length > 0) {
+    queue.push(flow.nodes[0].id);
+  }
+
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    if (visited.has(id)) continue;
+    visited.add(id);
+
+    const node = nodeMap.get(id);
+    if (!node) continue;
+
+    const typeLabel = node.type === 'decision' ? '◇' : node.type === 'start' || node.type === 'end' ? '⬮' : '▬';
+    lines.push(`### ${typeLabel} ${node.label}`);
+
+    const edges = outgoing.get(id) ?? [];
+    if (edges.length > 0) {
+      for (const edge of edges) {
+        const target = nodeMap.get(edge.to);
+        const targetLabel = target?.label ?? edge.to;
+        const label = edge.label ? ` (${edge.label})` : '';
+        lines.push(`- → ${targetLabel}${label}`);
+        if (!visited.has(edge.to)) {
+          queue.push(edge.to);
+        }
       }
     }
     lines.push('');
   }
 
-  const branchNodes = flow.nodes.filter((node) => (outgoingByNode.get(node.id) ?? []).length > 1);
-  lines.push('## Branch Handling');
-  if (branchNodes.length === 0) {
-    lines.push('Single-path interaction. Close once completion criteria are met.');
-  } else {
-    for (const node of branchNodes) {
-      const conditions = (outgoingByNode.get(node.id) ?? [])
-        .map((edge) => edge.reason || 'Next')
-        .join(', ');
-      lines.push(`- At "${node.label}" evaluate: ${conditions}.`);
-    }
+  // Append any unvisited nodes
+  for (const node of flow.nodes) {
+    if (visited.has(node.id)) continue;
+    lines.push(`### ${node.label}`);
+    lines.push('*(Not connected to main flow)*');
+    lines.push('');
   }
-  lines.push('');
-  lines.push('## Escalation and Recovery');
-  lines.push('Escalate when requested, when blocked by policy, or after repeated failed attempts.');
-  lines.push('If the user goes off-path, summarize the current goal and guide them back to a valid state.');
-  lines.push('');
-  lines.push('## Voice Style');
-  lines.push('Sound natural, concise, and action-oriented. Avoid robotic repetition.');
 
-  return lines.join('\n').trim();
+  lines.push(`---`);
+  lines.push(`Assistant: ${assistantName} | User: ${userName}`);
+  lines.push(`Model: ${flow.model} | Generated with ${flow.iterations} iterations`);
+
+  return lines.join('\n');
 }
 
-function collectSignal(
-  nodes: NonNullable<TranscriptImportState['generatedFlow']>['nodes'],
-  preferredTypes: string[],
-): string {
-  return nodes
-    .filter((node) => preferredTypes.includes(node.type))
-    .slice(0, 3)
-    .map((node) => summarizePolicy(node.content, node.label))
-    .filter((text) => text.length > 0)
-    .join(' ');
+// ---------------------------------------------------------------------------
+// Mapping helpers
+// ---------------------------------------------------------------------------
+
+function mapFlowTypeToCanvasType(type: string): NodeType {
+  switch (type) {
+    case 'start': return 'custom';
+    case 'end': return 'termination';
+    case 'decision': return 'logic-branch';
+    case 'process': return 'custom';
+    default: return 'custom';
+  }
 }
 
-function summarizePolicy(content: string, fallback: string): string {
-  const normalized = content
-    .replace(/\s+/g, ' ')
-    .replace(/\b(assistant|agent|user)\s*:/gi, '')
-    .trim();
-  if (!normalized) return fallback;
-  if (normalized.length <= 240) return normalized;
-  return `${normalized.slice(0, 237).trim()}...`;
+function mapFlowTypeToIcon(type: string): string {
+  switch (type) {
+    case 'start': return 'play_circle';
+    case 'end': return 'stop_circle';
+    case 'decision': return 'call_split';
+    case 'process': return 'settings';
+    default: return 'circle';
+  }
 }

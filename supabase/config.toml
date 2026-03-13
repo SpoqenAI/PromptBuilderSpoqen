@@ -1,0 +1,41 @@
+# Edge Function auth must be owned by the function code, not by legacy gateway JWT verification.
+# These routes either call requireUser(...) themselves or must remain publicly reachable.
+
+[functions.add-org-member]
+verify_jwt = false
+
+[functions.apply-prompt-repair]
+verify_jwt = false
+
+[functions.consume-credits]
+verify_jwt = false
+
+[functions.create-checkout-session]
+verify_jwt = false
+
+[functions.create-portal-session]
+verify_jwt = false
+
+[functions.flow-to-prompt]
+verify_jwt = false
+
+[functions.github-app-callback]
+verify_jwt = false
+
+[functions.github-connect-url]
+verify_jwt = false
+
+[functions.github-prompt-sync]
+verify_jwt = false
+
+[functions.prompt-repair-run]
+verify_jwt = false
+
+[functions.remove-org-member]
+verify_jwt = false
+
+[functions.stripe-webhook]
+verify_jwt = false
+
+[functions.transcript-flow-map]
+verify_jwt = false

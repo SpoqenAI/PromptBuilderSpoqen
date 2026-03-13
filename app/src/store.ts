@@ -84,6 +84,48 @@ interface ParsedTranscriptConnectionSeed {
   label: string;
 }
 
+const AGENT_LOG_INGEST_URL = normalizeOptionalUrl(import.meta.env.NEXT_PUBLIC_AGENT_LOG_INGEST_URL);
+const AGENT_LOG_SESSION_ID = (import.meta.env.NEXT_PUBLIC_AGENT_LOG_SESSION_ID ?? 'a4911e').trim() || 'a4911e';
+
+function normalizeOptionalUrl(value: string | undefined): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed).toString();
+  } catch {
+    return null;
+  }
+}
+
+function emitAgentLog(
+  hypothesisId: string,
+  location: string,
+  message: string,
+  data: Record<string, unknown>,
+): void {
+  if (!AGENT_LOG_INGEST_URL || typeof fetch !== 'function') {
+    return;
+  }
+
+  void fetch(AGENT_LOG_INGEST_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Debug-Session-Id': AGENT_LOG_SESSION_ID,
+    },
+    body: JSON.stringify({
+      sessionId: AGENT_LOG_SESSION_ID,
+      runId: 'initial',
+      hypothesisId,
+      location,
+      message,
+      data,
+      timestamp: Date.now(),
+    }),
+  }).catch(() => {});
+}
+
 /* Store state */
 class Store {
   private projects: Project[] = [];
@@ -381,24 +423,7 @@ class Store {
       throw new Error('No authenticated session. Sign in to use cloud sync.');
     }
     this.currentUserId = userId;
-    // #region agent log
-    fetch('http://127.0.0.1:7785/ingest/35061230-0282-4351-9efc-c9b624f80bbf', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Debug-Session-Id': 'a4911e',
-      },
-      body: JSON.stringify({
-        sessionId: 'a4911e',
-        runId: 'initial',
-        hypothesisId: 'H1',
-        location: 'store.ts:ensureSession',
-        message: 'ensureSession resolved user id',
-        data: { userId },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    emitAgentLog('H1', 'store.ts:ensureSession', 'ensureSession resolved user id', { userId });
     return userId;
   }
 
@@ -441,24 +466,11 @@ class Store {
       hint,
     };
 
-    // #region agent log
-    fetch('http://127.0.0.1:7785/ingest/35061230-0282-4351-9efc-c9b624f80bbf', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Debug-Session-Id': 'a4911e',
-      },
-      body: JSON.stringify({
-        sessionId: 'a4911e',
-        runId: 'initial',
-        hypothesisId: 'H3',
-        location: 'store.ts:setPersistenceFallback',
-        message: 'Persistence fallback triggered',
-        data: { context, error, hint },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    emitAgentLog('H3', 'store.ts:setPersistenceFallback', 'Persistence fallback triggered', {
+      context,
+      error,
+      hint,
+    });
 
     console.error(`Supabase ${context} failed, using localStorage fallback: ${error}`);
     if (hint) {
@@ -481,28 +493,11 @@ class Store {
   }
 
   private async insertProjectRemote(p: Project, ownerId: string): Promise<void> {
-    // #region agent log
-    fetch('http://127.0.0.1:7785/ingest/35061230-0282-4351-9efc-c9b624f80bbf', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Debug-Session-Id': 'a4911e',
-      },
-      body: JSON.stringify({
-        sessionId: 'a4911e',
-        runId: 'initial',
-        hypothesisId: 'H2',
-        location: 'store.ts:insertProjectRemote',
-        message: 'About to insert project',
-        data: {
-          projectId: p.id,
-          ownerId,
-          name: p.name,
-        },
-        timestamp: Date.now(),
-      }),
-    }).catch(() => {});
-    // #endregion
+    emitAgentLog('H2', 'store.ts:insertProjectRemote', 'About to insert project', {
+      projectId: p.id,
+      ownerId,
+      name: p.name,
+    });
 
     const payloadWithFolder = {
       id: p.id,
@@ -1047,6 +1042,74 @@ class Store {
       this.saveLocalStorage();
       return project;
     }
+  }
+
+  async ensureTranscriptImportWorkspace(
+    name: string,
+    description: string,
+  ): Promise<string> {
+    const normalizedName = name.trim() || 'Transcript Flow';
+    const normalizedDescription = description.trim() || 'Editable transcript flow workspace.';
+    const existing = this.transcriptFlowDrafts.find((draft) =>
+      draft.source === 'transcript-import'
+      && !draft.projectId
+      && draft.name.trim() === `${normalizedName} Transcript Set`,
+    );
+    if (existing) {
+      return existing.transcriptSetId;
+    }
+
+    const nowIso = new Date().toISOString();
+    if (this.persistenceStatus.mode !== 'database') {
+      const localTranscriptSetId = `local-${uid()}`;
+      this.transcriptFlowDrafts.unshift({
+        transcriptSetId: localTranscriptSetId,
+        projectId: null,
+        folderId: null,
+        name: `${normalizedName} Transcript Set`,
+        description: normalizedDescription,
+        source: 'transcript-import',
+        updatedAt: nowIso,
+        latestFlow: null,
+      });
+      this.rebuildTranscriptProjectLinkIndex();
+      this.saveLocalStorage();
+      return localTranscriptSetId;
+    }
+
+    const ownerId = this.currentUserId ?? await this.ensureSession();
+    const insertPayload = {
+      owner_id: ownerId,
+      project_id: null,
+      name: `${normalizedName} Transcript Set`,
+      description: normalizedDescription,
+      source: 'transcript-import',
+    };
+
+    const transcriptSetRes = await supabase
+      .from('transcript_sets')
+      .insert(insertPayload)
+      .select('*')
+      .single();
+
+    if (transcriptSetRes.error || !transcriptSetRes.data) {
+      throw new Error(transcriptSetRes.error?.message ?? 'Failed to create transcript workspace.');
+    }
+
+    const transcriptSet = transcriptSetRes.data;
+    this.transcriptFlowDrafts.unshift({
+      transcriptSetId: transcriptSet.id,
+      projectId: null,
+      folderId: null,
+      name: transcriptSet.name,
+      description: transcriptSet.description,
+      source: transcriptSet.source,
+      updatedAt: transcriptSet.updated_at,
+      latestFlow: null,
+    });
+    this.rebuildTranscriptProjectLinkIndex();
+    this.saveLocalStorage();
+    return transcriptSet.id;
   }
 
   deleteTranscriptFlow(transcriptSetId: string): void {
@@ -1742,7 +1805,7 @@ function transcriptFlowResultToDraftDetail(
     model: flow.model,
     flowTitle: flow.title,
     flowSummary: flow.summary,
-    usedFallback: flow.usedFallback,
+    usedFallback: flow.usedFallback ?? false,
     warning: flow.warning ?? '',
     nodeCount: flow.nodes.length,
     connectionCount: flow.connections.length,
@@ -1750,9 +1813,9 @@ function transcriptFlowResultToDraftDetail(
       id: node.id,
       label: node.label,
       type: node.type,
-      icon: resolveNodeIcon(node.icon, node.type),
-      content: node.content,
-      meta: { ...node.meta },
+      icon: resolveNodeIcon(node.icon ?? '', node.type as NodeType),
+      content: node.content ?? node.label,
+      meta: { ...(node.meta ?? {}) },
     })),
     connectionsJson: flow.connections.map((connection) => ({
       from: connection.from,

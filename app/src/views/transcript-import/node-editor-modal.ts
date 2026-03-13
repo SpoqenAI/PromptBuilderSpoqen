@@ -56,8 +56,8 @@ export function openNodeEditorModal(
   dialog.className = 'w-full max-w-3xl max-h-[90vh] overflow-hidden rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-2xl flex flex-col';
   overlay.appendChild(dialog);
 
-  const initialColor = readNodeColorMeta(node.meta) ?? DEFAULT_NODE_COLOR;
-  const initialIcon = resolveNodeIcon(node.icon, node.type);
+  const initialColor = readNodeColorMeta(node.meta ?? {}) ?? DEFAULT_NODE_COLOR;
+  const initialIcon = resolveNodeIcon(node.icon ?? '', node.type as import('../../models').NodeType);
   const iconOptions = Array.from(new Set([...NODE_ICON_SUGGESTIONS, initialIcon]));
 
   dialog.innerHTML = `
@@ -83,7 +83,7 @@ export function openNodeEditorModal(
         </div>
         <div>
           <label class="block text-xs font-medium text-slate-500 mb-1">Content</label>
-          <textarea id="node-edit-content" rows="14" class="ui-input resize-y min-h-44 font-mono text-xs leading-relaxed">${esc(node.content)}</textarea>
+          <textarea id="node-edit-content" rows="14" class="ui-input resize-y min-h-44 font-mono text-xs leading-relaxed">${esc(node.content ?? '')}</textarea>
         </div>
       </div>
 
@@ -185,8 +185,8 @@ export function openNodeEditorModal(
       label: labelInput.value.trim() || node.label,
       content: contentInput.value,
       type: (typeInput.value.trim() || node.type) as TranscriptFlowNode['type'],
-      icon: iconInput.value.trim() || node.icon,
-      meta: withNodeColorMeta(node.meta, currentColor),
+      icon: iconInput.value.trim() || node.icon || 'widgets',
+      meta: withNodeColorMeta(node.meta ?? {}, currentColor),
     });
     cleanup();
   };

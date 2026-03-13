@@ -10,6 +10,7 @@ import {
   uid,
   CustomNodeTemplate,
   type BlockDefinition,
+  type NodeType,
 } from '../models';
 import { themeToggleHTML, wireThemeToggle } from '../theme';
 import { clearProjectEscapeToCanvas, projectViewTabsHTML, wireProjectViewTabs } from './project-nav';
@@ -669,8 +670,10 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     let height = NODE_VISUAL_HEIGHT;
     const shape = nodeBusinessShapeById.get(node.id);
     if (shape === 'diamond') {
-      width = Math.max(width, 200);
-      height = Math.max(width, 200);
+      // Force perfect square for diamond, balanced with rect nodes
+      const side = Math.max(180, width * 0.85);
+      width = side;
+      height = side;
     }
     const nextSize: NodeVisualSize = { width, height };
     if (cached && cached.width === nextSize.width && cached.height === nextSize.height) {
@@ -1183,19 +1186,35 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
   }
 
   function buildDiamondNodeHtml(node: PromptNode, cs: NodeColorStyles, size: NodeVisualSize): string {
-    const safeW = Math.floor(size.width * 0.46);
-    const safeH = Math.floor(size.height * 0.46);
+    const w = size.width;
+    const h = size.height;
+    // Inner safe area for text
+    const safeW = Math.floor(w * 0.5);
+    const safeH = Math.floor(h * 0.5);
+
     return `
-      <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow h-full flex items-center justify-center cursor-grab active:cursor-grabbing"
-        style="border-color:${cs.border}; clip-path:polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%); border-radius:0; background:${cs.headerBackground};"
-      >
-        <div class="flex flex-col items-center text-center gap-1 select-none pointer-events-none"
-          style="max-width:${safeW}px; max-height:${safeH}px; overflow:hidden;"
-        >
-          <span class="material-icons text-base" style="color:${cs.icon};">${node.icon}</span>
-          <span class="text-[11px] font-bold leading-tight text-slate-800 dark:text-slate-100">${escapeHTML(node.label)}</span>
+      <div class="node-surface h-full w-full relative group">
+        <!-- SVG Diamond Background -->
+        <svg class="absolute inset-0 w-full h-full drop-shadow-lg overflow-visible" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+          <path d="M ${w / 2} 0 L ${w} ${h / 2} L ${w / 2} ${h} L 0 ${h / 2} Z"
+            fill="${cs.headerBackground}"
+            stroke="${cs.border}"
+            stroke-width="1.5"
+          />
+        </svg>
+
+        <!-- Content (Centered in Diamond) -->
+        <div class="absolute inset-0 flex items-center justify-center p-4 cursor-grab active:cursor-grabbing">
+          <div class="flex flex-col items-center text-center gap-1.5 select-none pointer-events-none"
+            style="max-width:${safeW}px; max-height:${safeH}px; overflow:hidden;"
+          >
+            <span class="material-icons text-base" style="color:${cs.icon};">${node.icon}</span>
+            <span class="text-[11px] font-bold leading-tight text-slate-800 dark:text-slate-100">${escapeHTML(node.label)}</span>
+          </div>
         </div>
-        <button class="node-delete absolute top-1/2 right-[22%] -translate-y-1/2 text-slate-400 hover:text-red-500 p-0.5 opacity-0 group-hover:opacity-100 pointer-events-auto z-10" title="Delete node">
+
+        <!-- Delete Toggle -->
+        <button class="node-delete absolute top-1/2 right-[12%] -translate-y-1/2 text-slate-400 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 pointer-events-auto z-10 transition-opacity" title="Delete node">
           <span class="material-icons text-xs">close</span>
         </button>
       </div>`;
@@ -1983,7 +2002,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     return project!.nodes.map((node) => ({
       id: node.id,
       label: node.label,
-      type: node.type,
+      type: node.type as TranscriptFlowNode['type'],
       icon: resolveNodeIcon(node.icon, node.type),
       content: node.content,
       meta: { ...node.meta },
@@ -1994,6 +2013,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
     return project!.connections.map((connection) => ({
       from: connection.from,
       to: connection.to,
+      label: normalizeConnectionLabel(connection.label ?? 'Next') || 'Next',
       reason: normalizeConnectionLabel(connection.label ?? 'Next') || 'Next',
     }));
   }
@@ -2011,16 +2031,16 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
 
     for (const [index, flowNode] of flow.nodes.entries()) {
       const nodePosition = layout[flowNode.id] ?? { x: 80, y: 80 };
-      const seededColor = readNodeColorMeta(flowNode.meta) ?? getAutoNodeColor(index);
+      const seededColor = readNodeColorMeta(flowNode.meta ?? {}) ?? getAutoNodeColor(index);
       const promptNode: PromptNode = {
         id: uid(),
-        type: flowNode.type,
+        type: (flowNode.type as NodeType) ?? 'custom',
         label: flowNode.label,
-        icon: resolveNodeIcon(flowNode.icon, flowNode.type),
+        icon: resolveNodeIcon(flowNode.icon ?? '', (flowNode.type as NodeType) ?? 'custom'),
         x: nodePosition.x,
         y: nodePosition.y,
-        content: flowNode.content,
-        meta: withNodeColorMeta(flowNode.meta, seededColor),
+        content: flowNode.content ?? flowNode.label,
+        meta: withNodeColorMeta(flowNode.meta ?? {}, seededColor),
       };
       store.addNode(projectId, promptNode);
       nodeIdMap.set(flowNode.id, promptNode.id);
@@ -2030,7 +2050,7 @@ export function renderCanvas(container: HTMLElement, projectId: string): void {
       const fromNodeId = nodeIdMap.get(connection.from);
       const toNodeId = nodeIdMap.get(connection.to);
       if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) continue;
-      store.addConnection(projectId, fromNodeId, toNodeId, normalizeConnectionLabel(connection.reason) || 'Next');
+      store.addConnection(projectId, fromNodeId, toNodeId, normalizeConnectionLabel(connection.reason ?? connection.label ?? '') || 'Next');
     }
 
     renderNodes();

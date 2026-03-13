@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.26.0",
-    "@sentry/browser": "^10.42.0",
+    "@sentry/browser": "^10.43.0",
     "@supabase/supabase-js": "^2.95.3",
     "@types/express": "^5.0.6",
     "@types/ws": "^8.18.1",

@@ -11,6 +11,9 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 $script:AuthTokenResolutionError = ""
 
+# IMPORTANT: WE DO NOT USE LEGACY JWT VERIFICATION FOR SUPABASE EDGE FUNCTIONS.
+# If a request body contains {"code":401,"message":"Invalid JWT"}, the deployment is wrong.
+
 function Resolve-ProjectRef {
   param([string]$Value)
   if ($Value -and $Value.Trim().Length -gt 0) {
@@ -73,11 +76,13 @@ function Invoke-EdgeRequest {
       status = [int]$response.StatusCode
       body = [string]$response.Content
       error = ""
+      headers = $response.Headers
     }
   } catch {
     $statusCode = 0
     $responseBody = ""
     $message = $_.Exception.Message
+    $responseHeaders = $null
 
     $hasResponse = $_.Exception -and $_.Exception.PSObject.Properties.Name -contains "Response"
     if ($hasResponse -and $_.Exception.Response) {
@@ -93,6 +98,12 @@ function Invoke-EdgeRequest {
       } catch {
         $responseBody = ""
       }
+
+      try {
+        $responseHeaders = $_.Exception.Response.Headers
+      } catch {
+        $responseHeaders = $null
+      }
     }
 
     return [pscustomobject]@{
@@ -100,8 +111,37 @@ function Invoke-EdgeRequest {
       status = $statusCode
       body = $responseBody
       error = $message
+      headers = $responseHeaders
     }
   }
+}
+
+function Get-HeaderValue {
+  param(
+    $Headers,
+    [string]$Name
+  )
+
+  if (-not $Headers) {
+    return ""
+  }
+
+  try {
+    $value = $Headers[$Name]
+    if ($null -ne $value) {
+      return [string]$value
+    }
+  } catch {
+    # Fall through to enumeration.
+  }
+
+  foreach ($key in $Headers.Keys) {
+    if ([string]::Equals([string]$key, $Name, [System.StringComparison]::OrdinalIgnoreCase)) {
+      return [string]$Headers[$key]
+    }
+  }
+
+  return ""
 }
 
 function Expect-Status {
@@ -110,6 +150,15 @@ function Expect-Status {
     [int[]]$Allowed
   )
   return $Allowed -contains $Status
+}
+
+function Test-IsLegacyJwtGatewayError {
+  param([string]$Body)
+  if (-not $Body) {
+    return $false
+  }
+
+  return (($Body -match '"code"\s*:\s*401') -and (($Body -match 'Invalid JWT') -or ($Body -match 'Missing authorization header')))
 }
 
 function Resolve-TestEmail {
@@ -227,7 +276,10 @@ $results = @()
 foreach ($test in $tests) {
   $optionsUrl = "$baseUrl$($test.Path)"
   $optionsResult = Invoke-EdgeRequest -Url $optionsUrl -Method "OPTIONS" -Headers $sharedHeaders
-  $optionsPass = Expect-Status -Status $optionsResult.status -Allowed @(200, 204, 405)
+  $optionsAllowed = Expect-Status -Status $optionsResult.status -Allowed @(200, 204, 405)
+  $allowOrigin = Get-HeaderValue -Headers $optionsResult.headers -Name "Access-Control-Allow-Origin"
+  $optionsCorsPass = $optionsResult.status -eq 405 -or $allowOrigin -eq $sharedHeaders["Origin"]
+  $optionsPass = $optionsAllowed -and $optionsCorsPass
 
   $requestHeaders = @{}
   foreach ($key in $sharedHeaders.Keys) {
@@ -242,19 +294,26 @@ foreach ($test in $tests) {
 
   $reqResult = Invoke-EdgeRequest -Url $optionsUrl -Method $test.Method -Headers $requestHeaders -Body $test.Body
   $reqPass = Expect-Status -Status $reqResult.status -Allowed $allowedRequestStatuses
+  $legacyJwtGatewayError = Test-IsLegacyJwtGatewayError -Body $reqResult.body
+  if ($legacyJwtGatewayError) {
+    $reqPass = $false
+  }
 
   $pass = $optionsPass -and $reqPass
   $results += [pscustomobject]@{
     Function = $test.Name
     AuthUsed = $useAuthForRequest
     OptionsStatus = $optionsResult.status
+    OptionsAllowOrigin = $allowOrigin
     RequestStatus = $reqResult.status
+    LegacyJwtGateway = $legacyJwtGatewayError
     Passed = $pass
     RequestError = $reqResult.error
   }
 
   if (-not $pass) {
-    $failures += "$($test.Name): OPTIONS=$($optionsResult.status), $($test.Method)=$($reqResult.status), error=$($reqResult.error)"
+    $legacyJwtNote = if ($legacyJwtGatewayError) { ', legacy-jwt=TRUE' } else { '' }
+    $failures += "$($test.Name): OPTIONS=$($optionsResult.status), allow-origin=$allowOrigin, $($test.Method)=$($reqResult.status)$legacyJwtNote, error=$($reqResult.error)"
   }
 }
 

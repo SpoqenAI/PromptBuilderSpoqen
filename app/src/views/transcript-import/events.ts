@@ -1,7 +1,6 @@
 import { customPrompt, customConfirm, customAlert } from '../../dialogs';
 import { uid } from '../../models';
-import { getAutoNodeColor, withNodeColorMeta } from '../../node-colors';
-import type { TranscriptFlowNode } from '../../transcript-flow';
+import type { TranscriptFlowNode, FlowNodeType } from '../../transcript-flow';
 import { clearTranscriptSession } from './state';
 import type { TranscriptImportState } from './types';
 import { normalizeLineEndings } from './format';
@@ -25,10 +24,8 @@ interface WireTranscriptImportEventsParams {
 }
 
 interface FlowBlockData {
-  type: TranscriptFlowNode['type'];
+  type: FlowNodeType;
   label: string;
-  icon: string;
-  defaultContent: string;
 }
 
 type PortType = 'in' | 'out';
@@ -140,13 +137,13 @@ export function wireTranscriptImportEvents(
     onFlowMutated();
   };
 
-  const editConnectionReason = async (index: number): Promise<void> => {
+  const editConnectionLabel = async (index: number): Promise<void> => {
     const flow = state.generatedFlow;
     if (!flow || index < 0 || index >= flow.connections.length) return;
     const connection = flow.connections[index];
-    const nextReason = await customPrompt('Branch label (optional):', connection.reason ?? '');
-    if (nextReason === null) return;
-    connection.reason = normalizeConnectionReason(nextReason);
+    const nextLabel = await customPrompt('Branch label (optional):', connection.label ?? '');
+    if (nextLabel === null) return;
+    connection.label = nextLabel.trim();
     onFlowMutated();
   };
 
@@ -257,7 +254,7 @@ export function wireTranscriptImportEvents(
     tempLine.setAttribute('y1', String(start.y));
     tempLine.setAttribute('x2', String(start.x));
     tempLine.setAttribute('y2', String(start.y));
-    tempLine.setAttribute('stroke', '#23956F');
+    tempLine.setAttribute('stroke', '#10b981');
     tempLine.setAttribute('stroke-width', '2');
     tempLine.setAttribute('stroke-dasharray', '6,3');
     tempLine.setAttribute('opacity', '0.7');
@@ -269,18 +266,14 @@ export function wireTranscriptImportEvents(
     flow: NonNullable<TranscriptImportState['generatedFlow']>,
     from: string,
     to: string,
-    reason: string,
+    label: string,
   ): boolean => {
     if (from === to) return false;
     const exists = flow.connections.some((connection) => (
       connection.from === from && connection.to === to
     ));
     if (exists) return false;
-    flow.connections.push({
-      from,
-      to,
-      reason: normalizeConnectionReason(reason),
-    });
+    flow.connections.push({ from, to, label: label.trim() });
     return true;
   };
 
@@ -301,7 +294,7 @@ export function wireTranscriptImportEvents(
     );
     if (!resolved) return false;
 
-    const added = addConnectionIfMissing(flow, resolved.from, resolved.to, 'Next');
+    const added = addConnectionIfMissing(flow, resolved.from, resolved.to, '');
     if (!added) return false;
     state.selectedConnectionIndex = null;
     onFlowMutated();
@@ -336,6 +329,7 @@ export function wireTranscriptImportEvents(
     return true;
   };
 
+  // --- Navigation ---
   container.querySelector<HTMLButtonElement>('#nav-home')?.addEventListener('click', () => {
     onNavigateHome();
   });
@@ -344,6 +338,7 @@ export function wireTranscriptImportEvents(
     onNavigateBack();
   });
 
+  // --- Sidebar ---
   container.querySelector<HTMLButtonElement>('#btn-toggle-input-section')?.addEventListener('click', () => {
     state.sidebar.inputCollapsed = !state.sidebar.inputCollapsed;
     render();
@@ -376,12 +371,7 @@ export function wireTranscriptImportEvents(
     state.userName = userNameInput.value;
   });
 
-  const searchInput = container.querySelector<HTMLInputElement>('#flow-node-search');
-  searchInput?.addEventListener('input', () => {
-    state.sidebar.nodeSearchQuery = searchInput.value;
-    render();
-  });
-
+  // --- Transcript file handling ---
   const dropZone = container.querySelector<HTMLElement>('#transcript-drop-zone');
   const fileInput = container.querySelector<HTMLInputElement>('#transcript-file');
 
@@ -454,13 +444,7 @@ export function wireTranscriptImportEvents(
     render();
   });
 
-  container.querySelector<HTMLSelectElement>('#detail-level')?.addEventListener('change', (e) => {
-    const value = (e.target as HTMLSelectElement).value;
-    if (value === 'low' || value === 'medium' || value === 'high') {
-      state.detailLevel = value;
-    }
-  });
-
+  // --- Generation ---
   container.querySelector<HTMLButtonElement>('#btn-generate-flow')?.addEventListener('click', () => {
     onGenerateFlow();
   });
@@ -499,6 +483,7 @@ export function wireTranscriptImportEvents(
     })();
   });
 
+  // --- Node palette (drag + click to add) ---
   const addNodeFromBlock = (
     blockData: FlowBlockData,
     location: { x: number; y: number } | null,
@@ -506,7 +491,6 @@ export function wireTranscriptImportEvents(
   ): void => {
     const flow = ensureEditableFlow(state);
     const nodeId = uid();
-    const autoColor = getAutoNodeColor(flow.nodes.length);
     const basePosition = resolveInsertionPoint(state);
     const nextPosition = location ?? basePosition;
 
@@ -514,9 +498,6 @@ export function wireTranscriptImportEvents(
       id: nodeId,
       type: blockData.type,
       label: blockData.label,
-      icon: blockData.icon,
-      content: blockData.defaultContent || blockData.label,
-      meta: withNodeColorMeta({}, autoColor),
     });
     state.nodePositionOverrides[nodeId] = {
       x: snapToGrid(nextPosition.x),
@@ -530,13 +511,8 @@ export function wireTranscriptImportEvents(
     ) {
       const edgeToSplit = flow.connections[splitEdgeIndex];
       flow.connections.splice(splitEdgeIndex, 1);
-      addConnectionIfMissing(
-        flow,
-        edgeToSplit.from,
-        nodeId,
-        edgeToSplit.reason,
-      );
-      addConnectionIfMissing(flow, nodeId, edgeToSplit.to, 'Next');
+      addConnectionIfMissing(flow, edgeToSplit.from, nodeId, edgeToSplit.label ?? '');
+      addConnectionIfMissing(flow, nodeId, edgeToSplit.to, '');
       state.selectedConnectionIndex = null;
     }
 
@@ -585,15 +561,16 @@ export function wireTranscriptImportEvents(
 
     const world = clientToWorld(event.clientX, event.clientY);
     if (!world) return;
-    const nodeSize = defaultNodeSize();
+    const size = defaultNodeSize();
     const location = {
-      x: snapToGrid(world.x - nodeSize.width / 2),
-      y: snapToGrid(world.y - nodeSize.height / 2),
+      x: snapToGrid(world.x - size.width / 2),
+      y: snapToGrid(world.y - size.height / 2),
     };
     const splitEdgeIndex = resolveEdgeIndexAtClient(event.clientX, event.clientY);
     addNodeFromBlock(blockData, location, splitEdgeIndex);
   });
 
+  // --- Edge interactions ---
   container.querySelectorAll<HTMLElement>('[data-flow-edge-hit-index]').forEach((edgeEl) => {
     edgeEl.addEventListener('click', (event) => {
       event.preventDefault();
@@ -610,7 +587,7 @@ export function wireTranscriptImportEvents(
       const edgeIndex = parseEdgeIndex(edgeEl.dataset.flowEdgeHitIndex);
       if (edgeIndex === null) return;
       setSelectedConnection(edgeIndex);
-      void editConnectionReason(edgeIndex);
+      void editConnectionLabel(edgeIndex);
     });
 
     edgeEl.addEventListener('contextmenu', (event) => {
@@ -630,6 +607,7 @@ export function wireTranscriptImportEvents(
     }
   });
 
+  // --- Node interactions ---
   container.querySelectorAll<HTMLButtonElement>('[data-flow-node-delete]').forEach((button) => {
     button.addEventListener('click', (event) => {
       event.preventDefault();
@@ -658,6 +636,7 @@ export function wireTranscriptImportEvents(
     });
   });
 
+  // --- Port interactions (connection drawing) ---
   container.querySelectorAll<HTMLElement>('.port[data-port-node-id][data-port-type]').forEach((portEl) => {
     portEl.addEventListener('mousedown', (event: MouseEvent) => {
       if (event.button !== 0) return;
@@ -709,6 +688,7 @@ export function wireTranscriptImportEvents(
     });
   });
 
+  // --- Document-level listeners ---
   addDocumentListener('mousemove', (event: MouseEvent) => {
     if (!connectionDraft || !tempLine) return;
     if (
@@ -769,7 +749,7 @@ export function wireTranscriptImportEvents(
     if (event.key === 'l' || event.key === 'L') {
       const edgeIndex = state.selectedConnectionIndex;
       if (edgeIndex === null) return;
-      void editConnectionReason(edgeIndex);
+      void editConnectionLabel(edgeIndex);
       event.preventDefault();
     }
   });
@@ -782,98 +762,66 @@ export function wireTranscriptImportEvents(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
 function parseFlowBlockData(blockEl: HTMLElement): FlowBlockData | null {
-  const type = (blockEl.dataset.flowBlockType ?? '').trim();
+  const type = (blockEl.dataset.flowBlockType ?? '').trim() as FlowNodeType;
   const label = (blockEl.dataset.flowBlockLabel ?? '').trim();
-  const icon = (blockEl.dataset.flowBlockIcon ?? '').trim();
-  const encodedDefault = blockEl.dataset.flowBlockDefault ?? '';
-  if (!type || !label || !icon) return null;
-
-  let defaultContent = '';
-  try {
-    defaultContent = decodeURIComponent(encodedDefault);
-  } catch {
-    defaultContent = encodedDefault;
-  }
-
-  return {
-    type: type as TranscriptFlowNode['type'],
-    label,
-    icon,
-    defaultContent,
-  };
+  if (!type || !label) return null;
+  return { type, label };
 }
 
 function parseFlowBlockPayload(payload: string): FlowBlockData | null {
   try {
-    const parsed = JSON.parse(payload) as Partial<FlowBlockData> | null;
-    if (!parsed || typeof parsed !== 'object') return null;
-    if (
-      typeof parsed.type !== 'string'
-      || typeof parsed.label !== 'string'
-      || typeof parsed.icon !== 'string'
-      || typeof parsed.defaultContent !== 'string'
-    ) {
-      return null;
-    }
-    return {
-      type: parsed.type as TranscriptFlowNode['type'],
-      label: parsed.label,
-      icon: parsed.icon,
-      defaultContent: parsed.defaultContent,
-    };
+    const data = JSON.parse(payload) as Record<string, unknown>;
+    const type = typeof data.type === 'string' ? data.type.trim() : '';
+    const label = typeof data.label === 'string' ? data.label.trim() : '';
+    if (!type || !label) return null;
+    return { type: type as FlowNodeType, label };
   } catch {
     return null;
   }
 }
 
-function ensureEditableFlow(state: TranscriptImportState): NonNullable<TranscriptImportState['generatedFlow']> {
-  if (state.generatedFlow) return state.generatedFlow;
-  const title = state.projectName.trim() || 'Transcript Flow';
-  state.generatedFlow = {
-    title,
-    summary: 'Editable transcript flow workspace.',
-    model: state.projectModel.trim() || 'GPT-4o',
-    nodes: [],
-    connections: [],
-    usedFallback: false,
-    warning: null,
-  };
-  state.generationError = '';
-  return state.generatedFlow;
+function parseEdgeIndex(value: string | undefined): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function snapToGrid(value: number): number {
   return Math.round(value / GRID_SIZE) * GRID_SIZE;
 }
 
-function parseEdgeIndex(rawValue: string | undefined): number | null {
-  if (typeof rawValue !== 'string') return null;
-  const parsed = Number.parseInt(rawValue, 10);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function normalizeConnectionReason(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : 'Next';
+function ensureEditableFlow(state: TranscriptImportState): NonNullable<TranscriptImportState['generatedFlow']> {
+  if (!state.generatedFlow) {
+    state.generatedFlow = {
+      title: 'Untitled Flow',
+      summary: '',
+      model: 'manual',
+      nodes: [],
+      connections: [],
+      iterations: 0,
+      toolCalls: 0,
+      warning: null,
+    };
+  }
+  return state.generatedFlow;
 }
 
 function resolveInsertionPoint(state: TranscriptImportState): { x: number; y: number } {
-  const nodeSize = defaultNodeSize();
-  const positions = Object.values(state.latestRenderedLayout);
-  if (positions.length === 0) {
-    return { x: 80, y: 80 };
-  }
-  let maxX = positions[0].x;
-  let anchorY = positions[0].y;
-  for (const pos of positions) {
-    if (pos.x >= maxX) {
-      maxX = pos.x;
-      anchorY = pos.y;
-    }
-  }
+  const overrides = Object.values(state.nodePositionOverrides);
+  if (overrides.length === 0) return { x: 300, y: 200 };
+  const maxY = Math.max(...overrides.map((p) => p.y));
+  const avgX = overrides.reduce((sum, p) => sum + p.x, 0) / overrides.length;
   return {
-    x: snapToGrid(maxX + nodeSize.width + 56),
-    y: snapToGrid(anchorY),
+    x: snapToGrid(avgX),
+    y: snapToGrid(maxY + 120),
   };
+}
+
+function normalizeConnectionLabel(value: string): string {
+  return value.trim().slice(0, 100);
 }

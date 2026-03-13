@@ -13,6 +13,9 @@ Produce small, correct, verifiable changes that respect the project architecture
 - Keep edge-function logic in `supabase/functions/` and schema changes in `supabase/migrations/`.
 - Keep secrets out of committed files (`.env`, SQL, scripts, source).
 - Preserve existing auth assumptions for edge functions and deploy via repository scripts.
+- WE DO NOT USE LEGACY JWT VERIFICATION FOR SUPABASE EDGE FUNCTIONS.
+- For handler-auth routes that call `requireUser(...)`, deploy with `--no-verify-jwt` and let the function verify the bearer token itself.
+- If a function response contains `{"code":401,"message":"Invalid JWT"}`, treat that as a broken deployment or gateway config, not expected app behavior.
 
 ## Context Loading Order (Minimum Effective Context)
 

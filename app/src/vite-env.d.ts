@@ -7,6 +7,8 @@ interface ImportMetaEnv {
   readonly NEXT_PUBLIC_AUTH_CAPTCHA_ENABLED?: string;
   readonly NEXT_PUBLIC_ENABLE_MCP_RELAY?: string;
   readonly NEXT_PUBLIC_MCP_RELAY_URL?: string;
+  readonly NEXT_PUBLIC_AGENT_LOG_INGEST_URL?: string;
+  readonly NEXT_PUBLIC_AGENT_LOG_SESSION_ID?: string;
 }
 
 interface ImportMeta {

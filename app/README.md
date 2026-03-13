@@ -20,6 +20,10 @@
   - `NEXT_PUBLIC_ENABLE_MCP_RELAY=true`
   - `NEXT_PUBLIC_MCP_RELAY_URL` to your relay origin/base path.
 
+## Optional debug ingest
+- Local agent/debug ingest logging is disabled unless `NEXT_PUBLIC_AGENT_LOG_INGEST_URL` is set.
+- If you enable it, point it at a running collector such as `http://127.0.0.1:7785/ingest/<session-id>`.
+
 ## Security notes
 - Do not store real secrets in committed files.
 - Use platform/hosted secrets for Supabase Functions (`GITHUB_*`, `OPENAI_*`, etc.).

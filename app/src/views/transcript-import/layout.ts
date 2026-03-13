@@ -1,15 +1,15 @@
+/**
+ * Top-down hierarchical layout engine for flowchart diagrams.
+ *
+ * Places the start node at top-center, flows downward through process and
+ * decision nodes, and positions end nodes at the bottom. Decision branches
+ * spread horizontally.
+ */
+
 import type {
   TranscriptFlowNode,
   TranscriptFlowResult,
 } from '../../transcript-flow';
-import {
-  TRANSCRIPT_NODE_DECORATION_WIDTH,
-  TRANSCRIPT_NODE_HEIGHT,
-  TRANSCRIPT_NODE_MIN_WIDTH,
-  TRANSCRIPT_NODE_X_GAP,
-  TRANSCRIPT_NODE_Y_GAP,
-} from './constants';
-import { shortId } from './format';
 import type {
   FlowRenderState,
   LayoutMap,
@@ -18,16 +18,33 @@ import type {
   NodeVisualSize,
 } from './types';
 
-const nodeLabelMeasureCanvas =
-  typeof document !== 'undefined' ? document.createElement('canvas') : null;
-const nodeLabelMeasureContext = nodeLabelMeasureCanvas?.getContext('2d') ?? null;
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const NODE_SIZES: Record<string, NodeVisualSize> = {
+  start:    { width: 160, height: 70 },
+  end:      { width: 160, height: 70 },
+  process:  { width: 200, height: 70 },
+  decision: { width: 160, height: 100 },
+};
+
+const X_GAP = 120;
+const Y_GAP = 120;
+const CANVAS_PADDING = 140;
+const MIN_CANVAS_WIDTH = 960;
+const MIN_CANVAS_HEIGHT = 500;
+
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
 
 export function buildFlowRenderState(
   flow: TranscriptFlowResult,
   overrides: LayoutMap,
 ): FlowRenderState {
-  const nodeSizes = computeNodeVisualSizes(flow);
-  const autoLayout = computeFlowLayout(flow, nodeSizes);
+  const nodeSizes = computeNodeSizes(flow);
+  const autoLayout = computeHierarchicalLayout(flow, nodeSizes);
   const layout = cloneLayout(autoLayout);
 
   for (const node of flow.nodes) {
@@ -39,7 +56,7 @@ export function buildFlowRenderState(
   return {
     layout,
     nodeSizes,
-    geometry: computeCanvasGeometry(layout, nodeSizes, flow.connections),
+    geometry: computeCanvasGeometry(layout, nodeSizes),
   };
 }
 
@@ -52,151 +69,114 @@ export function cloneLayout(layout: LayoutMap): LayoutMap {
 }
 
 export function defaultNodeSize(): NodeVisualSize {
+  return NODE_SIZES.process;
+}
+
+export function nodeSize(type: string): NodeVisualSize {
+  return NODE_SIZES[type] ?? NODE_SIZES.process;
+}
+
+// ---------------------------------------------------------------------------
+// Edge Geometry
+// ---------------------------------------------------------------------------
+
+export function edgeGeometry(
+  from: LayoutPosition,
+  fromSize: NodeVisualSize,
+  to: LayoutPosition,
+  toSize: NodeVisualSize,
+): { fromX: number; fromY: number; toX: number; toY: number; curve: string } {
+  // Flow is top-down: edges exit from bottom-center and enter top-center
+  const fromX = from.x + fromSize.width / 2;
+  const fromY = from.y + fromSize.height;
+  const toX = to.x + toSize.width / 2;
+  const toY = to.y;
+
+  // Vertical bezier curve
+  const dy = Math.abs(toY - fromY) * 0.4;
   return {
-    width: TRANSCRIPT_NODE_MIN_WIDTH,
-    height: TRANSCRIPT_NODE_HEIGHT,
+    fromX,
+    fromY,
+    toX,
+    toY,
+    curve: `M ${fromX} ${fromY} C ${fromX} ${fromY + dy}, ${toX} ${toY - dy}, ${toX} ${toY}`,
   };
 }
 
-export function computeNodeVisualSizes(flow: TranscriptFlowResult): NodeSizeMap {
+// ---------------------------------------------------------------------------
+// Layout Computation
+// ---------------------------------------------------------------------------
+
+function computeNodeSizes(flow: TranscriptFlowResult): NodeSizeMap {
   const sizes: NodeSizeMap = {};
   for (const node of flow.nodes) {
-    const label =
-      node.label.trim().length > 0 ? node.label.trim() : `Step ${shortId(node.id)}`;
-    sizes[node.id] = {
-      width: Math.max(
-        TRANSCRIPT_NODE_MIN_WIDTH,
-        estimateTranscriptNodeLabelWidth(label) + TRANSCRIPT_NODE_DECORATION_WIDTH,
-      ),
-      height: TRANSCRIPT_NODE_HEIGHT,
-    };
+    sizes[node.id] = nodeSize(node.type);
   }
   return sizes;
 }
 
-export function estimateTranscriptNodeLabelWidth(label: string): number {
-  const text = label.trim().length > 0 ? label.trim() : 'Node';
-  if (!nodeLabelMeasureContext) return text.length * 7;
-  nodeLabelMeasureContext.font = '700 12px system-ui, -apple-system, sans-serif';
-  return Math.ceil(nodeLabelMeasureContext.measureText(text).width);
-}
-
-export function computeCanvasGeometry(
-  layout: LayoutMap,
-  nodeSizes: NodeSizeMap,
-  connections: ReadonlyArray<{ from: string; to: string }> = [],
-): { width: number; height: number } {
-  const PADDING = 120;
-  const MIN_WIDTH = 760;
-  const MIN_HEIGHT = 420;
-  let minX = Number.POSITIVE_INFINITY;
-  let minY = Number.POSITIVE_INFINITY;
-  let maxX = 0;
-  let maxY = 0;
-  let hasContent = false;
-
-  const includePoint = (x: number, y: number): void => {
-    if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-    hasContent = true;
-    minX = Math.min(minX, x);
-    minY = Math.min(minY, y);
-    maxX = Math.max(maxX, x);
-    maxY = Math.max(maxY, y);
-  };
-
-  for (const [nodeId, position] of Object.entries(layout)) {
-    const nodeSize = nodeSizes[nodeId] ?? defaultNodeSize();
-    includePoint(position.x, position.y);
-    includePoint(position.x + nodeSize.width, position.y + nodeSize.height);
-  }
-
-  for (const connection of connections) {
-    const from = layout[connection.from];
-    const to = layout[connection.to];
-    if (!from || !to) continue;
-
-    const fromSize = nodeSizes[connection.from] ?? defaultNodeSize();
-    const toSize = nodeSizes[connection.to] ?? defaultNodeSize();
-    const fromX = from.x + fromSize.width;
-    const fromY = from.y + fromSize.height / 2;
-    const toX = to.x;
-    const toY = to.y + toSize.height / 2;
-    const dx = Math.abs(toX - fromX) * 0.5;
-    const control1X = fromX + dx;
-    const control2X = toX - dx;
-
-    includePoint(fromX, fromY);
-    includePoint(toX, toY);
-    includePoint(control1X, fromY);
-    includePoint(control2X, toY);
-  }
-
-  if (!hasContent) {
-    return { width: MIN_WIDTH, height: MIN_HEIGHT };
-  }
-
-  const leftOverflow = Math.max(0, -minX);
-  const topOverflow = Math.max(0, -minY);
-
-  return {
-    width: Math.max(maxX + PADDING + leftOverflow, MIN_WIDTH),
-    height: Math.max(maxY + PADDING + topOverflow, MIN_HEIGHT),
-  };
-}
-
-export function computeFlowLayout(
+function computeHierarchicalLayout(
   flow: TranscriptFlowResult,
   nodeSizes: NodeSizeMap,
 ): LayoutMap {
-  const levelByNode = new Map<string, number>();
+  if (flow.nodes.length === 0) return {};
+
+  // Build adjacency
   const outgoing = new Map<string, string[]>();
-  const incomingCounts = new Map<string, number>();
-
+  const incoming = new Map<string, string[]>();
+  const incomingCount = new Map<string, number>();
+  const nodeMap = new Map(flow.nodes.map((node) => [node.id, node]));
   for (const node of flow.nodes) {
-    incomingCounts.set(node.id, 0);
     outgoing.set(node.id, []);
+    incoming.set(node.id, []);
+    incomingCount.set(node.id, 0);
+  }
+  for (const conn of flow.connections) {
+    if (!outgoing.has(conn.from) || !incomingCount.has(conn.to)) continue;
+    outgoing.get(conn.from)!.push(conn.to);
+    incoming.get(conn.to)!.push(conn.from);
+    incomingCount.set(conn.to, (incomingCount.get(conn.to) ?? 0) + 1);
   }
 
-  for (const connection of flow.connections) {
-    if (!incomingCounts.has(connection.to) || !outgoing.has(connection.from)) continue;
-    outgoing.get(connection.from)?.push(connection.to);
-    incomingCounts.set(connection.to, (incomingCounts.get(connection.to) ?? 0) + 1);
+  // BFS level assignment (top-down)
+  const levelByNode = new Map<string, number>();
+
+  // Find start node or use nodes with no incoming edges
+  const startNode = flow.nodes.find((n) => n.type === 'start');
+  const roots = startNode
+    ? [startNode.id]
+    : flow.nodes.filter((n) => (incomingCount.get(n.id) ?? 0) === 0).map((n) => n.id);
+
+  if (roots.length === 0 && flow.nodes.length > 0) {
+    roots.push(flow.nodes[0].id);
   }
 
-  const sourceIds = flow.nodes
-    .filter((node) => (incomingCounts.get(node.id) ?? 0) === 0)
-    .map((node) => node.id);
-
-  const queue =
-    sourceIds.length > 0
-      ? [...sourceIds]
-      : [flow.nodes[0]?.id].filter((id): id is string => Boolean(id));
-  for (const sourceId of queue) {
-    levelByNode.set(sourceId, 0);
+  const queue: string[] = [...roots];
+  for (const root of roots) {
+    levelByNode.set(root, 0);
   }
 
   while (queue.length > 0) {
-    const currentId = queue.shift();
-    if (!currentId) continue;
-
-    const currentLevel = levelByNode.get(currentId) ?? 0;
-    const targets = outgoing.get(currentId) ?? [];
-    for (const targetId of targets) {
-      if (!levelByNode.has(targetId)) {
-        levelByNode.set(targetId, currentLevel + 1);
-        queue.push(targetId);
+    const current = queue.shift()!;
+    const currentLevel = levelByNode.get(current) ?? 0;
+    for (const target of outgoing.get(current) ?? []) {
+      const existingLevel = levelByNode.get(target);
+      if (existingLevel === undefined || existingLevel < currentLevel + 1) {
+        levelByNode.set(target, currentLevel + 1);
+        queue.push(target);
       }
     }
   }
 
-  const fallbackLevel = levelByNode.size > 0 ? Math.max(...levelByNode.values()) : 0;
-
-  flow.nodes.forEach((node) => {
+  // Assign any unvisited nodes to the last level
+  const maxLevel = levelByNode.size > 0 ? Math.max(...levelByNode.values()) : 0;
+  for (const node of flow.nodes) {
     if (!levelByNode.has(node.id)) {
-      levelByNode.set(node.id, fallbackLevel);
+      levelByNode.set(node.id, maxLevel);
     }
-  });
+  }
 
+  // Group by level
   const groups = new Map<number, TranscriptFlowNode[]>();
   for (const node of flow.nodes) {
     const level = levelByNode.get(node.id) ?? 0;
@@ -205,60 +185,133 @@ export function computeFlowLayout(
     groups.set(level, group);
   }
 
-  const levels = Array.from(groups.keys()).sort((left, right) => left - right);
+  const levels = Array.from(groups.keys()).sort((a, b) => a - b);
   const layout: LayoutMap = {};
-
-  const startX = 60;
-  const startY = 50;
-  const ySpacing = TRANSCRIPT_NODE_Y_GAP;
-  let currentX = startX;
-
-  const maxNodesInAPillar = Math.max(
-    ...levels.map((level) => (groups.get(level) ?? []).length),
-  );
-  const expectedMaxHeight = maxNodesInAPillar * ySpacing;
-  const viewportCenterY = startY + expectedMaxHeight / 2;
+  const orderScore = computeOrderScores({
+    levels,
+    groups,
+    incoming,
+    outgoing,
+    nodeMap,
+  });
+  const rowWidths = new Map<number, number>();
+  const sortedNodesByLevel = new Map<number, TranscriptFlowNode[]>();
 
   for (const level of levels) {
-    const nodesAtLevel = groups.get(level) ?? [];
-    const levelWidth = Math.max(
-      TRANSCRIPT_NODE_MIN_WIDTH,
-      ...nodesAtLevel.map((node) => (nodeSizes[node.id] ?? defaultNodeSize()).width),
+    const nodesAtLevel = [...(groups.get(level) ?? [])].sort((a, b) => {
+      const scoreDelta = (orderScore.get(a.id) ?? 0) - (orderScore.get(b.id) ?? 0);
+      if (Math.abs(scoreDelta) > 0.001) {
+        return scoreDelta;
+      }
+      return a.label.localeCompare(b.label);
+    });
+    sortedNodesByLevel.set(level, nodesAtLevel);
+    const rowWidth = nodesAtLevel.reduce((sum, node, index) => {
+      const size = nodeSizes[node.id] ?? defaultNodeSize();
+      return sum + size.width + (index > 0 ? X_GAP : 0);
+    }, 0);
+    rowWidths.set(level, rowWidth);
+  }
+
+  const contentWidth = Math.max(
+    MIN_CANVAS_WIDTH - 2 * CANVAS_PADDING,
+    ...Array.from(rowWidths.values()),
+  );
+
+  let currentY = CANVAS_PADDING;
+
+  for (const level of levels) {
+    const nodesAtLevel = sortedNodesByLevel.get(level) ?? [];
+    const levelHeight = Math.max(
+      ...nodesAtLevel.map((n) => (nodeSizes[n.id] ?? defaultNodeSize()).height),
     );
+    const levelWidth = rowWidths.get(level) ?? 0;
+    let currentX = CANVAS_PADDING + Math.max(0, (contentWidth - levelWidth) / 2);
 
-    const pillarHeight = Math.max(0, (nodesAtLevel.length - 1) * ySpacing);
-    let currentY = viewportCenterY - pillarHeight / 2;
-
-    nodesAtLevel.forEach((node) => {
+    for (const node of nodesAtLevel) {
+      const size = nodeSizes[node.id] ?? defaultNodeSize();
       layout[node.id] = {
         x: currentX,
-        y: currentY,
+        y: currentY + (levelHeight - size.height) / 2,
       };
-      currentY += ySpacing;
-    });
+      currentX += size.width + X_GAP;
+    }
 
-    currentX += levelWidth + TRANSCRIPT_NODE_X_GAP;
+    currentY += levelHeight + Y_GAP;
   }
 
   return layout;
 }
 
-export function edgeGeometry(
-  from: LayoutPosition,
-  fromSize: NodeVisualSize,
-  to: LayoutPosition,
-  toSize: NodeVisualSize,
-): { fromX: number; fromY: number; toX: number; toY: number; curve: string } {
-  const fromX = from.x + fromSize.width;
-  const fromY = from.y + fromSize.height / 2;
-  const toX = to.x;
-  const toY = to.y + toSize.height / 2;
-  const dx = Math.abs(toX - fromX) * 0.5;
+function computeOrderScores(args: {
+  levels: number[];
+  groups: Map<number, TranscriptFlowNode[]>;
+  incoming: Map<string, string[]>;
+  outgoing: Map<string, string[]>;
+  nodeMap: Map<string, TranscriptFlowNode>;
+}): Map<string, number> {
+  const scores = new Map<string, number>();
+
+  for (const level of args.levels) {
+    const nodesAtLevel = args.groups.get(level) ?? [];
+    if (level === 0) {
+      nodesAtLevel.forEach((node, index) => scores.set(node.id, index * 10));
+      continue;
+    }
+
+    for (const node of nodesAtLevel) {
+      const parents = (args.incoming.get(node.id) ?? [])
+        .map((parentId) => args.nodeMap.get(parentId))
+        .filter((parent): parent is TranscriptFlowNode => Boolean(parent));
+
+      if (parents.length === 0) {
+        scores.set(node.id, (scores.size + 1) * 10);
+        continue;
+      }
+
+      let total = 0;
+      let count = 0;
+      for (const parent of parents) {
+        const siblings = (args.outgoing.get(parent.id) ?? [])
+          .map((siblingId) => args.nodeMap.get(siblingId))
+          .filter((sibling): sibling is TranscriptFlowNode => Boolean(sibling));
+        const siblingIndex = Math.max(0, siblings.findIndex((sibling) => sibling.id === node.id));
+        const centeredIndex = siblingIndex - (siblings.length - 1) / 2;
+        const siblingSpread = parent.type === 'decision' ? 8 : 4;
+        total += (scores.get(parent.id) ?? 0) + centeredIndex * siblingSpread;
+        count += 1;
+      }
+
+      scores.set(node.id, count > 0 ? total / count : (scores.size + 1) * 10);
+    }
+  }
+
+  return scores;
+}
+
+function computeCanvasGeometry(
+  layout: LayoutMap,
+  nodeSizes: NodeSizeMap,
+): { width: number; height: number } {
+  let maxX = 0;
+  let maxY = 0;
+
+  for (const [nodeId, position] of Object.entries(layout)) {
+    const size = nodeSizes[nodeId] ?? defaultNodeSize();
+    maxX = Math.max(maxX, position.x + size.width);
+    maxY = Math.max(maxY, position.y + size.height);
+  }
+
   return {
-    fromX,
-    fromY,
-    toX,
-    toY,
-    curve: `M ${fromX} ${fromY} C ${fromX + dx} ${fromY}, ${toX - dx} ${toY}, ${toX} ${toY}`,
+    width: Math.max(maxX + CANVAS_PADDING, MIN_CANVAS_WIDTH),
+    height: Math.max(maxY + CANVAS_PADDING, MIN_CANVAS_HEIGHT),
   };
+}
+
+export function computeCanvasGeometryPublic(
+  layout: LayoutMap,
+  nodeSizes: NodeSizeMap,
+  _connections?: ReadonlyArray<{ from: string; to: string }>,
+): { width: number; height: number } {
+  return computeCanvasGeometry(layout, nodeSizes);
 }

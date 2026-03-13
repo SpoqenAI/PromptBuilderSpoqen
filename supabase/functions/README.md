@@ -43,6 +43,11 @@ supabase secrets set APP_PUBLIC_URL=<your-frontend-origin>
 Use the repo deploy script below instead of raw `supabase functions deploy`.
 This enforces `--no-verify-jwt` for handler-auth functions (`requireUser(...)`) and for public callback routes that must be reachable without gateway JWT verification.
 
+IMPORTANT:
+- WE DO NOT USE LEGACY JWT VERIFICATION FOR SUPABASE EDGE FUNCTIONS.
+- Handler-auth routes verify the bearer token inside the function.
+- If the browser or smoke test returns `{"code":401,"message":"Invalid JWT"}`, the deployment is wrong and must be redeployed with `--no-verify-jwt`.
+
 ```bash
 powershell.exe -ExecutionPolicy Bypass -File .\supabase\functions\deploy-all-functions.ps1
 ```
@@ -82,9 +87,11 @@ supabase secrets set GROQ_MODEL=llama-3.3-70b-versatile
 
 The function uses Groq first when `GROQ_API_KEY` is configured, then OpenAI when `OPENAI_API_KEY` is configured, then deterministic mapping.
 
-`transcript-flow-map` and other handler-auth functions are deployed with `--no-verify-jwt` because they perform explicit token verification in-function using `requireUser(...)`. This avoids gateway-side JWT rejection while preserving authenticated access control.
+`transcript-flow-map` and other handler-auth functions are deployed with `--no-verify-jwt` because they perform explicit token verification in-function using `requireUser(...)`. This avoids gateway-side JWT rejection while preserving authenticated access control. Legacy gateway JWT verification is not part of this app's auth model and breaks the app when re-enabled.
 
 `OPENAI_TRANSCRIPT_TEMPERATURE` is optional. Set it to `default` (or leave unset) to omit `temperature` from the request. This is recommended for models like `gpt-5-nano` that only support default temperature behavior.
+
+For local browser testing, keep `APP_PUBLIC_URL` aligned with the exact frontend origin you are using, then redeploy `transcript-flow-map`. The deploy and smoke-test scripts now verify that preflight `OPTIONS` returns the same `Access-Control-Allow-Origin` value as the browser origin.
 
 ### transcript-flow-map deploy rule (do not skip)
 

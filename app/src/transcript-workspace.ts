@@ -132,10 +132,11 @@ export async function loadTranscriptWorkspace(
         return {
           from,
           to,
+          label: reason,
           reason,
           ...(Number.isFinite(edge.support_count) ? { supportCount: Math.max(0, Math.trunc(edge.support_count)) } : {}),
           ...(Number.isFinite(edge.transition_rate) ? { supportRate: clamp01(edge.transition_rate) } : {}),
-        };
+        } as TranscriptFlowConnection;
       })
       .filter((item): item is TranscriptFlowConnection => item !== null);
 
@@ -169,7 +170,7 @@ export async function loadTranscriptWorkspace(
 
   if (latestFlow) {
     for (const node of latestFlow.nodes) {
-      const position = readLayoutOverride(node.meta);
+      const position = readLayoutOverride(node.meta ?? {});
       if (position) {
         nodePositionOverrides[node.id] = position;
       }
@@ -235,7 +236,7 @@ export async function upsertTranscriptWorkspaceFlow(
     storageIdByExternalId.set(externalId, storageId);
 
     const mergedMeta = mergeNodeMetaWithLayout(
-      node.meta,
+      node.meta ?? {},
       request.nodePositionOverrides[externalId] ?? null,
     );
     mergedMeta[WORKSPACE_EXTERNAL_ID_META_KEY] = externalId;

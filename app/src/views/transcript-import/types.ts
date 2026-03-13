@@ -29,21 +29,17 @@ export interface TranscriptFile {
   content: string;
 }
 
-export type DetailLevel = 'low' | 'medium' | 'high';
-
 export interface TranscriptImportState {
   projectName: string;
   projectModel: string;
   transcripts: TranscriptFile[];
   assistantName: string;
   userName: string;
-  detailLevel: DetailLevel;
   generatedFlow: TranscriptFlowResult | null;
   generationError: string;
   validationWarnings: string[];
   isGenerating: boolean;
   isHydratingWorkspace: boolean;
-  processingProgress: { processed: number; total: number } | null;
   flowRevision: number;
   selectedConnectionIndex: number | null;
   transcriptSetId: string | null;

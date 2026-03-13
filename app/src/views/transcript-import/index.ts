@@ -128,7 +128,6 @@ export function renderTranscriptImport(
         canGenerate,
         isGenerating: state.isGenerating,
         isHydratingWorkspace: state.isHydratingWorkspace,
-        processingProgress: state.processingProgress,
         generatedFlow: state.generatedFlow,
         transcriptSetId: state.transcriptSetId,
         workspaceSaveStatus: state.workspaceSaveStatus,
@@ -140,7 +139,6 @@ export function renderTranscriptImport(
         nodesSectionCollapsed: state.sidebar.nodesCollapsed,
         nodeSearchQuery: state.sidebar.nodeSearchQuery,
         selectedConnectionIndex: state.selectedConnectionIndex,
-        detailLevel: state.detailLevel,
       });
     });
 
@@ -173,7 +171,13 @@ export function renderTranscriptImport(
           }
           void generateFlow(state, {
             render,
-            onFlowGenerated: () => {
+            onFlowGenerated: async () => {
+              if (state.transcriptSetId?.startsWith('local-')) {
+                state.workspaceSaveStatus = 'idle';
+                state.workspaceSaveMessage = null;
+                render();
+                return;
+              }
               scheduleWorkspaceAutosave();
             },
           });
@@ -250,10 +254,7 @@ export function renderTranscriptImport(
         openNodeEditorModal(node, {
           onSave: (next) => {
             node.label = next.label;
-            node.content = next.content;
             node.type = next.type;
-            node.icon = next.icon;
-            node.meta = { ...next.meta };
             state.flowRevision += 1;
             state.generatedPromptMarkdown = '';
             state.promptGenerationMessage = null;
@@ -367,7 +368,7 @@ export function renderTranscriptImport(
       state.nodePositionOverrides = { ...snapshot.nodePositionOverrides };
       state.latestRenderedLayout = {};
       state.latestRenderedNodeSizes = {};
-      state.processingProgress = null;
+
       state.persistenceMessage = null;
       state.workspaceSaveStatus = 'idle';
       state.workspaceSaveMessage = null;

@@ -8,6 +8,10 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# IMPORTANT: WE DO NOT USE LEGACY JWT VERIFICATION FOR SUPABASE EDGE FUNCTIONS.
+# Any handler-auth function that calls requireUser(...) must deploy with --no-verify-jwt.
+# If the app starts returning {"code":401,"message":"Invalid JWT"}, treat that as a broken deployment.
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Resolve-Path (Join-Path $scriptDir '..\..')
 $projectRefFile = Join-Path $repoRoot 'supabase\.temp\project-ref'
