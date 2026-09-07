@@ -267,7 +267,14 @@ $tests = @(
   [pscustomobject]@{ Name = "transcript-flow-map"; Method = "POST"; Path = "/transcript-flow-map"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
   [pscustomobject]@{ Name = "flow-to-prompt"; Method = "POST"; Path = "/flow-to-prompt"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
   [pscustomobject]@{ Name = "prompt-repair-run"; Method = "POST"; Path = "/prompt-repair-run"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
-  [pscustomobject]@{ Name = "apply-prompt-repair"; Method = "POST"; Path = "/apply-prompt-repair"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true }
+  [pscustomobject]@{ Name = "apply-prompt-repair"; Method = "POST"; Path = "/apply-prompt-repair"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
+  [pscustomobject]@{ Name = "create-checkout-session"; Method = "POST"; Path = "/create-checkout-session"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
+  [pscustomobject]@{ Name = "create-portal-session"; Method = "POST"; Path = "/create-portal-session"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
+  [pscustomobject]@{ Name = "stripe-webhook"; Method = "POST"; Path = "/stripe-webhook"; Body = "{}"; AllowedUnauth = @(400, 401, 403); AllowedAuth = @(400, 401, 403); RequiresAuth = $false },
+  [pscustomobject]@{ Name = "consume-credits"; Method = "POST"; Path = "/consume-credits"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
+  [pscustomobject]@{ Name = "add-org-member"; Method = "POST"; Path = "/add-org-member"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
+  [pscustomobject]@{ Name = "remove-org-member"; Method = "POST"; Path = "/remove-org-member"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 403); AllowedAuth = @(200, 400); RequiresAuth = $true },
+  [pscustomobject]@{ Name = "seats-buffer-cron"; Method = "POST"; Path = "/seats-buffer-cron"; Body = "{}"; AllowedUnauth = @(200, 400, 401, 500); AllowedAuth = @(200, 400, 500); RequiresAuth = $false }
 )
 
 $failures = @()

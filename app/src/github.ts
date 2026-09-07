@@ -56,7 +56,35 @@ interface GitHubConnectUrlResponse {
 
 const CONFIG_STORAGE_PREFIX = 'promptblueprint_github_prompt_sync_config_';
 
-export function loadGitHubPromptSyncConfig(projectId: string): GitHubPromptSyncConfig | null {
+export async function loadGitHubPromptSyncConfig(projectId: string): Promise<GitHubPromptSyncConfig | null> {
+  const normalizedId = projectId.trim();
+  if (!normalizedId) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from('project_github_sync')
+      .select('owner, repo, branch, file_path')
+      .eq('project_id', normalizedId)
+      .maybeSingle();
+
+    if (!error && data) {
+      const config: GitHubPromptSyncConfig = {
+        owner: data.owner,
+        repo: data.repo,
+        branch: data.branch,
+        filePath: data.file_path,
+      };
+      localStorage.setItem(configStorageKey(normalizedId), JSON.stringify(config));
+      return config;
+    }
+  } catch {
+    // Fall back to local storage
+  }
+
+  return loadGitHubPromptSyncConfigLocal(normalizedId);
+}
+
+export function loadGitHubPromptSyncConfigLocal(projectId: string): GitHubPromptSyncConfig | null {
   const raw = localStorage.getItem(configStorageKey(projectId));
   if (!raw) return null;
 
@@ -68,13 +96,37 @@ export function loadGitHubPromptSyncConfig(projectId: string): GitHubPromptSyncC
   }
 }
 
-export function saveGitHubPromptSyncConfig(projectId: string, config: GitHubPromptSyncConfig): void {
+export async function saveGitHubPromptSyncConfig(projectId: string, config: GitHubPromptSyncConfig): Promise<void> {
   const normalized = normalizeGitHubPromptSyncConfig(config);
-  localStorage.setItem(configStorageKey(projectId), JSON.stringify(normalized));
+  const normalizedId = projectId.trim();
+  if (!normalizedId) return;
+
+  // Immediate local cache
+  localStorage.setItem(configStorageKey(normalizedId), JSON.stringify(normalized));
+
+  // Persist to Supabase
+  try {
+    await supabase.from('project_github_sync').upsert({
+      project_id: normalizedId,
+      owner: normalized.owner,
+      repo: normalized.repo,
+      branch: normalized.branch,
+      file_path: normalized.filePath,
+      updated_at: new Date().toISOString(),
+    }, { onConflict: 'project_id' });
+  } catch (err) {
+    console.warn('Failed to persist GitHub config to database:', err);
+  }
 }
 
-export function clearGitHubPromptSyncConfig(projectId: string): void {
-  localStorage.removeItem(configStorageKey(projectId));
+export async function clearGitHubPromptSyncConfig(projectId: string): Promise<void> {
+  const normalizedId = projectId.trim();
+  localStorage.removeItem(configStorageKey(normalizedId));
+  try {
+    await supabase.from('project_github_sync').delete().eq('project_id', normalizedId);
+  } catch (err) {
+    console.warn('Failed to delete GitHub config from database:', err);
+  }
 }
 
 export function normalizeGitHubPromptSyncConfig(input: Partial<GitHubPromptSyncConfig>): GitHubPromptSyncConfig {

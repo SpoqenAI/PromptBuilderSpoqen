@@ -2550,6 +2550,12 @@ function isPromptSnapshotNode(value: unknown): value is {
 
 export const store = new Store();
 
-
-
-
+export const storeTestUtils = {
+  buildGraphAssemblyPlan,
+  formatConnectionTarget,
+  normalizeConnectionLabel,
+  normalizeCustomNodeTemplateLabel,
+  normalizeNodeIdentityLabel,
+  isNodeType,
+  getPersistenceHint,
+};

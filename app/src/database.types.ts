@@ -948,6 +948,36 @@ export interface Database {
         };
         Relationships: [];
       };
+      project_github_sync: {
+        Row: {
+          project_id: string;
+          owner: string;
+          repo: string;
+          branch: string;
+          file_path: string;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          project_id: string;
+          owner: string;
+          repo: string;
+          branch?: string;
+          file_path: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          project_id?: string;
+          owner?: string;
+          repo?: string;
+          branch?: string;
+          file_path?: string;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: {
@@ -990,6 +1020,18 @@ export interface Database {
       user_has_bypass_role: {
         Args: Record<string, never>;
         Returns: boolean;
+      };
+      get_or_init_user_credits: {
+        Args: { p_tier?: string };
+        Returns: Database['public']['Tables']['user_credits']['Row'];
+      };
+      consume_org_credits: {
+        Args: { p_org_id: string; p_amount: number };
+        Returns: string;
+      };
+      assign_user_role: {
+        Args: { target_email: string; target_role: string };
+        Returns: void;
       };
     };
     Enums: Record<string, never>;

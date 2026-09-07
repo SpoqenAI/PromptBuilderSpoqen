@@ -71,25 +71,35 @@ supabase functions deploy apply-prompt-repair --no-verify-jwt
 powershell.exe -ExecutionPolicy Bypass -File .\supabase\functions\deploy-transcript-flow-map.ps1
 ```
 
-## 3b. Transcript Flow AI Mapping
+## 3b. AI Workflow Providers & Mapping
 
-The transcript-to-flow feature uses `transcript-flow-map`.
+The application uses a multi-model architecture for AI capabilities:
 
-Set function secrets:
+### 1. Transcript Flow AI Mapping (`transcript-flow-map`)
+Extracts flow diagrams from conversation transcripts using Gemini 2.5 Flash Lite with native tool/function calling (`add_node`, `connect_nodes`, `remove_node`, `disconnect_nodes`). Enforces that diagrams have **exactly one start node and one end node**.
 
+Set Gemini secret:
 ```bash
-supabase secrets set OPENAI_API_KEY=<your-openai-api-key>
-supabase secrets set OPENAI_TRANSCRIPT_MODEL=gpt-5-nano
-supabase secrets set OPENAI_TRANSCRIPT_TEMPERATURE=default
-supabase secrets set GROQ_API_KEY=<your-groq-api-key>
-supabase secrets set GROQ_MODEL=llama-3.3-70b-versatile
+supabase secrets set GEMINI_API_KEY=<your-gemini-api-key>
+```
+Optional model overrides:
+```bash
+supabase secrets set GEMINI_MODEL=gemini-2.5-flash-lite
+supabase secrets set GEMINI_FALLBACK_MODEL=gemini-2.0-flash
 ```
 
-The function uses Groq first when `GROQ_API_KEY` is configured, then OpenAI when `OPENAI_API_KEY` is configured, then deterministic mapping.
+### 2. Prompt Generation & Repair (`flow-to-prompt`, `prompt-repair-run`)
+Generates optimized system prompts from canvas graphs and produces repair patches. Uses Groq (primary) or OpenAI (fallback), with a deterministic rule-based fallback if neither is configured.
+
+Set LLM secrets:
+```bash
+supabase secrets set GROQ_API_KEY=<your-groq-api-key>
+supabase secrets set GROQ_MODEL=llama-3.3-70b-versatile
+supabase secrets set OPENAI_API_KEY=<your-openai-api-key>
+supabase secrets set OPENAI_TRANSCRIPT_MODEL=gpt-5-nano
+```
 
 `transcript-flow-map` and other handler-auth functions are deployed with `--no-verify-jwt` because they perform explicit token verification in-function using `requireUser(...)`. This avoids gateway-side JWT rejection while preserving authenticated access control. Legacy gateway JWT verification is not part of this app's auth model and breaks the app when re-enabled.
-
-`OPENAI_TRANSCRIPT_TEMPERATURE` is optional. Set it to `default` (or leave unset) to omit `temperature` from the request. This is recommended for models like `gpt-5-nano` that only support default temperature behavior.
 
 For local browser testing, keep `APP_PUBLIC_URL` aligned with the exact frontend origin you are using, then redeploy `transcript-flow-map`. The deploy and smoke-test scripts now verify that preflight `OPTIONS` returns the same `Access-Control-Allow-Origin` value as the browser origin.
 

@@ -60,6 +60,11 @@ function addNode(state: DiagramState, label: string, type: FlowNodeType): { node
     return { node_id: state.nodes.find((n) => n.type === 'start')!.id };
   }
 
+  // Enforce: only one end node
+  if (nodeType === 'end' && state.nodes.some((n) => n.type === 'end')) {
+    return { node_id: state.nodes.find((n) => n.type === 'end')!.id };
+  }
+
   const id = `n${state.nextId++}`;
   state.nodes.push({ id, label: label.trim() || `Node ${id}`, type: nodeType });
   return { node_id: id };
@@ -168,11 +173,12 @@ function validateDiagram(state: DiagramState): {
   // Check start node
   const startNodes = state.nodes.filter((n) => n.type === 'start');
   if (startNodes.length === 0) issues.push('Missing start node.');
-  if (startNodes.length > 1) issues.push(`Multiple start nodes found (${startNodes.length}).`);
+  if (startNodes.length > 1) issues.push(`Multiple start nodes found (${startNodes.length}). Exactly one start node is allowed.`);
 
   // Check end nodes
   const endNodes = state.nodes.filter((n) => n.type === 'end');
   if (endNodes.length === 0) issues.push('Missing end node.');
+  if (endNodes.length > 1) issues.push(`Multiple end nodes found (${endNodes.length}). Exactly one end node is allowed.`);
 
   // Check orphan nodes (no connections in or out, excluding start/end with only one direction)
   const connectedIds = new Set<string>();
@@ -256,7 +262,7 @@ function computeMaxDepth(state: DiagramState, startId: string): number {
 const TOOL_DECLARATIONS: GeminiTool[] = [
   {
     name: 'add_node',
-    description: 'Add a new node to the flowchart. Types: "start" (oval), "end" (oval), "process" (rectangle), "decision" (diamond). Only one start node is allowed.',
+    description: 'Add a new node to the flowchart. Types: "start" (oval), "end" (oval), "process" (rectangle), "decision" (diamond). Exactly one start node and exactly one end node are allowed.',
     parameters: {
       type: 'object',
       properties: {
@@ -402,7 +408,7 @@ function buildSystemPrompt(assistantName: string, userName: string): string {
     '',
     'RULES YOU MUST FOLLOW:',
     '1. Start with exactly ONE start node (type: "start").',
-    '2. End with one or more end nodes (type: "end").',
+    '2. End with exactly ONE end node (type: "end"). All terminal paths, resolution outcomes, or exits must converge and connect to this single end node.',
     '3. Keep the diagram HIGH-LEVEL: 6-12 nodes total. Capture major phases, not individual utterances.',
     '4. Every decision node MUST have at least 2 outgoing branches with descriptive labels.',
     '5. Maximum depth of 7 levels (not counting start and end nodes).',
@@ -434,7 +440,7 @@ function buildSystemPromptNormalized(assistantName: string, userName: string): s
     '',
     'RULES YOU MUST FOLLOW:',
     '1. Start with exactly one start node (type: "start").',
-    '2. End with one or more end nodes (type: "end").',
+    '2. End with exactly one end node (type: "end"). All terminal paths, resolution outcomes, or exits must converge and connect to this single end node.',
     '3. Keep the diagram high-level and encompassing. Capture major phases, not individual utterances.',
     '4. Every decision node must have at least 2 outgoing branches with descriptive labels.',
     '5. Maximum depth is 7 non-terminal layers. This is a layer limit, not a total node limit. Including start and end, the longest path can be at most 9 layers.',
@@ -453,6 +459,102 @@ function buildSystemPromptNormalized(assistantName: string, userName: string): s
     '',
     `Speaker labels in the transcript: Assistant = "${assistantName}", User = "${userName}".`,
   ].join('\n');
+}
+
+function normalizeSingleStartAndEndNodes(state: DiagramState): void {
+  if (state.nodes.length === 0) return;
+
+  // 1. Ensure exactly ONE start node
+  let startNodes = state.nodes.filter((n) => n.type === 'start');
+  if (startNodes.length === 0) {
+    const incomingCounts = new Map<string, number>();
+    for (const n of state.nodes) incomingCounts.set(n.id, 0);
+    for (const c of state.connections) {
+      incomingCounts.set(c.to, (incomingCounts.get(c.to) ?? 0) + 1);
+    }
+    const rootNode = state.nodes.find((n) => (incomingCounts.get(n.id) ?? 0) === 0) ?? state.nodes[0];
+    const newStart: FlowNode = {
+      id: `n${state.nextId++}`,
+      label: 'Call Start',
+      type: 'start',
+    };
+    state.nodes.unshift(newStart);
+    if (rootNode && rootNode.id !== newStart.id) {
+      state.connections.unshift({ from: newStart.id, to: rootNode.id, label: '' });
+    }
+    startNodes = [newStart];
+  } else if (startNodes.length > 1) {
+    const primaryStart = startNodes[0];
+    const extraStartIds = new Set(startNodes.slice(1).map((n) => n.id));
+
+    for (const conn of state.connections) {
+      if (extraStartIds.has(conn.from)) {
+        conn.from = primaryStart.id;
+      }
+      if (extraStartIds.has(conn.to)) {
+        conn.to = primaryStart.id;
+      }
+    }
+
+    state.nodes = state.nodes.filter((n) => !extraStartIds.has(n.id));
+  }
+
+  // 2. Ensure exactly ONE end node
+  let endNodes = state.nodes.filter((n) => n.type === 'end');
+  let primaryEnd: FlowNode;
+
+  if (endNodes.length === 0) {
+    primaryEnd = {
+      id: `n${state.nextId++}`,
+      label: 'Call End',
+      type: 'end',
+    };
+    state.nodes.push(primaryEnd);
+  } else {
+    primaryEnd = endNodes[0];
+    if (endNodes.length > 1) {
+      const extraEndIds = new Set(endNodes.slice(1).map((n) => n.id));
+
+      for (const conn of state.connections) {
+        if (extraEndIds.has(conn.to)) {
+          conn.to = primaryEnd.id;
+        }
+        if (extraEndIds.has(conn.from)) {
+          conn.from = primaryEnd.id;
+        }
+      }
+
+      state.nodes = state.nodes.filter((n) => !extraEndIds.has(n.id));
+    }
+  }
+
+  // End node cannot have outgoing connections
+  state.connections = state.connections.filter((c) => c.from !== primaryEnd.id);
+
+  // 3. Connect any dangling leaf/sink nodes (except primaryEnd itself) to primaryEnd
+  const outgoingCounts = new Map<string, number>();
+  for (const n of state.nodes) outgoingCounts.set(n.id, 0);
+  for (const c of state.connections) {
+    outgoingCounts.set(c.from, (outgoingCounts.get(c.from) ?? 0) + 1);
+  }
+
+  for (const node of state.nodes) {
+    if (node.id === primaryEnd.id) continue;
+    if ((outgoingCounts.get(node.id) ?? 0) === 0) {
+      state.connections.push({ from: node.id, to: primaryEnd.id, label: '' });
+      outgoingCounts.set(node.id, 1);
+    }
+  }
+
+  // 4. Clean up self-loops and duplicate connections
+  state.connections = state.connections.filter((c) => c.from !== c.to);
+  const seenEdges = new Set<string>();
+  state.connections = state.connections.filter((c) => {
+    const key = `${c.from}->${c.to}`;
+    if (seenEdges.has(key)) return false;
+    seenEdges.add(key);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -514,6 +616,9 @@ serve(async (req: Request) => {
       nodeCount: diagramState.nodes.length,
       connectionCount: diagramState.connections.length,
     }));
+
+    // Enforce invariant: exactly one start node and one end node
+    normalizeSingleStartAndEndNodes(diagramState);
 
     // Extract title and summary from final text
     const title = extractTitle(result.text) || 'Call Flow Diagram';

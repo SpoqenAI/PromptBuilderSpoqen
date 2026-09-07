@@ -1,8 +1,17 @@
--- PromptBuilder Supabase baseline schema
--- Run in Supabase SQL Editor for a fresh project.
+-- ==============================================================================
+-- DEPRECATED NOTICE:
+-- This file is retained only as legacy bootstrap reference.
+-- The canonical source of truth for all database schemas, tables, and RLS policies
+-- is the sequential migrations directory located in:
+--   supabase/migrations/
+-- Always apply database changes via `supabase db push` or sequential migration files.
+-- ==============================================================================
+
+-- PromptBuilder Supabase baseline schema (legacy bootstrap)
 -- Policies require an authenticated user (including anonymous auth users).
 
 create extension if not exists pgcrypto;
+
 
 create table if not exists public.projects (
   id text primary key default gen_random_uuid()::text,

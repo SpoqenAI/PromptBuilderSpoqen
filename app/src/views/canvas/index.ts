@@ -1,0 +1,2408 @@
+/**
+ * Canvas View — Node graph editor with drag/drop (matches page2.html mockup)
+ */
+import { store } from '../../store';
+import { router } from '../../router';
+import {
+  PROMPT_BLOCK_PALETTE,
+  TRANSCRIPT_BLOCK_PALETTE,
+  PromptNode,
+  uid,
+  CustomNodeTemplate,
+  type BlockDefinition,
+  type NodeType,
+} from '../../models';
+import { themeToggleHTML, wireThemeToggle } from '../../theme';
+import { clearProjectEscapeToCanvas, projectViewTabsHTML, wireProjectViewTabs } from '../project-nav';
+import { customPrompt, customConfirm } from '../../dialogs';
+import {
+  buildNodeColorStyles,
+  getAutoNodeColor,
+  readNodeColorMeta,
+  withNodeColorMeta,
+  type NodeColorStyles,
+} from '../../node-colors';
+import { resolveNodeIcon } from '../../node-icons';
+import {
+  generateTranscriptFlow,
+  type TranscriptFlowConnection,
+  type TranscriptFlowNode,
+  type TranscriptFlowResult,
+} from '../../transcript-flow';
+import {
+  listTranscriptCorpus,
+  persistTranscriptFlowArtifacts,
+} from '../../transcript-artifacts';
+import { upsertTranscriptWorkspaceFlow } from '../../transcript-workspace';
+import { buildFlowRenderState } from '../transcript-import/layout';
+
+
+import type {
+  CanvasViewportState,
+  CanvasViewContainer,
+  NodeVisualSize,
+  SidebarBlock,
+  WorkspaceMode,
+  StagedTranscriptFile,
+  McpRelayConfig,
+} from "./types";
+import {
+  MIN_CANVAS_SIDEBAR_WIDTH,
+  MAX_CANVAS_SIDEBAR_WIDTH,
+} from "./types";
+import {
+  clearCanvasViewCleanup,
+  readCanvasViewportState,
+  writeCanvasViewportState,
+  readCanvasSidebarCollapsedState,
+  writeCanvasSidebarCollapsedState,
+  readCanvasSidebarWidthState,
+  writeCanvasSidebarWidthState,
+} from "./viewport";
+import {
+  resolveMcpRelayConfig,
+  normalizeRelayBaseUrl,
+  buildRelaySocketUrl,
+  parseBooleanEnv,
+} from "./mcp-bridge";
+import {
+  buildSidebarCategories,
+  computeRecommendedSidebarWidth,
+  estimateSidebarLabelPixelWidth,
+  escapeHTML,
+  renderSidebarBlocksHTML,
+  canvasSidebarCategoryCollapsed,
+  resolveWorkspacePalette,
+} from "./palette";
+
+function renderTranscriptIterationPanel(): string {
+  return `
+    <section id="transcript-iteration-panel" class="mb-3 rounded-lg border border-primary/15 bg-primary/5 px-3 py-3 space-y-2.5">
+      <div>
+        <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">Transcript Iteration</h2>
+        <p class="text-[10px] text-slate-500 dark:text-slate-400 mt-1">Upload additional transcripts and regenerate this flow from evidence.</p>
+      </div>
+      <div id="canvas-transcript-drop-zone" class="rounded-md border border-dashed border-primary/30 bg-white/70 dark:bg-black/20 px-2.5 py-2 text-[10px] text-slate-500 dark:text-slate-300 hover:border-primary/50 transition-colors cursor-pointer">
+        <span class="font-medium text-primary">Drag files here</span> or
+        <button id="btn-upload-canvas-transcripts" type="button" class="ml-1 underline underline-offset-2 text-primary hover:text-primary/80">browse</button>
+      </div>
+      <input id="canvas-transcript-file-input" type="file" multiple accept=".txt,.md,.log,.json,.csv,.srt,.vtt" class="hidden" />
+      <div id="canvas-transcript-staged-list" class="space-y-1.5 hidden"></div>
+      <p id="canvas-transcript-meta" class="text-[10px] text-slate-500 dark:text-slate-400">Loading transcript corpus...</p>
+      <p id="canvas-transcript-status" class="hidden text-[10px] rounded px-2 py-1"></p>
+      <button id="btn-iterate-transcript-flow" type="button" class="w-full ui-btn ui-btn-primary !text-xs !py-1.5 disabled:opacity-50 disabled:cursor-not-allowed">
+        Iterate Flow
+      </button>
+    </section>
+  `;
+}
+
+export function renderCanvas(container: HTMLElement, projectId: string): void {
+  clearCanvasViewCleanup(container);
+  const project = store.getProject(projectId);
+  if (!project) { router.navigate('/'); return; }
+  clearProjectEscapeToCanvas(container);
+
+  const linkedTranscriptSetId = store.getLinkedTranscriptSetId(projectId);
+  const workspaceMode: WorkspaceMode = linkedTranscriptSetId ? 'transcript' : 'prompt';
+  const isTranscriptWorkspace = workspaceMode === 'transcript';
+  const categories = buildSidebarCategories(store.getCustomNodeTemplates(), workspaceMode);
+  const recommendedSidebarWidth = computeRecommendedSidebarWidth(categories);
+  const mcpRelayConfig = resolveMcpRelayConfig();
+  const relaySetupInstructionHtml = mcpRelayConfig.enabled && mcpRelayConfig.agentRelayUrl
+    ? `
+      <div class="bg-slate-50 dark:bg-black/40 border border-slate-200 dark:border-white/10 rounded-lg p-3 font-mono text-[11px] text-slate-700 dark:text-slate-300 break-all select-all flex flex-col gap-3">
+        <span class="text-slate-500">// 1. Run this connector from your app directory:</span>
+        <span class="text-primary font-medium user-select-all" id="mcp-connect-string">node mcp-connector/index.js --url ${escapeHTML(mcpRelayConfig.agentRelayUrl)}</span>
+      </div>
+    `
+    : `
+      <div class="bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 rounded-lg p-3 text-[11px] text-amber-800 dark:text-amber-100 leading-relaxed">
+        ${escapeHTML(mcpRelayConfig.reason ?? 'MCP relay is unavailable in this deployment.')}
+      </div>
+    `;
+
+  container.innerHTML = `
+    <!-- Top Navigation Bar -->
+    <header class="ui-header z-20">
+      <div class="ui-header-left">
+        <div class="flex items-center gap-3 min-w-0">
+          <button type="button" class="h-10 w-10 flex items-center justify-center cursor-pointer rounded shrink-0" id="nav-home" aria-label="Go to dashboard">
+            <img src="${import.meta.env.BASE_URL}Icon.svg" alt="Spoqen" class="h-10 w-10 object-contain" />
+          </button>
+          <div class="min-w-0">
+            <h1 class="text-sm font-semibold leading-none truncate max-w-[34ch]" title="${escapeHTML(project.name)}">${project.name}</h1>
+            <span class="text-[10px] text-slate-400 uppercase tracking-wider">${isTranscriptWorkspace ? 'Transcript Flow Workspace' : 'Visual Prompt Editor'}</span>
+          </div>
+        </div>
+        <div class="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-1 hidden sm:block"></div>
+        <div id="save-status" class="flex items-center gap-1 text-xs text-slate-500 transition-opacity duration-300">
+          <span class="material-icons text-sm" id="save-status-icon">cloud_done</span>
+          <span id="save-status-text">Saved</span>
+        </div>
+      </div>
+      <div class="ui-header-center">
+        ${projectViewTabsHTML('canvas')}
+      </div>
+      <div class="ui-header-right ui-toolbar">
+        ${themeToggleHTML()}
+        <button id="btn-save-snapshot" class="ui-btn ui-btn-outline">
+          <span class="material-icons text-sm">save</span> Save Current State
+        </button>
+        <button id="btn-copy-runtime" class="ui-btn ui-btn-primary">
+          <span class="material-icons text-sm">content_copy</span> Copy Runtime
+        </button>
+        <button id="btn-copy-flow" class="ui-btn ui-btn-outline">
+          <span class="material-icons text-sm">account_tree</span> Copy Flow Template
+        </button>
+      </div>
+    </header>
+
+    <main id="canvas-main" class="ui-main ui-stack-lg">
+      <!-- Sidebar -->
+      <aside id="canvas-sidebar" class="ui-sidebar canvas-sidebar border-r border-primary/10 bg-white dark:bg-background-dark z-10">
+        <div class="p-4 border-b border-primary/5">
+          <div class="flex items-center justify-between gap-2 mb-3">
+            <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Menu</span>
+            <button id="btn-collapse-canvas-sidebar" class="h-7 w-7 inline-flex items-center justify-center rounded text-slate-500 hover:text-primary hover:bg-primary/10 transition-colors" aria-expanded="true" aria-controls="canvas-sidebar" aria-label="Collapse menu" title="Collapse menu">
+              <span class="material-icons text-sm">chevron_left</span>
+            </button>
+          </div>
+          ${isTranscriptWorkspace ? renderTranscriptIterationPanel() : ''}
+          <div class="relative">
+            <span class="material-icons absolute left-2.5 top-2.5 text-slate-400 text-sm">search</span>
+            <input id="sidebar-search" class="w-full pl-8 pr-3 py-2 text-xs bg-slate-50 dark:bg-white/5 border border-slate-200 dark:border-white/10 rounded focus:ring-1 focus:ring-primary focus:border-primary outline-none transition-all" placeholder="Search blocks..." type="text" />
+          </div>
+        </div>
+        <div class="ui-scroll p-2 space-y-4 custom-scrollbar" id="sidebar-blocks">
+          ${renderSidebarBlocksHTML(categories)}
+        </div>
+        <div class="p-4 border-t border-primary/5 bg-slate-50 dark:bg-white/5">
+          <div class="flex items-center gap-2">
+            <div class="w-2 h-2 rounded-full bg-primary animate-pulse"></div>
+            <span class="text-[10px] font-medium text-slate-500 uppercase">${project.nodes.length} Nodes</span>
+          </div>
+        </div>
+        <div id="canvas-sidebar-resize-handle" class="canvas-sidebar-resize-handle" role="separator" aria-label="Resize menu" aria-orientation="vertical"></div>
+      </aside>
+
+      <!-- Main Canvas Area -->
+      <div id="canvas-area" class="ui-pane flex-1 relative overflow-hidden bg-background-light dark:bg-background-dark canvas-grid">
+        <!-- Top Left Controls -->
+        <div class="absolute top-4 left-4 max-w-[min(92vw,50rem)] flex items-center gap-2 z-10">
+          <button id="btn-open-canvas-sidebar" class="hidden h-8 px-3 inline-flex items-center gap-1 rounded-full border border-primary/20 bg-white/85 dark:bg-background-dark/85 text-xs font-semibold text-primary shadow-sm backdrop-blur-sm hover:bg-white dark:hover:bg-background-dark transition-colors" aria-expanded="false" aria-controls="canvas-sidebar" aria-label="Expand menu" title="Expand menu">
+            <span class="material-icons text-sm">menu</span>
+            Menu
+          </button>
+          <div class="max-w-[min(80vw,40rem)] flex items-center gap-2 text-xs font-medium text-slate-400 bg-white/80 dark:bg-background-dark/80 px-3 py-1.5 rounded-full border border-primary/10 shadow-sm">
+            <span class="cursor-pointer hover:text-primary" id="crumb-home">Projects</span>
+            <span class="material-icons text-[10px]">chevron_right</span>
+            <span class="text-slate-800 dark:text-slate-200 truncate" title="${escapeHTML(project.name)}">${project.name}</span>
+          </div>
+        </div>
+
+        <!-- SVG for connections -->
+        <svg id="connection-svg" class="absolute inset-0 w-full h-full pointer-events-auto z-[1]"></svg>
+
+        <!-- Nodes container -->
+        <div id="nodes-container" class="absolute inset-0 z-[2] pointer-events-none">
+          ${project.nodes.length === 0 ? `
+            <!-- Empty Canvas Centered Content -->
+            <div class="flex flex-col items-center justify-center h-full" id="empty-hint">
+              <div class="relative group">
+                <div class="absolute inset-0 bg-primary/20 blur-xl rounded-full opacity-50 group-hover:opacity-100 transition-opacity"></div>
+                <div class="relative w-48 bg-white dark:bg-slate-900 border-2 border-primary rounded-xl p-4 shadow-xl flex flex-col items-center gap-3">
+                  <div class="w-10 h-10 bg-primary/10 rounded-lg flex items-center justify-center">
+                    <span class="material-icons text-primary">play_circle_filled</span>
+                  </div>
+                  <div class="text-center">
+                    <h2 class="text-sm font-bold">Start Node</h2>
+                    <p class="text-[10px] text-slate-400">Drag blocks from sidebar</p>
+                  </div>
+                </div>
+              </div>
+              <p class="mt-8 text-sm text-slate-400 animate-bounce">
+                Drag blocks from the sidebar or click <span class="text-primary font-bold">+</span> to begin
+              </p>
+            </div>
+          ` : ''}
+        </div>
+
+        <!-- Canvas Help Panel -->
+        <div id="canvas-help-panel" class="hidden absolute bottom-20 right-4 w-[min(22rem,calc(100vw-2rem))] max-h-[min(60vh,26rem)] overflow-y-auto custom-scrollbar bg-white/95 dark:bg-slate-900/95 border border-primary/20 rounded-xl shadow-2xl backdrop-blur-sm z-20">
+          <div class="flex items-start justify-between gap-3 px-4 py-3 border-b border-primary/10">
+            <div>
+              <h3 class="text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">Canvas Controls</h3>
+              <p class="text-[10px] text-slate-400 mt-0.5">Quick guide for editing the graph</p>
+            </div>
+            <button id="btn-canvas-help-close" class="w-6 h-6 rounded text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors" aria-label="Close help panel">
+              <span class="material-icons text-sm">close</span>
+            </button>
+          </div>
+          <div class="px-4 py-3 space-y-2 text-[11px] text-slate-600 dark:text-slate-300">
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Two-finger scroll (trackpad):</span> Pan around the canvas.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Middle-click + drag:</span> Pan around the canvas.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Pinch-to-zoom (trackpad) or Ctrl + scroll:</span> Zoom in and out.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Drag between ports (either direction):</span> Connect nodes.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click one port, then another:</span> Connect without dragging.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Click a connection, then press Delete:</span> Remove it.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Double-click a connection (or press L when selected):</span> Set branch label.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Drop a new block on a connection:</span> Insert it between nodes.</div>
+            <div><span class="font-semibold text-slate-800 dark:text-slate-100">Shift + drag a node, then drop on a connection:</span> Reinsert it elsewhere.</div>
+          </div>
+        </div>
+
+        <!-- Floating Controls -->
+        <div class="absolute bottom-4 right-4 flex items-center gap-2 z-10">
+          <div class="flex flex-col gap-2 bg-white dark:bg-slate-900 p-1.5 rounded-lg border border-primary/10 shadow-lg">
+            <button class="w-8 h-8 hover:bg-slate-100 dark:hover:bg-white/5 rounded flex items-center justify-center text-slate-500 hover:text-primary transition-colors" id="btn-zoom-in">
+              <span class="material-icons text-lg">add</span>
+            </button>
+            <div class="h-px bg-slate-100 dark:bg-white/10 mx-1"></div>
+            <button class="w-8 h-8 hover:bg-slate-100 dark:hover:bg-white/5 rounded flex items-center justify-center text-slate-500 hover:text-primary transition-colors" id="btn-zoom-out">
+              <span class="material-icons text-lg">remove</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Mini Map -->
+        <div id="minimap" class="hidden md:block absolute bottom-4 left-4 w-32 h-24 bg-white/65 dark:bg-slate-900/65 border border-primary/15 rounded-lg overflow-hidden backdrop-blur-sm z-10">
+          <svg id="minimap-svg" class="w-full h-full block">
+            <rect id="minimap-bg" x="0" y="0" width="100%" height="100%" fill="transparent"></rect>
+            <g id="minimap-nodes"></g>
+            <rect id="minimap-viewport" x="0" y="0" width="0" height="0" rx="1.5" fill="rgba(14, 165, 233, 0.16)" stroke="#0ea5e9" stroke-width="1"></rect>
+          </svg>
+          <div class="pointer-events-none absolute bottom-1 right-1 text-[8px] text-slate-400 uppercase font-bold">MiniMap</div>
+        </div>
+
+        <!-- Backend MCP Connector Info Panel -->
+        <div id="terminal-panel" class="hidden absolute bottom-6 right-16 w-[420px] bg-white/95 dark:bg-slate-900/95 border border-primary/20 rounded-xl shadow-2xl backdrop-blur-sm z-30 flex flex-col transition-opacity opacity-0 data-[open=true]:opacity-100 data-[open=true]:flex">
+          <div class="flex items-center justify-between px-4 py-3 border-b border-primary/10">
+            <div class="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-700 dark:text-slate-200">
+              <span class="material-icons text-[14px] text-primary">hub</span>
+              External Agent Connection
+            </div>
+            <button id="btn-terminal-close" class="w-6 h-6 rounded flex items-center justify-center text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-white/10 transition-colors" title="Close">
+              <span class="material-icons text-[16px]">close</span>
+            </button>
+          </div>
+          <div class="p-4 flex flex-col gap-4 text-xs">
+            <p class="text-slate-600 dark:text-slate-300 leading-relaxed">
+              Connect external AI CLI tools (like Claude Code or Gemini CLI) directly to this canvas. The tool will be able to read your nodes and execute diagram edits.
+            </p>
+            <div class="flex flex-col gap-2">
+              <label class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Setup Instructions</label>
+              ${relaySetupInstructionHtml}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Panel (Collapsed) -->
+      <aside class="hidden lg:flex w-12 border-l border-primary/10 bg-white dark:bg-background-dark/50 flex-col items-center py-4 gap-4 shrink-0">
+        <button id="btn-toggle-terminal" class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Agent Terminal">
+          <span class="material-icons text-lg">terminal</span>
+        </button>
+        <div class="mt-auto">
+          <button id="btn-canvas-help" class="w-8 h-8 flex items-center justify-center text-slate-400 hover:text-primary hover:bg-primary/5 rounded transition-all" title="Canvas help" aria-expanded="false" aria-controls="canvas-help-panel">
+            <span class="material-icons text-lg">help_outline</span>
+          </button>
+        </div>
+      </aside>
+    </main>
+  `;
+
+  // -- Render existing nodes -----------
+  const canvasArea = container.querySelector<HTMLElement>('#canvas-area')!;
+  const nodesContainer = container.querySelector<HTMLElement>('#nodes-container')!;
+  const svgEl = container.querySelector<SVGSVGElement>('#connection-svg')!;
+  const miniMapEl = container.querySelector<HTMLElement>('#minimap');
+  const miniMapSvg = container.querySelector<SVGSVGElement>('#minimap-svg');
+  const miniMapNodesLayer = container.querySelector<SVGGElement>('#minimap-nodes');
+  const miniMapViewport = container.querySelector<SVGRectElement>('#minimap-viewport');
+  const teardownCallbacks: Array<() => void> = [];
+  const activeNodeDragDisposers = new Set<() => void>();
+
+  const registerTeardown = (callback: () => void): void => {
+    teardownCallbacks.push(callback);
+  };
+
+  function addManagedListener<K extends keyof DocumentEventMap>(
+    target: Document,
+    type: K,
+    listener: (event: DocumentEventMap[K]) => void,
+    options?: AddEventListenerOptions | boolean,
+  ): void;
+  function addManagedListener<K extends keyof WindowEventMap>(
+    target: Window,
+    type: K,
+    listener: (event: WindowEventMap[K]) => void,
+    options?: AddEventListenerOptions | boolean,
+  ): void;
+  function addManagedListener(
+    target: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: AddEventListenerOptions | boolean,
+  ): void;
+  function addManagedListener(
+    target: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject,
+    options?: AddEventListenerOptions | boolean,
+  ): void {
+    target.addEventListener(type, listener, options);
+    registerTeardown(() => {
+      target.removeEventListener(type, listener, options);
+    });
+  }
+
+  const teardownCanvas = (): void => {
+    for (const disposeNodeDrag of Array.from(activeNodeDragDisposers)) {
+      disposeNodeDrag();
+    }
+    activeNodeDragDisposers.clear();
+    while (teardownCallbacks.length > 0) {
+      const dispose = teardownCallbacks.pop();
+      dispose?.();
+    }
+  };
+
+  (container as CanvasViewContainer).__pbCanvasCleanup = teardownCanvas;
+  const onHashChange = (): void => {
+    clearCanvasViewCleanup(container);
+  };
+  addManagedListener(window, 'hashchange', onHashChange, { once: true });
+
+  // Viewport (world -> screen): screen = world * zoom + pan
+  const MIN_ZOOM = 0.4;
+  const MAX_ZOOM = 2.5;
+  const ZOOM_STEP = 0.12;
+  const NODE_MIN_WIDTH = 224;
+  const NODE_VISUAL_HEIGHT = 140;
+  const NODE_DECORATION_WIDTH = 128;
+  const MINIMAP_PADDING = 80;
+  const MAX_CONNECTION_LABEL_LENGTH = 80;
+  const nodeLabelMeasureCanvas = document.createElement('canvas');
+  const nodeLabelMeasureCtx = nodeLabelMeasureCanvas.getContext('2d');
+  const nodeVisualSizeById = new Map<string, NodeVisualSize>();
+  const nodeBusinessShapeById = new Map<string, 'oval' | 'diamond' | 'square'>();
+  const initialSidebarCollapsed = readCanvasSidebarCollapsedState(projectId);
+  const storedInitialSidebarWidth = readCanvasSidebarWidthState(projectId) ?? recommendedSidebarWidth;
+  const initialSidebarWidth = Math.max(MIN_CANVAS_SIDEBAR_WIDTH, Math.min(MAX_CANVAS_SIDEBAR_WIDTH, storedInitialSidebarWidth));
+  let zoom = 1;
+  let panX = project.nodes.length > 0 && !initialSidebarCollapsed ? initialSidebarWidth + 24 : 0;
+  let panY = 0;
+  const savedViewport = readCanvasViewportState(projectId);
+  if (savedViewport) {
+    zoom = clamp(savedViewport.zoom, MIN_ZOOM, MAX_ZOOM);
+    panX = savedViewport.panX;
+    panY = savedViewport.panY;
+  }
+
+  interface MiniMapTransform {
+    minX: number;
+    minY: number;
+    scale: number;
+    offsetX: number;
+    offsetY: number;
+  }
+  let miniMapTransform: MiniMapTransform | null = null;
+
+  function clamp(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function normalizeConnectionLabel(value: string): string {
+    return value.trim().replace(/\s+/g, ' ').slice(0, MAX_CONNECTION_LABEL_LENGTH);
+  }
+
+  function normalizeWheelDelta(event: WheelEvent): number {
+    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return event.deltaY * 16;
+    if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return event.deltaY * window.innerHeight;
+    return event.deltaY;
+  }
+
+  function normalizeWheelDeltas(event: WheelEvent): { dx: number; dy: number } {
+    const dx = event.deltaX;
+    const dy = event.deltaY;
+
+    if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) return { dx: dx * 16, dy: dy * 16 };
+    if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) return { dx: dx * window.innerWidth, dy: dy * window.innerHeight };
+    return { dx, dy };
+  }
+
+  function estimateLabelPixelWidth(label: string): number {
+    const text = label.trim().length > 0 ? label : 'Node';
+    if (!nodeLabelMeasureCtx) return text.length * 7;
+    nodeLabelMeasureCtx.font = '700 12px system-ui, -apple-system, sans-serif';
+    return Math.ceil(nodeLabelMeasureCtx.measureText(text).width);
+  }
+
+  function getNodeVisualSize(node: PromptNode): NodeVisualSize {
+    const cached = nodeVisualSizeById.get(node.id);
+    const labelWidth = estimateLabelPixelWidth(node.label);
+    let width = Math.max(NODE_MIN_WIDTH, labelWidth + NODE_DECORATION_WIDTH);
+    let height = NODE_VISUAL_HEIGHT;
+    const shape = nodeBusinessShapeById.get(node.id);
+    if (shape === 'diamond') {
+      // Force perfect square for diamond, balanced with rect nodes
+      const side = Math.max(180, width * 0.85);
+      width = side;
+      height = side;
+    }
+    const nextSize: NodeVisualSize = { width, height };
+    if (cached && cached.width === nextSize.width && cached.height === nextSize.height) {
+      return cached;
+    }
+    nodeVisualSizeById.set(node.id, nextSize);
+    return nextSize;
+  }
+
+  let drawScheduledFrame: number | null = null;
+  function scheduleDrawConnections(): void {
+    if (drawScheduledFrame !== null) return;
+    drawScheduledFrame = window.requestAnimationFrame(() => {
+      drawScheduledFrame = null;
+      drawConnections();
+    });
+  }
+
+  registerTeardown(() => {
+    if (drawScheduledFrame === null) return;
+    window.cancelAnimationFrame(drawScheduledFrame);
+    drawScheduledFrame = null;
+  });
+
+  function applyViewportTransform(): void {
+    nodesContainer.style.transformOrigin = '0 0';
+    nodesContainer.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+    writeCanvasViewportState(projectId, { zoom, panX, panY });
+  }
+
+  function screenToWorld(clientX: number, clientY: number): { x: number; y: number } {
+    const rect = canvasArea.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
+    return {
+      x: (localX - panX) / zoom,
+      y: (localY - panY) / zoom,
+    };
+  }
+
+  function zoomAt(nextZoom: number, focalX: number, focalY: number): void {
+    const clamped = clamp(nextZoom, MIN_ZOOM, MAX_ZOOM);
+    if (clamped === zoom) return;
+    const worldXAtFocal = (focalX - panX) / zoom;
+    const worldYAtFocal = (focalY - panY) / zoom;
+    panX = focalX - worldXAtFocal * clamped;
+    panY = focalY - worldYAtFocal * clamped;
+    zoom = clamped;
+    applyViewportTransform();
+    scheduleDrawConnections();
+  }
+
+  // Track port-to-port connection drawing state
+  type PortType = 'in' | 'out';
+  interface ConnectionDraft {
+    nodeId: string;
+    portType: PortType;
+    armedByClick: boolean;
+  }
+  let connectionDraft: ConnectionDraft | null = null;
+  let tempLine: SVGPathElement | null = null;
+  let tempLineStartX = 0;
+  let tempLineStartY = 0;
+  let connectPointerStartX = 0;
+  let connectPointerStartY = 0;
+  let connectPointerMoved = false;
+  let suppressNextPortClick = false;
+  let selectedConnectionId: string | null = null;
+
+  function buildBezierCurve(x1: number, y1: number, x2: number, y2: number): string {
+    const dx = Math.abs(x2 - x1) * 0.5;
+    return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+  }
+
+  function suppressPortClickOnce(): void {
+    suppressNextPortClick = true;
+    setTimeout(() => { suppressNextPortClick = false; }, 0);
+  }
+
+  function getPortCenter(portEl: HTMLElement): { x: number; y: number } {
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const rect = portEl.getBoundingClientRect();
+    return {
+      x: rect.left + rect.width / 2 - canvasRect.left,
+      y: rect.top + rect.height / 2 - canvasRect.top,
+    };
+  }
+
+  function resolveConnection(
+    startNodeId: string,
+    startPortType: PortType,
+    endNodeId: string,
+    endPortType: PortType
+  ): { from: string; to: string } | null {
+    if (startNodeId === endNodeId) return null;
+    if (startPortType === 'out' && endPortType === 'in') return { from: startNodeId, to: endNodeId };
+    if (startPortType === 'in' && endPortType === 'out') return { from: endNodeId, to: startNodeId };
+    return null;
+  }
+
+  function clearPortHighlights(): void {
+    nodesContainer.querySelectorAll<HTMLElement>('.port').forEach(port => {
+      port.classList.remove('ring-2', 'ring-primary', 'ring-offset-1');
+      port.style.transform = 'translateY(-50%)';
+    });
+  }
+
+  function highlightConnectionTargets(draft: ConnectionDraft): void {
+    clearPortHighlights();
+
+    const startSelector = draft.portType === 'out' ? '.port-out' : '.port-in';
+    const startPort = nodesContainer.querySelector<HTMLElement>(
+      `.canvas-node[data-node-id="${draft.nodeId}"] ${startSelector}`
+    );
+    if (startPort) {
+      startPort.classList.add('ring-2', 'ring-primary', 'ring-offset-1');
+      startPort.style.transform = 'translateY(-50%) scale(1.25)';
+    }
+
+    const targetSelector = draft.portType === 'out' ? '.port-in' : '.port-out';
+    nodesContainer.querySelectorAll<HTMLElement>(targetSelector).forEach(port => {
+      if (port.dataset.nodeId === draft.nodeId) return;
+      port.classList.add('ring-2', 'ring-primary', 'ring-offset-1');
+      port.style.transform = 'translateY(-50%) scale(1.3)';
+    });
+  }
+
+  function clearConnectionDraft(): void {
+    if (tempLine) {
+      tempLine.remove();
+      tempLine = null;
+    }
+    connectionDraft = null;
+    connectPointerMoved = false;
+    clearPortHighlights();
+  }
+
+  function armConnectionFromPort(nodeId: string, portType: PortType): void {
+    clearConnectionDraft();
+    connectionDraft = { nodeId, portType, armedByClick: true };
+    highlightConnectionTargets(connectionDraft);
+  }
+
+  function beginDragConnectionFromPort(portEl: HTMLElement, nodeId: string, portType: PortType, e: MouseEvent): void {
+    clearConnectionDraft();
+    connectionDraft = { nodeId, portType, armedByClick: false };
+    connectPointerStartX = e.clientX;
+    connectPointerStartY = e.clientY;
+    connectPointerMoved = false;
+
+    const start = getPortCenter(portEl);
+    tempLineStartX = start.x;
+    tempLineStartY = start.y;
+    tempLine = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    tempLine.setAttribute('d', buildBezierCurve(start.x, start.y, start.x, start.y));
+    tempLine.setAttribute('stroke', '#23956F');
+    tempLine.setAttribute('stroke-width', '2');
+    tempLine.setAttribute('stroke-dasharray', '6,3');
+    tempLine.setAttribute('fill', 'none');
+    tempLine.setAttribute('opacity', '0.6');
+    svgEl.appendChild(tempLine);
+    highlightConnectionTargets(connectionDraft);
+  }
+
+  function getPortTypeFromElement(portEl: HTMLElement): PortType {
+    return portEl.classList.contains('port-in') ? 'in' : 'out';
+  }
+
+  function tryCreateConnectionBetweenPorts(startDraft: ConnectionDraft, targetPort: HTMLElement): boolean {
+    const targetNodeId = targetPort.dataset.nodeId;
+    if (!targetNodeId) return false;
+
+    const targetPortType = getPortTypeFromElement(targetPort);
+    const resolved = resolveConnection(startDraft.nodeId, startDraft.portType, targetNodeId, targetPortType);
+    if (!resolved) return false;
+
+    const exists = project!.connections.some(c => c.from === resolved.from && c.to === resolved.to);
+    if (!exists) {
+      store.addConnection(projectId, resolved.from, resolved.to);
+      drawConnections();
+    }
+    return true;
+  }
+
+  function getDistanceToConnection(pathEl: SVGPathElement, x: number, y: number): number {
+    const totalLength = pathEl.getTotalLength();
+    if (!Number.isFinite(totalLength) || totalLength <= 0) return Infinity;
+    const samples = Math.max(24, Math.ceil(totalLength / 20));
+    let minDistance = Infinity;
+    for (let i = 0; i <= samples; i++) {
+      const point = pathEl.getPointAtLength((i / samples) * totalLength);
+      const distance = Math.hypot(point.x - x, point.y - y);
+      if (distance < minDistance) minDistance = distance;
+    }
+    return minDistance;
+  }
+
+  function findConnectionNearPoint(clientX: number, clientY: number): { id: string; from: string; to: string; label?: string } | null {
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const x = clientX - canvasRect.left;
+    const y = clientY - canvasRect.top;
+    const INSERT_THRESHOLD_PX = 20;
+
+    let bestMatch: { id: string; from: string; to: string; label?: string; distance: number } | null = null;
+    for (const pathEl of svgEl.querySelectorAll<SVGPathElement>('path[data-connection-id][data-role="geometry"]')) {
+      const id = pathEl.dataset.connectionId;
+      const from = pathEl.dataset.fromNodeId;
+      const to = pathEl.dataset.toNodeId;
+      if (!id || !from || !to) continue;
+      const distance = getDistanceToConnection(pathEl, x, y);
+      if (distance > INSERT_THRESHOLD_PX) continue;
+      if (!bestMatch || distance < bestMatch.distance) {
+        const connection = project!.connections.find((item) => item.id === id);
+        bestMatch = { id, from, to, label: connection?.label, distance };
+      }
+    }
+
+    if (!bestMatch) return null;
+    return { id: bestMatch.id, from: bestMatch.from, to: bestMatch.to, ...(bestMatch.label ? { label: bestMatch.label } : {}) };
+  }
+
+  function updateMiniMap(): void {
+    if (!miniMapSvg || !miniMapNodesLayer || !miniMapViewport) return;
+
+    const miniRect = miniMapSvg.getBoundingClientRect();
+    const miniWidth = Math.max(1, miniRect.width);
+    const miniHeight = Math.max(1, miniRect.height);
+
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const viewportWorldX = -panX / zoom;
+    const viewportWorldY = -panY / zoom;
+    const viewportWorldWidth = canvasRect.width / zoom;
+    const viewportWorldHeight = canvasRect.height / zoom;
+
+    let minX = viewportWorldX;
+    let minY = viewportWorldY;
+    let maxX = viewportWorldX + viewportWorldWidth;
+    let maxY = viewportWorldY + viewportWorldHeight;
+
+    for (const node of project!.nodes) {
+      const size = getNodeVisualSize(node);
+      minX = Math.min(minX, node.x);
+      minY = Math.min(minY, node.y);
+      maxX = Math.max(maxX, node.x + size.width);
+      maxY = Math.max(maxY, node.y + size.height);
+    }
+
+    minX -= MINIMAP_PADDING;
+    minY -= MINIMAP_PADDING;
+    maxX += MINIMAP_PADDING;
+    maxY += MINIMAP_PADDING;
+
+    const worldWidth = Math.max(1, maxX - minX);
+    const worldHeight = Math.max(1, maxY - minY);
+    const scale = Math.min(miniWidth / worldWidth, miniHeight / worldHeight);
+    const offsetX = (miniWidth - worldWidth * scale) / 2;
+    const offsetY = (miniHeight - worldHeight * scale) / 2;
+
+    miniMapTransform = { minX, minY, scale, offsetX, offsetY };
+
+    const toMiniX = (worldX: number): number => (worldX - minX) * scale + offsetX;
+    const toMiniY = (worldY: number): number => (worldY - minY) * scale + offsetY;
+
+    const nodeRects = project!.nodes.map(node => {
+      const size = getNodeVisualSize(node);
+      const x = toMiniX(node.x);
+      const y = toMiniY(node.y);
+      const width = Math.max(3, size.width * scale);
+      const height = Math.max(2, size.height * scale);
+      const styles = buildNodeColorStyles(readNodeColorMeta(node.meta));
+      return `<rect x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${width.toFixed(2)}" height="${height.toFixed(2)}" rx="1.5" fill="${styles.minimapFill}" stroke="${styles.minimapStroke}" stroke-width="0.8"></rect>`;
+    }).join('');
+    miniMapNodesLayer.innerHTML = nodeRects;
+
+    miniMapViewport.setAttribute('x', String(toMiniX(viewportWorldX)));
+    miniMapViewport.setAttribute('y', String(toMiniY(viewportWorldY)));
+    miniMapViewport.setAttribute('width', String(Math.max(6, viewportWorldWidth * scale)));
+    miniMapViewport.setAttribute('height', String(Math.max(6, viewportWorldHeight * scale)));
+  }
+
+  // -- Terminal and Agent Sync Setup --
+  const terminalPanel = container.querySelector<HTMLElement>('#terminal-panel');
+  const toggleTerminalBtn = container.querySelector<HTMLButtonElement>('#btn-toggle-terminal');
+  let syncWs: WebSocket | null = null;
+  let relayReconnectTimer: number | null = null;
+  let relayStopped = false;
+
+  const pushCanvasState = () => {
+    if (syncWs?.readyState === WebSocket.OPEN) {
+      syncWs.send(JSON.stringify({
+        type: 'update_state',
+        state: { nodes: project!.nodes, connections: project!.connections }
+      }));
+    }
+  };
+
+  const scheduleRelayReconnect = (): void => {
+    if (relayStopped || !mcpRelayConfig.enabled) return;
+    if (relayReconnectTimer !== null) return;
+    relayReconnectTimer = window.setTimeout(() => {
+      relayReconnectTimer = null;
+      connectSyncWs();
+    }, 2000);
+  };
+
+  const connectSyncWs = () => {
+    if (relayStopped || !mcpRelayConfig.enabled) return;
+    if (syncWs || !mcpRelayConfig.canvasSyncUrl) return;
+
+    try {
+      syncWs = new WebSocket(mcpRelayConfig.canvasSyncUrl);
+    } catch (err) {
+      console.error('Failed to open MCP relay websocket:', err);
+      syncWs = null;
+      scheduleRelayReconnect();
+      return;
+    }
+
+    syncWs.addEventListener('open', () => pushCanvasState());
+
+    syncWs.addEventListener('message', (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === 'agent_action') {
+          const payload = msg.payload;
+          if (msg.action === 'add_node') {
+            const newNode: PromptNode = {
+              id: uid(),
+              type: payload.type || 'default',
+              label: payload.label || 'Agent Node',
+              icon: 'auto_awesome',
+              content: payload.content || '',
+              meta: {},
+              x: payload.x || 60,
+              y: payload.y || 60,
+            };
+            store.addNode(projectId, newNode);
+          } else if (msg.action === 'update_node_content') {
+            store.updateNode(projectId, payload.nodeId, { content: payload.content });
+          } else if (msg.action === 'create_connection') {
+            store.addConnection(projectId, payload.fromId, payload.toId, payload.label || '');
+          }
+          renderNodes();
+        }
+      } catch (e) {
+        console.error('Canvas sync message error:', e);
+      }
+    });
+
+    syncWs.addEventListener('close', () => {
+      syncWs = null;
+      scheduleRelayReconnect();
+    });
+
+    syncWs.addEventListener('error', (event) => {
+      console.error('Canvas relay websocket error:', event);
+    });
+  };
+
+  if (!mcpRelayConfig.enabled && toggleTerminalBtn) {
+    toggleTerminalBtn.disabled = true;
+    toggleTerminalBtn.classList.add('opacity-40', 'cursor-not-allowed');
+    toggleTerminalBtn.title = mcpRelayConfig.reason ?? 'MCP relay is disabled.';
+  }
+
+  connectSyncWs();
+  registerTeardown(() => {
+    relayStopped = true;
+    if (relayReconnectTimer !== null) {
+      window.clearTimeout(relayReconnectTimer);
+      relayReconnectTimer = null;
+    }
+    if (syncWs) {
+      syncWs.close();
+      syncWs = null;
+    }
+  });
+
+  // Hover mini-toolbar (diagrams.net-style) for quickly extending flows.
+  let hoveredNodeId: string | null = null;
+  let hoverToolbarHideTimer: number | null = null;
+  const hoverToolbar = document.createElement('div');
+  hoverToolbar.className = [
+    'absolute',
+    'z-[60]',
+    'hidden',
+    'pointer-events-auto',
+    'rounded-lg',
+    'border',
+    'border-card-border',
+    'dark:border-primary/20',
+    'bg-white',
+    'dark:bg-slate-900',
+    'shadow-lg',
+    'px-2',
+    'py-1.5',
+    'flex',
+    'items-center',
+    'gap-1.5',
+  ].join(' ');
+  hoverToolbar.innerHTML = `
+    <button type="button" data-action="add-step" class="text-xs font-semibold px-2 py-1 rounded-md border border-primary/25 text-primary hover:bg-primary/5">+ Step</button>
+    <button type="button" data-action="add-decision" class="text-xs font-semibold px-2 py-1 rounded-md border border-primary/25 text-primary hover:bg-primary/5">+ Decision</button>
+    <button type="button" data-action="connect" class="text-xs font-semibold px-2 py-1 rounded-md bg-primary text-white hover:bg-primary/90">Connect</button>
+  `;
+  canvasArea.appendChild(hoverToolbar);
+  registerTeardown(() => hoverToolbar.remove());
+
+  function hideHoverToolbar(): void {
+    hoveredNodeId = null;
+    hoverToolbar.classList.add('hidden');
+  }
+
+  function scheduleHideHoverToolbar(delayMs = 140): void {
+    if (hoverToolbarHideTimer !== null) window.clearTimeout(hoverToolbarHideTimer);
+    hoverToolbarHideTimer = window.setTimeout(() => {
+      hoverToolbarHideTimer = null;
+      hideHoverToolbar();
+    }, delayMs);
+  }
+
+  hoverToolbar.addEventListener('mouseenter', () => {
+    if (hoverToolbarHideTimer !== null) window.clearTimeout(hoverToolbarHideTimer);
+    hoverToolbarHideTimer = null;
+  });
+  hoverToolbar.addEventListener('mouseleave', () => scheduleHideHoverToolbar(120));
+  hoverToolbar.addEventListener('mousedown', (e) => {
+    e.stopPropagation();
+  });
+
+  function showHoverToolbarForNode(nodeId: string, nodeEl: HTMLElement): void {
+    hoveredNodeId = nodeId;
+    if (hoverToolbarHideTimer !== null) window.clearTimeout(hoverToolbarHideTimer);
+    hoverToolbarHideTimer = null;
+
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const rect = nodeEl.getBoundingClientRect();
+    const left = rect.right - canvasRect.left - 6;
+    const top = rect.top - canvasRect.top - 6;
+    hoverToolbar.style.left = `${Math.max(8, left)}px`;
+    hoverToolbar.style.top = `${Math.max(8, top)}px`;
+    hoverToolbar.classList.remove('hidden');
+  }
+
+  hoverToolbar.addEventListener('click', (e) => {
+    const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-action]');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    if (!hoveredNodeId) return;
+
+    const action = btn.dataset.action;
+    const fromNode = project!.nodes.find((n) => n.id === hoveredNodeId);
+    if (!fromNode) return;
+
+    if (action === 'connect') {
+      armConnectionFromPort(fromNode.id, 'out');
+      return;
+    }
+
+    const fromSize = getNodeVisualSize(fromNode);
+    const newNodeId = uid();
+    const isDecision = action === 'add-decision';
+    const label = isDecision ? 'Decision' : 'Step';
+    const icon = isDecision ? 'call_split' : 'bolt';
+    const type = isDecision ? 'logic-branch' : 'static-context';
+    const newNode: PromptNode = {
+      id: newNodeId,
+      type,
+      label,
+      icon,
+      content: '',
+      meta: {},
+      x: fromNode.x + fromSize.width + 180,
+      y: fromNode.y,
+    };
+
+    store.addNode(projectId, newNode);
+    store.addConnection(projectId, fromNode.id, newNodeId);
+    renderNodes();
+    drawConnections();
+    // Keep toolbar visible over the newly created node on next render.
+    scheduleHideHoverToolbar(0);
+  });
+
+  function rebuildBusinessShapeCache(): void {
+    nodeBusinessShapeById.clear();
+    if (!isTranscriptWorkspace || !project) return;
+    const incomingCount = new Map<string, number>();
+    const outgoingCount = new Map<string, number>();
+    for (const n of project.nodes) {
+      incomingCount.set(n.id, 0);
+      outgoingCount.set(n.id, 0);
+    }
+    for (const c of project.connections) {
+      if (incomingCount.has(c.to)) incomingCount.set(c.to, (incomingCount.get(c.to) ?? 0) + 1);
+      if (outgoingCount.has(c.from)) outgoingCount.set(c.from, (outgoingCount.get(c.from) ?? 0) + 1);
+    }
+    for (const n of project.nodes) {
+      let shape: 'oval' | 'diamond' | 'square' = 'square';
+      if (n.type === 'logic-branch') {
+        shape = 'diamond';
+      } else if (n.type === 'termination' || (outgoingCount.get(n.id) ?? 0) === 0) {
+        shape = 'oval';
+      } else if ((incomingCount.get(n.id) ?? 0) === 0) {
+        shape = 'oval';
+      }
+      nodeBusinessShapeById.set(n.id, shape);
+    }
+  }
+
+  function buildDiamondNodeHtml(node: PromptNode, cs: NodeColorStyles, size: NodeVisualSize): string {
+    const w = size.width;
+    const h = size.height;
+    // Inner safe area for text
+    const safeW = Math.floor(w * 0.5);
+    const safeH = Math.floor(h * 0.5);
+
+    return `
+      <div class="node-surface h-full w-full relative group">
+        <!-- SVG Diamond Background -->
+        <svg class="absolute inset-0 w-full h-full drop-shadow-lg overflow-visible" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+          <path d="M ${w / 2} 0 L ${w} ${h / 2} L ${w / 2} ${h} L 0 ${h / 2} Z"
+            fill="${cs.headerBackground}"
+            stroke="${cs.border}"
+            stroke-width="1.5"
+          />
+        </svg>
+
+        <!-- Content (Centered in Diamond) -->
+        <div class="absolute inset-0 flex items-center justify-center p-4 cursor-grab active:cursor-grabbing">
+          <div class="flex flex-col items-center text-center gap-1.5 select-none pointer-events-none"
+            style="max-width:${safeW}px; max-height:${safeH}px; overflow:hidden;"
+          >
+            <span class="material-icons text-base" style="color:${cs.icon};">${node.icon}</span>
+            <span class="text-[11px] font-bold leading-tight text-slate-800 dark:text-slate-100">${escapeHTML(node.label)}</span>
+          </div>
+        </div>
+
+        <!-- Delete Toggle -->
+        <button class="node-delete absolute top-1/2 right-[12%] -translate-y-1/2 text-slate-400 hover:text-red-500 p-1 opacity-0 group-hover:opacity-100 pointer-events-auto z-10 transition-opacity" title="Delete node">
+          <span class="material-icons text-xs">close</span>
+        </button>
+      </div>`;
+  }
+
+  function buildOvalNodeHtml(node: PromptNode, cs: NodeColorStyles): string {
+    return `
+      <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow h-full flex flex-col overflow-hidden"
+        style="border-color:${cs.border}; border-radius:9999px;"
+      >
+        <div class="node-header flex-1 flex items-center justify-center cursor-grab active:cursor-grabbing px-6"
+          style="background:${cs.headerBackground};"
+        >
+          <h2 class="text-xs font-bold flex items-center gap-2 select-none">
+            <span class="material-icons text-sm" style="color:${cs.icon};">${node.icon}</span>
+            <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
+          </h2>
+          <button class="node-delete absolute top-1 right-3 text-slate-400 hover:text-red-500 p-0.5 z-10" title="Delete node">
+            <span class="material-icons text-xs">close</span>
+          </button>
+        </div>
+      </div>`;
+  }
+
+  function buildRectNodeHtml(node: PromptNode, cs: NodeColorStyles): string {
+    return `
+      <div class="node-surface bg-white dark:bg-slate-900 border shadow-xl node-glow overflow-hidden h-full"
+        style="border-color:${cs.border}; border-radius:12px;"
+      >
+        <div class="node-header p-3 flex items-center justify-between cursor-grab active:cursor-grabbing"
+          style="background:${cs.headerBackground}; border-bottom:1px solid ${cs.headerBorder};"
+        >
+          <h2 class="text-xs font-bold flex items-center gap-2 select-none min-w-0">
+            <span class="material-icons text-sm" style="color:${cs.icon};">${node.icon}</span>
+            <span class="whitespace-nowrap">${escapeHTML(node.label)}</span>
+          </h2>
+          <div class="flex items-center gap-1">
+            <button class="node-save-template text-slate-400 hover:text-primary p-0.5" title="Save as custom node template">
+              <span class="material-icons text-xs">bookmark_add</span>
+            </button>
+            <button class="node-delete text-slate-400 hover:text-red-500 p-0.5" title="Delete node">
+              <span class="material-icons text-xs">close</span>
+            </button>
+          </div>
+        </div>
+        <div class="relative">
+          <div class="p-3 text-[11px] text-slate-500 dark:text-slate-400 font-mono leading-relaxed max-h-24 overflow-hidden">
+            ${escapeHTML(node.content).substring(0, 120)}${node.content.length > 120 ? '…' : ''}
+          </div>
+        </div>
+        <div class="bg-slate-50 dark:bg-slate-800/50 px-3 py-1.5 flex justify-end items-center border-t"
+          style="border-top-color:${cs.footerBorder};"
+        >
+          <span class="text-[9px] font-mono" style="color:${cs.tokenText};">${node.content.length > 0 ? Math.ceil(node.content.length / 4) + ' tok' : 'empty'}</span>
+        </div>
+      </div>`;
+  }
+
+  function renderNodes(): void {
+    clearConnectionDraft();
+    nodesContainer.querySelectorAll('.canvas-node').forEach(el => el.remove());
+    const hint = nodesContainer.querySelector('#empty-hint');
+    if (project!.nodes.length > 0 && hint) hint.remove();
+
+    rebuildBusinessShapeCache();
+
+    for (const node of project!.nodes) {
+      const colorStyles = buildNodeColorStyles(readNodeColorMeta(node.meta));
+      const businessShape = nodeBusinessShapeById.get(node.id) ?? 'square';
+      const size = getNodeVisualSize(node);
+      const el = document.createElement('div');
+      el.className = 'canvas-node pointer-events-auto';
+      el.dataset.nodeId = node.id;
+      el.style.left = `${node.x}px`;
+      el.style.top = `${node.y}px`;
+      el.style.width = `${size.width}px`;
+      el.style.height = `${size.height}px`;
+
+      const nodeInnerHtml = isTranscriptWorkspace && businessShape === 'diamond'
+        ? buildDiamondNodeHtml(node, colorStyles, size)
+        : isTranscriptWorkspace && businessShape === 'oval'
+          ? buildOvalNodeHtml(node, colorStyles)
+          : buildRectNodeHtml(node, colorStyles);
+
+      el.innerHTML = `
+        <div class="port-in port absolute -left-[7px] top-1/2 -translate-y-1/2 z-20" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
+        <div class="port-out port absolute -right-[7px] top-1/2 -translate-y-1/2 z-20" data-node-id="${node.id}" title="Connect here (drag or click)"></div>
+        ${nodeInnerHtml}
+      `;
+      nodesContainer.appendChild(el);
+
+      // -- Dragging (by header only) ------
+      let isDragging = false, didDrag = false, startX = 0, startY = 0, origX = node.x, origY = node.y;
+      let dragListenersActive = false;
+      const header = el.querySelector('.node-header') as HTMLElement;
+      // Hover toolbar (transcript workspace only)
+      if (isTranscriptWorkspace) {
+        el.addEventListener('mouseenter', () => showHoverToolbarForNode(node.id, el));
+        el.addEventListener('mouseleave', () => scheduleHideHoverToolbar());
+      }
+      const onMouseMove = (e: MouseEvent) => {
+        if (!isDragging) return;
+        if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) {
+          didDrag = true;
+        }
+        node.x = origX + (e.clientX - startX) / zoom;
+        node.y = origY + (e.clientY - startY) / zoom;
+        el.style.left = `${node.x}px`;
+        el.style.top = `${node.y}px`;
+        scheduleDrawConnections();
+      };
+      const disposeNodeDragListeners = (): void => {
+        if (!dragListenersActive) return;
+        dragListenersActive = false;
+        isDragging = false;
+        el.classList.remove('dragging');
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+        activeNodeDragDisposers.delete(disposeNodeDragListeners);
+      };
+      const onMouseUp = (e: MouseEvent) => {
+        if (!isDragging) {
+          disposeNodeDragListeners();
+          return;
+        }
+
+        isDragging = false;
+        el.classList.remove('dragging');
+        // Snap to 20px grid
+        node.x = Math.round(node.x / 20) * 20;
+        node.y = Math.round(node.y / 20) * 20;
+        el.style.left = `${node.x}px`;
+        el.style.top = `${node.y}px`;
+        store.updateNode(projectId, node.id, { x: node.x, y: node.y });
+
+        // Shift+drop on an existing connection to reinsert this existing node elsewhere in the graph.
+        if (e.shiftKey) {
+          const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
+          if (connectionToSplit && connectionToSplit.from !== node.id && connectionToSplit.to !== node.id) {
+            const linkedConnections = project!.connections.filter(c => c.from === node.id || c.to === node.id);
+            for (const conn of linkedConnections) {
+              store.removeConnection(projectId, conn.id);
+            }
+            store.removeConnection(projectId, connectionToSplit.id);
+            store.addConnection(projectId, connectionToSplit.from, node.id, connectionToSplit.label ?? '');
+            store.addConnection(projectId, node.id, connectionToSplit.to);
+          }
+        }
+        drawConnections();
+        disposeNodeDragListeners();
+      };
+      header.addEventListener('mousedown', (e: MouseEvent) => {
+        if (e.button !== 0) return;
+        if ((e.target as HTMLElement).closest('.node-delete, .node-save-template')) return;
+        isDragging = true;
+        didDrag = false;
+        startX = e.clientX; startY = e.clientY;
+        origX = node.x; origY = node.y;
+        el.classList.add('dragging');
+        if (!dragListenersActive) {
+          dragListenersActive = true;
+          document.addEventListener('mousemove', onMouseMove);
+          document.addEventListener('mouseup', onMouseUp);
+          activeNodeDragDisposers.add(disposeNodeDragListeners);
+        }
+        e.preventDefault();
+      });
+
+      // Port-based connection drawing (drag OR click-to-click)
+      const inPort = el.querySelector('.port-in') as HTMLElement;
+      const outPort = el.querySelector('.port-out') as HTMLElement;
+
+      const wirePortConnection = (portEl: HTMLElement, portType: PortType): void => {
+        portEl.addEventListener('mousedown', (e: MouseEvent) => {
+          if (e.button !== 0) return;
+          e.stopPropagation();
+          e.preventDefault();
+          if (connectionDraft?.armedByClick) return;
+          beginDragConnectionFromPort(portEl, node.id, portType, e);
+        });
+
+        portEl.addEventListener('click', (e: MouseEvent) => {
+          e.stopPropagation();
+          e.preventDefault();
+          if (suppressNextPortClick) return;
+
+          if (!connectionDraft) {
+            armConnectionFromPort(node.id, portType);
+            return;
+          }
+
+          if (!connectionDraft.armedByClick) return;
+
+          const clickedStartPort =
+            connectionDraft.nodeId === node.id &&
+            connectionDraft.portType === portType;
+
+          if (clickedStartPort) {
+            clearConnectionDraft();
+            return;
+          }
+
+          const created = tryCreateConnectionBetweenPorts(connectionDraft, portEl);
+          if (created) {
+            clearConnectionDraft();
+            return;
+          }
+
+          // If the second click wasn't a compatible target, restart from that port.
+          armConnectionFromPort(node.id, portType);
+        });
+      };
+
+      wirePortConnection(inPort, 'in');
+      wirePortConnection(outPort, 'out');
+
+      // Single click node body -> open editor
+      el.addEventListener('click', (e: MouseEvent) => {
+        if ((e.target as HTMLElement).closest('.node-delete, .node-save-template, .port')) return;
+        if (didDrag) {
+          didDrag = false;
+          return;
+        }
+        clearCanvasViewCleanup(container);
+        router.navigate(`/project/${projectId}/editor/${node.id}`);
+      });
+
+      el.querySelector<HTMLButtonElement>('.node-save-template')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        const input = await customPrompt('Template name:', node.label) ?? '';
+        const templateLabel = input.trim();
+        if (!templateLabel) return;
+        store.saveCustomNodeTemplate({
+          type: node.type,
+          label: templateLabel,
+          icon: node.icon,
+          content: node.content,
+          meta: { ...node.meta },
+        });
+        refreshSidebarBlocks();
+      });
+
+      // Delete button
+      el.querySelector<HTMLButtonElement>('.node-delete')?.addEventListener('click', (e) => {
+        e.stopPropagation();
+        store.removeNode(projectId, node.id);
+        renderNodes();
+      });
+    }
+
+    drawConnections();
+    if (typeof pushCanvasState === 'function') pushCanvasState();
+  }
+
+  // Global mouse handlers for port connection
+  addManagedListener(document, 'mousemove', (e: MouseEvent) => {
+    if (!connectionDraft || !tempLine) return;
+    if (Math.abs(e.clientX - connectPointerStartX) > 3 || Math.abs(e.clientY - connectPointerStartY) > 3) {
+      connectPointerMoved = true;
+    }
+    const canvasRect = canvasArea.getBoundingClientRect();
+    const endX = e.clientX - canvasRect.left;
+    const endY = e.clientY - canvasRect.top;
+    tempLine.setAttribute('d', buildBezierCurve(tempLineStartX, tempLineStartY, endX, endY));
+  });
+
+  addManagedListener(document, 'mouseup', (e: MouseEvent) => {
+    if (!connectionDraft || !tempLine) return;
+
+    const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+    const targetPort = target?.closest('.port') as HTMLElement | null;
+    const created = targetPort ? tryCreateConnectionBetweenPorts(connectionDraft, targetPort) : false;
+    const clickWithoutDrag = !connectPointerMoved;
+
+    suppressPortClickOnce();
+
+    if (created) {
+      clearConnectionDraft();
+      return;
+    }
+
+    if (clickWithoutDrag) {
+      connectionDraft.armedByClick = true;
+      if (tempLine) {
+        tempLine.remove();
+        tempLine = null;
+      }
+      highlightConnectionTargets(connectionDraft);
+      return;
+    }
+
+    clearConnectionDraft();
+  });
+
+  addManagedListener(document, 'mousedown', (e: MouseEvent) => {
+    const target = e.target as HTMLElement;
+    if (connectionDraft?.armedByClick && !target.closest('.port')) {
+      clearConnectionDraft();
+    }
+    if (selectedConnectionId && !target.closest('.connector-hit')) {
+      selectedConnectionId = null;
+      drawConnections();
+    }
+  });
+
+  async function editConnectionLabel(connectionId: string): Promise<void> {
+    const connection = project!.connections.find((item) => item.id === connectionId);
+    if (!connection) return;
+    const nextLabel = await customPrompt('Branch label (optional):', connection.label ?? '');
+    if (nextLabel === null) return;
+    const normalized = normalizeConnectionLabel(nextLabel);
+    store.updateConnectionLabel(projectId, connectionId, normalized);
+    drawConnections();
+  }
+
+  addManagedListener(document, 'keydown', (e: KeyboardEvent) => {
+    if (!selectedConnectionId) return;
+
+    const target = e.target as HTMLElement | null;
+    const isTypingTarget = target
+      ? target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable
+      : false;
+    if (isTypingTarget) return;
+
+    if (e.key === 'l' || e.key === 'L') {
+      void editConnectionLabel(selectedConnectionId);
+      e.preventDefault();
+      return;
+    }
+
+    if (e.key !== 'Delete' && e.key !== 'Backspace') return;
+
+    const selectedConnection = project!.connections.find(c => c.id === selectedConnectionId);
+    if (!selectedConnection) {
+      selectedConnectionId = null;
+      drawConnections();
+      return;
+    }
+
+    store.removeConnection(projectId, selectedConnection.id);
+    selectedConnectionId = null;
+    drawConnections();
+    e.preventDefault();
+  });
+
+  function drawConnections(): void {
+    svgEl.innerHTML = '';
+    const canvasRect = canvasArea.getBoundingClientRect();
+    let selectedConnectionStillExists = false;
+
+    // Arrowhead marker definition
+    const defs = document.createElementNS('http://www.w3.org/2000/svg', 'defs');
+    const marker = document.createElementNS('http://www.w3.org/2000/svg', 'marker');
+    marker.setAttribute('id', 'connection-arrow');
+    marker.setAttribute('viewBox', '0 0 10 10');
+    marker.setAttribute('refX', '10');
+    marker.setAttribute('refY', '5');
+    marker.setAttribute('markerWidth', '8');
+    marker.setAttribute('markerHeight', '8');
+    marker.setAttribute('orient', 'auto-start-reverse');
+    const arrowPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    arrowPath.setAttribute('d', 'M 0 1.5 L 10 5 L 0 8.5 Z');
+    arrowPath.setAttribute('fill', '#23956F');
+    marker.appendChild(arrowPath);
+    defs.appendChild(marker);
+    svgEl.appendChild(defs);
+
+    for (const conn of project!.connections) {
+      const fromEl = nodesContainer.querySelector<HTMLElement>(`[data-node-id="${conn.from}"]`);
+      const toEl = nodesContainer.querySelector<HTMLElement>(`[data-node-id="${conn.to}"]`);
+      if (!fromEl || !toEl) continue;
+
+      const outPort = fromEl.querySelector('.port-out');
+      const inPort = toEl.querySelector('.port-in');
+      if (!outPort || !inPort) continue;
+
+      const fromRect = outPort.getBoundingClientRect();
+      const toRect = inPort.getBoundingClientRect();
+
+      const x1 = fromRect.left + fromRect.width / 2 - canvasRect.left;
+      const y1 = fromRect.top + fromRect.height / 2 - canvasRect.top;
+      const x2 = toRect.left + toRect.width / 2 - canvasRect.left;
+      const y2 = toRect.top + toRect.height / 2 - canvasRect.top;
+
+      const curve = buildBezierCurve(x1, y1, x2, y2);
+      const isSelected = conn.id === selectedConnectionId;
+      if (isSelected) selectedConnectionStillExists = true;
+      const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      path.setAttribute('d', curve);
+      path.setAttribute('stroke', '#23956F');
+      path.setAttribute('stroke-width', '2');
+      path.setAttribute('fill', 'none');
+      path.setAttribute('marker-end', 'url(#connection-arrow)');
+      path.dataset.connectionId = conn.id;
+      path.dataset.fromNodeId = conn.from;
+      path.dataset.toNodeId = conn.to;
+      path.dataset.role = 'geometry';
+      path.classList.add('connector-path');
+      if (isSelected) path.classList.add('connector-path-selected');
+      path.style.pointerEvents = 'none';
+
+      // Wide transparent path for reliable click targets.
+      const hitPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+      hitPath.setAttribute('d', curve);
+      hitPath.setAttribute('stroke', '#23956F');
+      hitPath.setAttribute('stroke-opacity', '0.001');
+      hitPath.setAttribute('stroke-width', '14');
+      hitPath.setAttribute('stroke-linecap', 'round');
+      hitPath.setAttribute('fill', 'none');
+      hitPath.classList.add('connector-hit');
+      hitPath.style.cursor = 'pointer';
+      hitPath.style.pointerEvents = 'all';
+      hitPath.addEventListener('click', (e: MouseEvent) => {
+        e.stopPropagation();
+        selectedConnectionId = selectedConnectionId === conn.id ? null : conn.id;
+        drawConnections();
+      });
+      hitPath.addEventListener('contextmenu', (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        selectedConnectionId = conn.id;
+        drawConnections();
+      });
+      hitPath.addEventListener('dblclick', (e: MouseEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        selectedConnectionId = conn.id;
+        void editConnectionLabel(conn.id);
+      });
+      svgEl.appendChild(hitPath);
+      svgEl.appendChild(path);
+
+      const connectionLabel = normalizeConnectionLabel(conn.label ?? '');
+      if (connectionLabel) {
+        const pathLength = path.getTotalLength();
+        if (Number.isFinite(pathLength) && pathLength > 0) {
+          const midpoint = path.getPointAtLength(pathLength / 2);
+          const fromNodeRect = fromEl.getBoundingClientRect();
+          const toNodeRect = toEl.getBoundingClientRect();
+          const avgNodeWidth = (fromNodeRect.width + toNodeRect.width) / 2;
+          const sizeFactor = clamp(0.85 + (avgNodeWidth - 240) / 520, 0.85, 1.25);
+          const zoomFactor = clamp(Math.pow(zoom, 0.65), 0.8, 1.55);
+          const fontSizePx = clamp(11 * sizeFactor * zoomFactor, 10, 18);
+          const labelText = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+          labelText.textContent = connectionLabel;
+          labelText.setAttribute('x', String(midpoint.x));
+          labelText.setAttribute('y', String(midpoint.y - (8 + fontSizePx * 0.35)));
+          labelText.setAttribute('font-size', String(fontSizePx));
+          labelText.setAttribute('font-weight', '700');
+          labelText.setAttribute('text-anchor', 'middle');
+          labelText.setAttribute('fill', isSelected ? '#0f766e' : '#1f2937');
+          labelText.style.pointerEvents = 'none';
+          svgEl.appendChild(labelText);
+
+          const labelBox = labelText.getBBox();
+          const bgPadX = Math.round(8 * zoomFactor);
+          const bgPadY = Math.round(5 * zoomFactor);
+          const labelBackground = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          labelBackground.setAttribute('x', String(labelBox.x - bgPadX));
+          labelBackground.setAttribute('y', String(labelBox.y - bgPadY));
+          labelBackground.setAttribute('width', String(labelBox.width + bgPadX * 2));
+          labelBackground.setAttribute('height', String(labelBox.height + bgPadY * 2));
+          labelBackground.setAttribute('rx', '6');
+          labelBackground.setAttribute('fill', isSelected ? 'rgba(20, 184, 166, 0.20)' : 'rgba(255,255,255,0.92)');
+          labelBackground.setAttribute('stroke', isSelected ? 'rgba(15, 118, 110, 0.45)' : 'rgba(31,41,55,0.25)');
+          labelBackground.style.pointerEvents = 'none';
+          svgEl.insertBefore(labelBackground, labelText);
+
+          // Enlarged hit-rect over the label for easy clicking/editing
+          const labelHitRect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+          labelHitRect.setAttribute('x', String(labelBox.x - bgPadX));
+          labelHitRect.setAttribute('y', String(labelBox.y - bgPadY));
+          labelHitRect.setAttribute('width', String(labelBox.width + bgPadX * 2));
+          labelHitRect.setAttribute('height', String(labelBox.height + bgPadY * 2));
+          labelHitRect.setAttribute('rx', '6');
+          labelHitRect.setAttribute('fill', 'transparent');
+          labelHitRect.style.cursor = 'pointer';
+          labelHitRect.style.pointerEvents = 'all';
+          labelHitRect.addEventListener('click', (e: MouseEvent) => {
+            e.stopPropagation();
+            selectedConnectionId = conn.id;
+            drawConnections();
+          });
+          labelHitRect.addEventListener('dblclick', (e: MouseEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            selectedConnectionId = conn.id;
+            void editConnectionLabel(conn.id);
+          });
+          svgEl.appendChild(labelHitRect);
+        }
+      }
+
+      // Dot at source endpoint
+      const srcCircle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      srcCircle.setAttribute('cx', String(x1));
+      srcCircle.setAttribute('cy', String(y1));
+      srcCircle.setAttribute('r', '5');
+      srcCircle.setAttribute('fill', '#23956F');
+      srcCircle.style.pointerEvents = 'none';
+      svgEl.appendChild(srcCircle);
+
+      // Animated flow dot along the path
+      const flowDot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      flowDot.setAttribute('r', '3');
+      flowDot.setAttribute('fill', '#23956F');
+      flowDot.setAttribute('opacity', '0.7');
+      flowDot.style.pointerEvents = 'none';
+      const animateMotion = document.createElementNS('http://www.w3.org/2000/svg', 'animateMotion');
+      animateMotion.setAttribute('dur', '3s');
+      animateMotion.setAttribute('repeatCount', 'indefinite');
+      animateMotion.setAttribute('path', curve);
+      flowDot.appendChild(animateMotion);
+      svgEl.appendChild(flowDot);
+    }
+
+    if (selectedConnectionId && !selectedConnectionStillExists) {
+      selectedConnectionId = null;
+    }
+    updateMiniMap();
+  }
+
+  applyViewportTransform();
+  renderNodes();
+
+  // -- Viewport controls: middle/right-click drag pan + trackpad pan + ctrl-zoom --
+  let isPanning = false;
+  let panStartMouseX = 0;
+  let panStartMouseY = 0;
+  let panStartX = 0;
+  let panStartY = 0;
+
+  canvasArea.addEventListener('contextmenu', (e: MouseEvent) => {
+    e.preventDefault();
+  });
+
+  canvasArea.addEventListener('mousedown', (e: MouseEvent) => {
+    if (e.button !== 1 && e.button !== 2) return;
+    isPanning = true;
+    panStartMouseX = e.clientX;
+    panStartMouseY = e.clientY;
+    panStartX = panX;
+    panStartY = panY;
+    canvasArea.classList.add('cursor-grabbing');
+    e.preventDefault();
+  });
+
+  addManagedListener(document, 'mousemove', (e: MouseEvent) => {
+    if (!isPanning) return;
+    panX = panStartX + (e.clientX - panStartMouseX);
+    panY = panStartY + (e.clientY - panStartMouseY);
+    applyViewportTransform();
+    scheduleDrawConnections();
+  });
+
+  addManagedListener(document, 'mouseup', () => {
+    if (!isPanning) return;
+    isPanning = false;
+    canvasArea.classList.remove('cursor-grabbing');
+  });
+
+  const zoomInBtn = container.querySelector<HTMLButtonElement>('#btn-zoom-in');
+  const zoomOutBtn = container.querySelector<HTMLButtonElement>('#btn-zoom-out');
+  const helpBtn = container.querySelector<HTMLButtonElement>('#btn-canvas-help');
+  const helpPanel = container.querySelector<HTMLElement>('#canvas-help-panel');
+  const helpCloseBtn = container.querySelector<HTMLButtonElement>('#btn-canvas-help-close');
+  const zoomAroundViewportCenter = (delta: number): void => {
+    const rect = canvasArea.getBoundingClientRect();
+    zoomAt(zoom + delta, rect.width / 2, rect.height / 2);
+  };
+  zoomInBtn?.addEventListener('click', () => zoomAroundViewportCenter(ZOOM_STEP));
+  zoomOutBtn?.addEventListener('click', () => zoomAroundViewportCenter(-ZOOM_STEP));
+
+  miniMapEl?.addEventListener('mousedown', (e: MouseEvent) => {
+    if (e.button !== 0) return;
+    if (!miniMapTransform) return;
+    const miniRect = miniMapEl.getBoundingClientRect();
+    const localX = e.clientX - miniRect.left;
+    const localY = e.clientY - miniRect.top;
+    const worldX = (localX - miniMapTransform.offsetX) / miniMapTransform.scale + miniMapTransform.minX;
+    const worldY = (localY - miniMapTransform.offsetY) / miniMapTransform.scale + miniMapTransform.minY;
+    const canvasRect = canvasArea.getBoundingClientRect();
+    panX = canvasRect.width / 2 - worldX * zoom;
+    panY = canvasRect.height / 2 - worldY * zoom;
+    applyViewportTransform();
+    drawConnections();
+    e.preventDefault();
+    e.stopPropagation();
+  });
+
+  let helpPanelOpen = false;
+  const setHelpPanelOpen = (open: boolean): void => {
+    helpPanelOpen = open;
+    helpPanel?.classList.toggle('hidden', !open);
+    if (helpBtn) {
+      helpBtn.setAttribute('aria-expanded', String(open));
+      helpBtn.classList.toggle('text-primary', open);
+      helpBtn.classList.toggle('bg-primary/10', open);
+    }
+  };
+
+  helpBtn?.addEventListener('click', (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setHelpPanelOpen(!helpPanelOpen);
+  });
+
+  helpCloseBtn?.addEventListener('click', (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setHelpPanelOpen(false);
+  });
+
+  addManagedListener(document, 'click', (e: MouseEvent) => {
+    if (!helpPanelOpen) return;
+    const target = e.target as HTMLElement;
+    if (target.closest('#canvas-help-panel') || target.closest('#btn-canvas-help')) return;
+    setHelpPanelOpen(false);
+  });
+
+  // Trackpad pan (two-finger scroll) / ctrl-pinch zoom
+  canvasArea.addEventListener('wheel', (e: WheelEvent) => {
+    e.preventDefault();
+    if (e.ctrlKey || e.metaKey) {
+      const rect = canvasArea.getBoundingClientRect();
+      const focalX = e.clientX - rect.left;
+      const focalY = e.clientY - rect.top;
+      const scaleFactor = Math.exp(-normalizeWheelDelta(e) * 0.0025);
+      zoomAt(zoom * scaleFactor, focalX, focalY);
+    } else {
+      let { dx, dy } = normalizeWheelDeltas(e);
+      // Some devices/browsers map horizontal trackpad movement to shift+wheel (deltaX≈0, deltaY carries horizontal intent).
+      if (e.shiftKey && Math.abs(dx) < 0.01 && Math.abs(dy) > 0) {
+        dx = dy;
+        dy = 0;
+      }
+      panX -= dx;
+      panY -= dy;
+      applyViewportTransform();
+      scheduleDrawConnections();
+    }
+  }, { passive: false });
+
+  // Safari/macOS trackpad pinch-to-zoom uses gesture events.
+  // TypeScript DOM lib doesn't include GestureEvent, so we treat it as unknown.
+  let gestureStartZoom = zoom;
+  const onGestureStart = (event: Event): void => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = event as any;
+    gestureStartZoom = zoom;
+    if (typeof e?.preventDefault === 'function') e.preventDefault();
+  };
+  const onGestureChange = (event: Event): void => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const e = event as any;
+    if (typeof e?.preventDefault === 'function') e.preventDefault();
+    if (typeof e?.scale !== 'number') return;
+    const rect = canvasArea.getBoundingClientRect();
+    const focalX = (typeof e.clientX === 'number' ? e.clientX : rect.left + rect.width / 2) - rect.left;
+    const focalY = (typeof e.clientY === 'number' ? e.clientY : rect.top + rect.height / 2) - rect.top;
+    zoomAt(gestureStartZoom * e.scale, focalX, focalY);
+  };
+
+  canvasArea.addEventListener('gesturestart', onGestureStart as EventListener, { passive: false } as AddEventListenerOptions);
+  canvasArea.addEventListener('gesturechange', onGestureChange as EventListener, { passive: false } as AddEventListenerOptions);
+  registerTeardown(() => {
+    canvasArea.removeEventListener('gesturestart', onGestureStart as EventListener);
+    canvasArea.removeEventListener('gesturechange', onGestureChange as EventListener);
+  });
+
+  const MIN_TRANSCRIPT_ITERATION_LENGTH = 20;
+  let transcriptCorpusTexts: string[] = [];
+  let stagedTranscriptFiles: StagedTranscriptFile[] = [];
+  let transcriptIterationBusy = false;
+  let transcriptIterationStatus: { tone: 'info' | 'success' | 'error'; text: string } | null = null;
+
+  const transcriptDropZone = container.querySelector<HTMLElement>('#canvas-transcript-drop-zone');
+  const transcriptUploadButton = container.querySelector<HTMLButtonElement>('#btn-upload-canvas-transcripts');
+  const transcriptFileInput = container.querySelector<HTMLInputElement>('#canvas-transcript-file-input');
+  const transcriptIterateButton = container.querySelector<HTMLButtonElement>('#btn-iterate-transcript-flow');
+  const transcriptMetaHost = container.querySelector<HTMLElement>('#canvas-transcript-meta');
+  const transcriptStatusHost = container.querySelector<HTMLElement>('#canvas-transcript-status');
+  const transcriptStagedListHost = container.querySelector<HTMLElement>('#canvas-transcript-staged-list');
+
+  function normalizeTranscriptText(input: string): string {
+    return normalizeLineEndings(input).trim();
+  }
+
+  function dedupeTranscriptCorpus(corpus: string[]): string[] {
+    const dedupe = new Set<string>();
+    const normalized: string[] = [];
+    for (const entry of corpus) {
+      const next = normalizeTranscriptText(entry);
+      if (next.length < MIN_TRANSCRIPT_ITERATION_LENGTH) continue;
+      if (dedupe.has(next)) continue;
+      dedupe.add(next);
+      normalized.push(next);
+    }
+    return normalized;
+  }
+
+  function collectIterationCorpus(): string[] {
+    return dedupeTranscriptCorpus([
+      ...transcriptCorpusTexts,
+      ...stagedTranscriptFiles.map((file) => file.content),
+    ]);
+  }
+
+  function setTranscriptIterationStatus(
+    tone: 'info' | 'success' | 'error',
+    text: string,
+  ): void {
+    transcriptIterationStatus = { tone, text };
+  }
+
+  function renderTranscriptIterationStatus(): void {
+    if (!transcriptStatusHost) return;
+    if (!transcriptIterationStatus) {
+      transcriptStatusHost.className = 'hidden text-[10px] rounded px-2 py-1';
+      transcriptStatusHost.textContent = '';
+      return;
+    }
+
+    const toneClass = transcriptIterationStatus.tone === 'success'
+      ? 'text-emerald-700 dark:text-emerald-200 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-900/40'
+      : transcriptIterationStatus.tone === 'error'
+        ? 'text-red-700 dark:text-red-200 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900/40'
+        : 'text-slate-700 dark:text-slate-200 bg-slate-50 dark:bg-slate-900/40 border border-slate-200 dark:border-slate-700';
+    transcriptStatusHost.className = `text-[10px] rounded px-2 py-1 ${toneClass}`;
+    transcriptStatusHost.textContent = transcriptIterationStatus.text;
+  }
+
+  function renderTranscriptStagedFiles(): void {
+    if (!transcriptStagedListHost) return;
+    if (stagedTranscriptFiles.length === 0) {
+      transcriptStagedListHost.classList.add('hidden');
+      transcriptStagedListHost.innerHTML = '';
+      return;
+    }
+
+    transcriptStagedListHost.classList.remove('hidden');
+    transcriptStagedListHost.innerHTML = stagedTranscriptFiles.map((file) => `
+      <div class="flex items-center justify-between gap-2 rounded border border-slate-200 dark:border-slate-700 bg-white dark:bg-black/20 px-2 py-1.5">
+        <div class="min-w-0">
+          <p class="text-[10px] font-medium text-slate-700 dark:text-slate-200 truncate" title="${escapeHTML(file.name)}">${escapeHTML(file.name)}</p>
+          <p class="text-[9px] text-slate-400">${(file.content.length / 1024).toFixed(1)} KB</p>
+        </div>
+        <button type="button" class="canvas-transcript-remove p-1 rounded text-slate-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-950/30 transition-colors" data-staged-transcript-id="${escapeHTML(file.id)}" title="Remove transcript">
+          <span class="material-icons text-[14px]">close</span>
+        </button>
+      </div>
+    `).join('');
+
+    transcriptStagedListHost.querySelectorAll<HTMLButtonElement>('.canvas-transcript-remove').forEach((button) => {
+      button.addEventListener('click', () => {
+        const fileId = button.dataset.stagedTranscriptId;
+        if (!fileId) return;
+        stagedTranscriptFiles = stagedTranscriptFiles.filter((entry) => entry.id !== fileId);
+        renderTranscriptIterationPanelState();
+      });
+    });
+  }
+
+  function renderTranscriptIterationPanelState(): void {
+    if (!isTranscriptWorkspace) return;
+
+    const corpusSize = transcriptCorpusTexts.length;
+    const stagedSize = stagedTranscriptFiles.length;
+    if (transcriptMetaHost) {
+      transcriptMetaHost.textContent = `${corpusSize} stored transcripts | ${stagedSize} staged for next iteration`;
+    }
+
+    if (transcriptIterateButton) {
+      transcriptIterateButton.disabled = transcriptIterationBusy || collectIterationCorpus().length === 0;
+      transcriptIterateButton.innerHTML = transcriptIterationBusy
+        ? '<span class="material-icons text-sm">hourglass_top</span> Iterating...'
+        : '<span class="material-icons text-sm">auto_fix_high</span> Iterate Flow';
+    }
+
+    renderTranscriptStagedFiles();
+    renderTranscriptIterationStatus();
+  }
+
+  function toTranscriptFlowNodesFromProject(): TranscriptFlowNode[] {
+    return project!.nodes.map((node) => ({
+      id: node.id,
+      label: node.label,
+      type: node.type as TranscriptFlowNode['type'],
+      icon: resolveNodeIcon(node.icon, node.type),
+      content: node.content,
+      meta: { ...node.meta },
+    }));
+  }
+
+  function toTranscriptFlowConnectionsFromProject(): TranscriptFlowConnection[] {
+    return project!.connections.map((connection) => ({
+      from: connection.from,
+      to: connection.to,
+      label: normalizeConnectionLabel(connection.label ?? 'Next') || 'Next',
+      reason: normalizeConnectionLabel(connection.label ?? 'Next') || 'Next',
+    }));
+  }
+
+  function replaceProjectGraphFromTranscriptFlow(flow: TranscriptFlowResult): Record<string, { x: number; y: number }> {
+    const layout = buildFlowRenderState(flow, {}).layout;
+    const nodeIdMap = new Map<string, string>();
+
+    for (const connection of [...project!.connections]) {
+      store.removeConnection(projectId, connection.id);
+    }
+    for (const node of [...project!.nodes]) {
+      store.removeNode(projectId, node.id);
+    }
+
+    for (const [index, flowNode] of flow.nodes.entries()) {
+      const nodePosition = layout[flowNode.id] ?? { x: 80, y: 80 };
+      const seededColor = readNodeColorMeta(flowNode.meta ?? {}) ?? getAutoNodeColor(index);
+      const promptNode: PromptNode = {
+        id: uid(),
+        type: (flowNode.type as NodeType) ?? 'custom',
+        label: flowNode.label,
+        icon: resolveNodeIcon(flowNode.icon ?? '', (flowNode.type as NodeType) ?? 'custom'),
+        x: nodePosition.x,
+        y: nodePosition.y,
+        content: flowNode.content ?? flowNode.label,
+        meta: withNodeColorMeta(flowNode.meta ?? {}, seededColor),
+      };
+      store.addNode(projectId, promptNode);
+      nodeIdMap.set(flowNode.id, promptNode.id);
+    }
+
+    for (const connection of flow.connections) {
+      const fromNodeId = nodeIdMap.get(connection.from);
+      const toNodeId = nodeIdMap.get(connection.to);
+      if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) continue;
+      store.addConnection(projectId, fromNodeId, toNodeId, normalizeConnectionLabel(connection.reason ?? connection.label ?? '') || 'Next');
+    }
+
+    renderNodes();
+    return layout;
+  }
+
+  async function stageTranscriptFiles(files: File[]): Promise<void> {
+    if (!isTranscriptWorkspace || files.length === 0) return;
+
+    let accepted = 0;
+    let skipped = 0;
+    const nextEntries: StagedTranscriptFile[] = [];
+    for (const file of files) {
+      const raw = await file.text();
+      const normalized = normalizeTranscriptText(raw);
+      if (normalized.length < MIN_TRANSCRIPT_ITERATION_LENGTH) {
+        skipped += 1;
+        continue;
+      }
+      accepted += 1;
+      nextEntries.push({
+        id: uid(),
+        name: file.name,
+        content: normalized,
+      });
+    }
+
+    if (nextEntries.length > 0) {
+      stagedTranscriptFiles = [...stagedTranscriptFiles, ...nextEntries];
+      setTranscriptIterationStatus('success', `Staged ${accepted} transcript${accepted === 1 ? '' : 's'} for iteration.`);
+    } else if (files.length > 0) {
+      setTranscriptIterationStatus('error', `No transcripts met the ${MIN_TRANSCRIPT_ITERATION_LENGTH}-character minimum.`);
+    }
+
+    if (skipped > 0 && accepted > 0) {
+      setTranscriptIterationStatus(
+        'info',
+        `Staged ${accepted} transcript${accepted === 1 ? '' : 's'}. Skipped ${skipped} short file${skipped === 1 ? '' : 's'}.`,
+      );
+    }
+
+    renderTranscriptIterationPanelState();
+  }
+
+  async function iterateTranscriptFlow(): Promise<void> {
+    if (!isTranscriptWorkspace || !linkedTranscriptSetId) return;
+    if (transcriptIterationBusy) return;
+
+    const iterationCorpus = collectIterationCorpus();
+    if (iterationCorpus.length === 0) {
+      setTranscriptIterationStatus('error', 'Add transcript files first.');
+      renderTranscriptIterationPanelState();
+      return;
+    }
+
+    transcriptIterationBusy = true;
+    setTranscriptIterationStatus('info', 'Running transcript flow iteration...');
+    renderTranscriptIterationPanelState();
+
+    try {
+      const flow = await generateTranscriptFlow({
+        transcripts: iterationCorpus,
+        existingGraph: {
+          nodes: toTranscriptFlowNodesFromProject(),
+          connections: toTranscriptFlowConnectionsFromProject(),
+        },
+      });
+
+      store.saveAssembledVersion(projectId, 'Pre transcript iteration snapshot');
+      const nodePositionOverrides = replaceProjectGraphFromTranscriptFlow(flow);
+      store.saveAssembledVersion(projectId, 'Transcript iteration update');
+
+      const stagedTranscriptText = stagedTranscriptFiles.map((file) => file.content).join('\n\n---\n\n');
+      const persisted = await persistTranscriptFlowArtifacts({
+        transcript: stagedTranscriptText || iterationCorpus.join('\n\n---\n\n'),
+        flow,
+        projectName: project!.name,
+        projectId,
+        transcriptSetId: linkedTranscriptSetId,
+        metadata: {
+          source: 'canvas-transcript-iteration',
+          stagedTranscriptCount: stagedTranscriptFiles.length,
+          corpusTranscriptCount: iterationCorpus.length,
+        },
+      });
+
+      await upsertTranscriptWorkspaceFlow({
+        transcriptSetId: linkedTranscriptSetId,
+        flow,
+        projectName: project!.name,
+        nodePositionOverrides,
+      });
+
+      store.registerTranscriptFlowDraft(
+        linkedTranscriptSetId,
+        flow,
+        persisted.transcriptFlowId,
+        project!.name,
+      );
+
+      transcriptCorpusTexts = dedupeTranscriptCorpus([
+        ...transcriptCorpusTexts,
+        ...stagedTranscriptFiles.map((file) => file.content),
+      ]);
+      stagedTranscriptFiles = [];
+      setTranscriptIterationStatus('success', 'Transcript flow updated from the latest corpus.');
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Transcript iteration failed.';
+      setTranscriptIterationStatus('error', message);
+    } finally {
+      transcriptIterationBusy = false;
+      renderTranscriptIterationPanelState();
+    }
+  }
+
+  async function hydrateTranscriptCorpus(): Promise<void> {
+    if (!isTranscriptWorkspace || !linkedTranscriptSetId) return;
+    try {
+      const corpus = await listTranscriptCorpus(linkedTranscriptSetId);
+      transcriptCorpusTexts = dedupeTranscriptCorpus(corpus.map((item) => item.content));
+      if (!transcriptIterationStatus) {
+        setTranscriptIterationStatus('info', 'Transcript corpus loaded. You can iterate at any time.');
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load transcript corpus.';
+      setTranscriptIterationStatus('error', message);
+    } finally {
+      renderTranscriptIterationPanelState();
+    }
+  }
+
+  if (isTranscriptWorkspace) {
+    transcriptUploadButton?.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      transcriptFileInput?.click();
+    });
+
+    transcriptDropZone?.addEventListener('dragover', (event) => {
+      event.preventDefault();
+      transcriptDropZone.classList.add('border-primary');
+    });
+
+    transcriptDropZone?.addEventListener('dragleave', () => {
+      transcriptDropZone.classList.remove('border-primary');
+    });
+
+    transcriptDropZone?.addEventListener('drop', (event) => {
+      event.preventDefault();
+      transcriptDropZone.classList.remove('border-primary');
+      const files = Array.from(event.dataTransfer?.files ?? []);
+      void stageTranscriptFiles(files);
+    });
+
+    transcriptFileInput?.addEventListener('change', () => {
+      const files = Array.from(transcriptFileInput.files ?? []);
+      transcriptFileInput.value = '';
+      void stageTranscriptFiles(files);
+    });
+
+    transcriptIterateButton?.addEventListener('click', () => {
+      void iterateTranscriptFlow();
+    });
+
+    renderTranscriptIterationPanelState();
+    void hydrateTranscriptCorpus();
+  }
+
+  interface SidebarBlockData {
+    type: PromptNode['type'];
+    label: string;
+    icon: string;
+    defaultContent: string;
+    meta: Record<string, string>;
+  }
+
+  const sidebarBlocksHost = container.querySelector<HTMLElement>('#sidebar-blocks');
+
+  sidebarBlocksHost?.addEventListener('click', (e) => {
+    const target = e.target as HTMLElement;
+    const toggleBtn = target.closest('.sidebar-category-toggle');
+    if (toggleBtn) {
+      const section = toggleBtn.closest('section');
+      if (section) {
+        const category = section.dataset.category;
+        if (category) {
+          const isCollapsed = section.dataset.collapsed === 'true';
+          const nextCollapsed = !isCollapsed;
+          section.dataset.collapsed = String(nextCollapsed);
+          toggleBtn.setAttribute('aria-expanded', String(!nextCollapsed));
+          if (nextCollapsed) {
+            canvasSidebarCategoryCollapsed.add(category);
+          } else {
+            canvasSidebarCategoryCollapsed.delete(category);
+          }
+        }
+      }
+    }
+  });
+
+  const sidebarSearch = container.querySelector<HTMLInputElement>('#sidebar-search');
+  const sidebar = container.querySelector<HTMLElement>('#canvas-sidebar');
+  const sidebarResizeHandle = container.querySelector<HTMLElement>('#canvas-sidebar-resize-handle');
+  const canvasMain = container.querySelector<HTMLElement>('#canvas-main');
+  const collapseSidebarBtn = container.querySelector<HTMLButtonElement>('#btn-collapse-canvas-sidebar');
+  const openSidebarBtn = container.querySelector<HTMLButtonElement>('#btn-open-canvas-sidebar');
+  let sidebarCollapsed = initialSidebarCollapsed;
+  let sidebarWidth = initialSidebarWidth;
+
+  const clampSidebarWidth = (candidateWidth: number): number => {
+    const hostWidth = canvasMain?.clientWidth ?? window.innerWidth;
+    const maxForViewport = Math.max(MIN_CANVAS_SIDEBAR_WIDTH, hostWidth - 140);
+    const maxWidth = Math.min(MAX_CANVAS_SIDEBAR_WIDTH, maxForViewport);
+    return Math.max(MIN_CANVAS_SIDEBAR_WIDTH, Math.min(maxWidth, candidateWidth));
+  };
+
+  const applySidebarWidthState = (): void => {
+    if (!canvasMain) return;
+    const boundedWidth = clampSidebarWidth(sidebarWidth);
+    if (boundedWidth !== sidebarWidth) {
+      sidebarWidth = boundedWidth;
+      writeCanvasSidebarWidthState(projectId, sidebarWidth);
+    }
+    canvasMain.style.setProperty('--canvas-sidebar-current-width', `${Math.round(sidebarWidth)}px`);
+  };
+
+  const applySidebarCollapsedState = (): void => {
+    if (!sidebar) return;
+    sidebar.classList.toggle('is-collapsed', sidebarCollapsed);
+    if (collapseSidebarBtn) {
+      collapseSidebarBtn.classList.toggle('hidden', sidebarCollapsed);
+      collapseSidebarBtn.setAttribute('aria-expanded', String(!sidebarCollapsed));
+    }
+    if (openSidebarBtn) {
+      openSidebarBtn.classList.toggle('hidden', !sidebarCollapsed);
+      openSidebarBtn.setAttribute('aria-expanded', String(!sidebarCollapsed));
+    }
+    requestAnimationFrame(() => {
+      scheduleDrawConnections();
+    });
+  };
+
+  applySidebarWidthState();
+  applySidebarCollapsedState();
+  collapseSidebarBtn?.addEventListener('click', () => {
+    sidebarCollapsed = true;
+    writeCanvasSidebarCollapsedState(projectId, sidebarCollapsed);
+    applySidebarCollapsedState();
+  });
+  openSidebarBtn?.addEventListener('click', () => {
+    sidebarCollapsed = false;
+    writeCanvasSidebarCollapsedState(projectId, sidebarCollapsed);
+    applySidebarCollapsedState();
+  });
+
+  let stopSidebarResizeDrag: (() => void) | null = null;
+  const beginSidebarResizeDrag = (event: MouseEvent): void => {
+    if (event.button !== 0 || sidebarCollapsed) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = sidebarWidth;
+    document.body.classList.add('canvas-sidebar-resizing');
+
+    const onPointerMove = (moveEvent: MouseEvent): void => {
+      const deltaX = moveEvent.clientX - startX;
+      sidebarWidth = clampSidebarWidth(startWidth + deltaX);
+      writeCanvasSidebarWidthState(projectId, sidebarWidth);
+      applySidebarWidthState();
+      scheduleDrawConnections();
+    };
+
+    const onPointerUp = (): void => {
+      document.removeEventListener('mousemove', onPointerMove);
+      document.removeEventListener('mouseup', onPointerUp);
+      document.body.classList.remove('canvas-sidebar-resizing');
+      stopSidebarResizeDrag = null;
+    };
+
+    stopSidebarResizeDrag = (): void => {
+      document.removeEventListener('mousemove', onPointerMove);
+      document.removeEventListener('mouseup', onPointerUp);
+      document.body.classList.remove('canvas-sidebar-resizing');
+      stopSidebarResizeDrag = null;
+    };
+
+    document.addEventListener('mousemove', onPointerMove);
+    document.addEventListener('mouseup', onPointerUp);
+  };
+  sidebarResizeHandle?.addEventListener('mousedown', beginSidebarResizeDrag);
+  registerTeardown(() => {
+    stopSidebarResizeDrag?.();
+  });
+
+  addManagedListener(window, 'resize', () => {
+    applySidebarWidthState();
+    scheduleDrawConnections();
+  });
+
+  function parseSidebarBlockData(block: HTMLElement): SidebarBlockData {
+    let parsedMeta: Record<string, string> = {};
+    try {
+      const rawMeta = decodeURIComponent(block.dataset.meta ?? '');
+      const candidate = JSON.parse(rawMeta) as unknown;
+      if (
+        candidate &&
+        typeof candidate === 'object' &&
+        !Array.isArray(candidate) &&
+        Object.values(candidate as Record<string, unknown>).every((value) => typeof value === 'string')
+      ) {
+        parsedMeta = candidate as Record<string, string>;
+      }
+    } catch {
+      parsedMeta = {};
+    }
+
+    return {
+      type: (block.dataset.type ?? 'custom') as PromptNode['type'],
+      label: block.dataset.label ?? 'Custom Node',
+      icon: block.dataset.icon ?? 'widgets',
+      defaultContent: decodeURIComponent(block.dataset.default ?? ''),
+      meta: parsedMeta,
+    };
+  }
+
+  function createNodeFromBlockData(blockData: SidebarBlockData, location?: { x: number; y: number }): void {
+    let nodeX = 60;
+    let nodeY = 60;
+
+    if (location) {
+      nodeX = location.x;
+      nodeY = location.y;
+    } else {
+      for (const existingNode of project!.nodes) {
+        const size = getNodeVisualSize(existingNode);
+        const nextX = existingNode.x + size.width + 56;
+        if (nextX > nodeX) {
+          nodeX = nextX;
+          nodeY = existingNode.y;
+        }
+      }
+    }
+
+    const node: PromptNode = {
+      id: uid(),
+      type: blockData.type,
+      label: blockData.label,
+      icon: blockData.icon,
+      x: nodeX,
+      y: nodeY,
+      content: blockData.defaultContent,
+      meta: { ...blockData.meta },
+    };
+    store.addNode(projectId, node);
+    renderNodes();
+  }
+
+  function applySidebarFilter(): void {
+    const query = sidebarSearch?.value.toLowerCase().trim() ?? '';
+    container.querySelectorAll<HTMLElement>('.sidebar-block').forEach((block) => {
+      const label = block.dataset.label?.toLowerCase() ?? '';
+      block.style.display = label.includes(query) ? '' : 'none';
+    });
+  }
+
+  function wireSidebarBlocks(): void {
+    container.querySelectorAll<HTMLElement>('.sidebar-block').forEach((block) => {
+      block.addEventListener('dragstart', (e: DragEvent) => {
+        e.dataTransfer?.setData('text/plain', JSON.stringify(parseSidebarBlockData(block)));
+      });
+
+      block.addEventListener('click', (event: MouseEvent) => {
+        if ((event.target as HTMLElement).closest('.sidebar-custom-delete')) return;
+        createNodeFromBlockData(parseSidebarBlockData(block));
+      });
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.sidebar-custom-delete').forEach((button) => {
+      button.addEventListener('click', async (event: MouseEvent) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const templateId = button.dataset.templateId;
+        if (!templateId) return;
+        if (!(await customConfirm('Delete this custom node template?'))) return;
+        store.removeCustomNodeTemplate(templateId);
+        refreshSidebarBlocks();
+      });
+    });
+  }
+
+  function refreshSidebarBlocks(): void {
+    if (!sidebarBlocksHost) return;
+    const nextCategories = buildSidebarCategories(store.getCustomNodeTemplates(), workspaceMode);
+    sidebarBlocksHost.innerHTML = renderSidebarBlocksHTML(nextCategories);
+    wireSidebarBlocks();
+    applySidebarFilter();
+  }
+
+  wireSidebarBlocks();
+
+  canvasArea.addEventListener('dragover', (e: DragEvent) => {
+    e.preventDefault();
+    canvasArea.classList.add('ring-2', 'ring-primary/30', 'ring-inset');
+  });
+  canvasArea.addEventListener('dragleave', () => {
+    canvasArea.classList.remove('ring-2', 'ring-primary/30', 'ring-inset');
+  });
+  canvasArea.addEventListener('drop', (e: DragEvent) => {
+    e.preventDefault();
+    canvasArea.classList.remove('ring-2', 'ring-primary/30', 'ring-inset');
+    const data = e.dataTransfer?.getData('text/plain');
+    if (!data) return;
+    try {
+      const blockData = JSON.parse(data) as SidebarBlockData;
+      const connectionToSplit = findConnectionNearPoint(e.clientX, e.clientY);
+      const worldPoint = screenToWorld(e.clientX, e.clientY);
+      const newNodeSize: NodeVisualSize = {
+        width: Math.max(NODE_MIN_WIDTH, estimateLabelPixelWidth(String(blockData.label ?? '')) + NODE_DECORATION_WIDTH),
+        height: NODE_VISUAL_HEIGHT,
+      };
+      // Snap to 20px grid
+      const rawX = worldPoint.x - newNodeSize.width / 2;
+      const rawY = worldPoint.y - newNodeSize.height / 2;
+      const location = {
+        x: Math.round(rawX / 20) * 20,
+        y: Math.round(rawY / 20) * 20,
+      };
+      const node: PromptNode = {
+        id: uid(),
+        type: blockData.type,
+        label: blockData.label,
+        icon: blockData.icon,
+        x: location.x,
+        y: location.y,
+        content: blockData.defaultContent,
+        meta: { ...blockData.meta },
+      };
+      store.addNode(projectId, node);
+
+      // If dropped on an existing connection, split it and insert the new node between.
+      if (connectionToSplit) {
+        store.removeConnection(projectId, connectionToSplit.id);
+        store.addConnection(projectId, connectionToSplit.from, node.id, connectionToSplit.label ?? '');
+        store.addConnection(projectId, node.id, connectionToSplit.to);
+      }
+
+      renderNodes();
+    } catch { /* ignore bad data */ }
+  });
+
+  // -- Sidebar search --
+  sidebarSearch?.addEventListener('input', () => {
+    applySidebarFilter();
+  });
+
+  // -- Navigation --
+  container.querySelector('#nav-home')?.addEventListener('click', () => {
+    clearCanvasViewCleanup(container);
+    router.navigate('/');
+  });
+  container.querySelector('#crumb-home')?.addEventListener('click', () => {
+    clearCanvasViewCleanup(container);
+    router.navigate('/');
+  });
+  wireProjectViewTabs(container, projectId, { beforeNavigate: () => clearCanvasViewCleanup(container) });
+
+  // -- Save prompt snapshot for diff/history --
+  container.querySelector('#btn-save-snapshot')?.addEventListener('click', () => {
+    const version = store.saveCurrentState(projectId);
+    const btn = container.querySelector<HTMLButtonElement>('#btn-save-snapshot');
+    if (!btn) return;
+    btn.innerHTML = version
+      ? '<span class="material-icons text-sm">check</span> State saved'
+      : '<span class="material-icons text-sm">info</span> No changes';
+    setTimeout(() => {
+      btn.innerHTML = '<span class="material-icons text-sm">save</span> Save Current State';
+    }, 2000);
+  });
+
+  // -- Copy prompt output (runtime and flow template) --
+  const wireCopyButton = (
+    selector: string,
+    mode: 'runtime' | 'flow-template',
+    idleHTML: string,
+  ): void => {
+    container.querySelector(selector)?.addEventListener('click', () => {
+      const assembled = store.assemblePrompt(projectId, mode);
+      navigator.clipboard.writeText(assembled).then(() => {
+        const btn = container.querySelector<HTMLElement>(selector);
+        if (!btn) return;
+        btn.innerHTML = '<span class="material-icons text-sm">check</span> Copied!';
+        setTimeout(() => {
+          btn.innerHTML = idleHTML;
+        }, 2000);
+      });
+    });
+  };
+
+  wireCopyButton(
+    '#btn-copy-runtime',
+    'runtime',
+    '<span class="material-icons text-sm">content_copy</span> Copy Runtime',
+  );
+  wireCopyButton(
+    '#btn-copy-flow',
+    'flow-template',
+    '<span class="material-icons text-sm">account_tree</span> Copy Flow Template',
+  );
+
+  // Handle UI opening manually if needed, but the click listener handles it.
+
+  toggleTerminalBtn?.addEventListener('click', (e) => {
+    if (!mcpRelayConfig.enabled) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    const isHidden = terminalPanel?.classList.contains('hidden');
+
+    if (isHidden) {
+      terminalPanel?.classList.remove('hidden');
+      requestAnimationFrame(() => {
+        terminalPanel?.setAttribute('data-open', 'true');
+      });
+    } else {
+      terminalPanel?.removeAttribute('data-open');
+      setTimeout(() => terminalPanel?.classList.add('hidden'), 300);
+    }
+  });
+
+  container.querySelector('#btn-terminal-close')?.addEventListener('click', () => {
+    if (terminalPanel) {
+      terminalPanel.removeAttribute('data-open');
+      setTimeout(() => terminalPanel.classList.add('hidden'), 300);
+    }
+  });
+
+  // Auto-save status indicator
+  const saveStatusIcon = container.querySelector<HTMLElement>('#save-status-icon');
+  const saveStatusText = container.querySelector<HTMLElement>('#save-status-text');
+  const saveStatusEl = container.querySelector<HTMLElement>('#save-status');
+  let saveCompleteTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const onAutoSaveStart = (): void => {
+    if (saveCompleteTimer) { clearTimeout(saveCompleteTimer); saveCompleteTimer = null; }
+    if (saveStatusIcon) saveStatusIcon.textContent = 'sync';
+    if (saveStatusText) saveStatusText.textContent = 'Auto-saving\u2026';
+    saveStatusEl?.classList.remove('opacity-60');
+  };
+
+  const onAutoSaveComplete = (): void => {
+    if (saveStatusIcon) saveStatusIcon.textContent = 'cloud_done';
+    if (saveStatusText) saveStatusText.textContent = 'Saved';
+    if (saveCompleteTimer) clearTimeout(saveCompleteTimer);
+    saveCompleteTimer = setTimeout(() => {
+      saveStatusEl?.classList.add('opacity-60');
+    }, 2000);
+  };
+
+  window.addEventListener('store:auto-save-start', onAutoSaveStart);
+  window.addEventListener('store:auto-save-complete', onAutoSaveComplete);
+  registerTeardown(() => {
+    window.removeEventListener('store:auto-save-start', onAutoSaveStart);
+    window.removeEventListener('store:auto-save-complete', onAutoSaveComplete);
+  });
+
+  // Theme toggle
+  wireThemeToggle(container);
+}
+
+function normalizeLineEndings(input: string): string {
+  return input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+}
+
+function escapeHTML(str: string): string {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+

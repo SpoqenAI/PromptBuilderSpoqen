@@ -9,11 +9,20 @@ const WebSocket = require("ws");
 const args = process.argv.slice(2);
 const urlIndex = args.indexOf('--url');
 if (urlIndex === -1 || !args[urlIndex + 1]) {
-    console.error("Usage: npx spoqen-mcp-connector --url <websocket-url>");
-    console.error("Example: npx spoqen-mcp-connector --url wss://app.spoqen.com/agent-relay");
+    console.error("Usage: npx spoqen-mcp-connector --url <websocket-url> [--token <session-token>]");
+    console.error("Example: npx spoqen-mcp-connector --url ws://localhost:5173/agent-relay --token <session-token>");
     process.exit(1);
 }
-const wsUrl = args[urlIndex + 1];
+const rawWsUrl = args[urlIndex + 1];
+
+const tokenIndex = args.indexOf('--token');
+const tokenArg = tokenIndex !== -1 && args[tokenIndex + 1] ? args[tokenIndex + 1] : (process.env.MCP_RELAY_SESSION_TOKEN || '');
+
+let wsUrl = rawWsUrl;
+if (tokenArg && !wsUrl.includes('token=')) {
+    const separator = wsUrl.includes('?') ? '&' : '?';
+    wsUrl = `${wsUrl}${separator}token=${encodeURIComponent(tokenArg)}`;
+}
 
 // State
 let latestCanvasState = { nodes: [], connections: [] };
@@ -21,6 +30,7 @@ let isWsConnected = false;
 
 // 1. Connect to Web App Relay
 const ws = new WebSocket(wsUrl);
+
 
 ws.on('open', () => {
     isWsConnected = true;

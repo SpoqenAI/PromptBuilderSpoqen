@@ -14,47 +14,110 @@ export interface DiffStats {
 }
 
 function escapeHTML(str: string): string {
-  const div = document.createElement('div');
-  div.textContent = str;
-  return div.innerHTML;
+  if (typeof document !== 'undefined') {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 /**
- * Compute line-level diff between two texts.
+ * Compute line-level diff between two texts using Myers O(ND) diff algorithm.
  */
 export function computeDiff(oldText: string, newText: string): DiffEntry[] {
-  const oldLines = (oldText || '').split('\n');
-  const newLines = (newText || '').split('\n');
-  const m = oldLines.length;
-  const n = newLines.length;
+  if (!oldText && !newText) return [];
+  const oldLines = oldText ? oldText.split('\n') : [];
+  const newLines = newText ? newText.split('\n') : [];
+  const n = oldLines.length;
+  const m = newLines.length;
 
-  // LCS DP table
-  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      dp[i][j] = oldLines[i - 1] === newLines[j - 1]
-        ? dp[i - 1][j - 1] + 1
-        : Math.max(dp[i - 1][j], dp[i][j - 1]);
-    }
+  if (n === 0 && m === 0) return [];
+  if (n === 0) {
+    return newLines.map((line) => ({ type: 'add', line }));
+  }
+  if (m === 0) {
+    return oldLines.map((line) => ({ type: 'remove', line }));
   }
 
-  // Backtrack
+  const max = n + m;
+  const offset = max;
+  const v = new Int32Array(2 * max + 1);
+  v.fill(-1);
+  v[offset + 1] = 0;
+
+  const trace: Int32Array[] = [];
+  let reached = false;
+
+  for (let d = 0; d <= max; d++) {
+    trace.push(new Int32Array(v));
+
+    for (let k = -d; k <= d; k += 2) {
+      let x: number;
+      if (k === -d || (k !== d && v[offset + k - 1] < v[offset + k + 1])) {
+        x = v[offset + k + 1];
+      } else {
+        x = v[offset + k - 1] + 1;
+      }
+
+      let y = x - k;
+      while (x < n && y < m && oldLines[x] === newLines[y]) {
+        x++;
+        y++;
+      }
+
+      v[offset + k] = x;
+      if (x >= n && y >= m) {
+        reached = true;
+        break;
+      }
+    }
+    if (reached) break;
+  }
+
   const result: DiffEntry[] = [];
-  let i = m, j = n;
-  while (i > 0 || j > 0) {
-    if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-      result.unshift({ type: 'equal', line: oldLines[i - 1] });
-      i--; j--;
-    } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      result.unshift({ type: 'add', line: newLines[j - 1] });
-      j--;
+  let x = n;
+  let y = m;
+
+  for (let d = trace.length - 1; d >= 0; d--) {
+    const vPrev = trace[d];
+    const k = x - y;
+    let prevK: number;
+
+    if (k === -d || (k !== d && vPrev[offset + k - 1] < vPrev[offset + k + 1])) {
+      prevK = k + 1;
     } else {
-      result.unshift({ type: 'remove', line: oldLines[i - 1] });
-      i--;
+      prevK = k - 1;
+    }
+
+    const prevX = vPrev[offset + prevK];
+    const prevY = prevX - prevK;
+
+    while (x > prevX && y > prevY) {
+      x--;
+      y--;
+      result.unshift({ type: 'equal', line: oldLines[x] });
+    }
+
+    if (d > 0) {
+      if (x === prevX) {
+        y--;
+        result.unshift({ type: 'add', line: newLines[y] });
+      } else {
+        x--;
+        result.unshift({ type: 'remove', line: oldLines[x] });
+      }
     }
   }
+
   return result;
 }
+
 
 /**
  * Generate side-by-side diff HTML panels.

@@ -14,11 +14,14 @@
 - `npm run verify` (runs lint, test, build)
 
 ## MCP relay deployment note
-- The in-repo Vite MCP relay plugin only runs in local dev.
+- The in-repo Vite MCP relay plugin runs in local dev and validates session tokens to secure agent communication.
+- Connect local CLI agents using:
+  `node mcp-connector/index.js --url ws://localhost:5173/agent-relay --token <session-token>`
 - For production, keep `NEXT_PUBLIC_ENABLE_MCP_RELAY=false` unless you deploy a real websocket relay.
 - If you deploy one, set:
   - `NEXT_PUBLIC_ENABLE_MCP_RELAY=true`
   - `NEXT_PUBLIC_MCP_RELAY_URL` to your relay origin/base path.
+
 
 ## Optional debug ingest
 - Local agent/debug ingest logging is disabled unless `NEXT_PUBLIC_AGENT_LOG_INGEST_URL` is set.

@@ -175,7 +175,128 @@ function toTranscriptFlowResult(data: Record<string, unknown>): TranscriptFlowRe
     throw new Error('Agent did not produce any nodes.');
   }
 
-  return { title, summary, model, nodes, connections, iterations, toolCalls, warning };
+  const normalizedGraph = enforceSingleStartAndEndNodes(nodes, connections);
+
+  return {
+    title,
+    summary,
+    model,
+    nodes: normalizedGraph.nodes,
+    connections: normalizedGraph.connections,
+    iterations,
+    toolCalls,
+    warning,
+  };
+}
+
+/**
+ * Ensures that a flowchart graph contains exactly one start node and exactly one end node,
+ * re-routing edges and connecting any dangling leaves to the terminal node.
+ */
+export function enforceSingleStartAndEndNodes(
+  inputNodes: TranscriptFlowNode[],
+  inputConnections: TranscriptFlowConnection[],
+): { nodes: TranscriptFlowNode[]; connections: TranscriptFlowConnection[] } {
+  if (inputNodes.length === 0) {
+    return { nodes: [], connections: [] };
+  }
+
+  let nodes = [...inputNodes];
+  let connections = [...inputConnections];
+
+  // 1. Ensure exactly ONE start node
+  let startNodes = nodes.filter((n) => n.type === 'start');
+  if (startNodes.length === 0) {
+    const incomingCounts = new Map<string, number>();
+    for (const n of nodes) incomingCounts.set(n.id, 0);
+    for (const c of connections) {
+      incomingCounts.set(c.to, (incomingCounts.get(c.to) ?? 0) + 1);
+    }
+    const rootNode = nodes.find((n) => (incomingCounts.get(n.id) ?? 0) === 0) ?? nodes[0];
+    const newStart: TranscriptFlowNode = {
+      id: 'start_node',
+      label: 'Call Start',
+      type: 'start',
+    };
+    nodes.unshift(newStart);
+    if (rootNode && rootNode.id !== newStart.id) {
+      connections.unshift({ from: newStart.id, to: rootNode.id, label: '' });
+    }
+    startNodes = [newStart];
+  } else if (startNodes.length > 1) {
+    const primaryStart = startNodes[0];
+    const extraStartIds = new Set(startNodes.slice(1).map((n) => n.id));
+
+    connections = connections.map((conn) => {
+      let from = conn.from;
+      let to = conn.to;
+      if (extraStartIds.has(from)) from = primaryStart.id;
+      if (extraStartIds.has(to)) to = primaryStart.id;
+      return { ...conn, from, to };
+    });
+
+    nodes = nodes.filter((n) => !extraStartIds.has(n.id));
+  }
+
+  // 2. Ensure exactly ONE end node
+  let endNodes = nodes.filter((n) => n.type === 'end');
+  let primaryEnd: TranscriptFlowNode;
+
+  if (endNodes.length === 0) {
+    primaryEnd = {
+      id: 'end_node',
+      label: 'Call End',
+      type: 'end',
+    };
+    nodes.push(primaryEnd);
+  } else {
+    primaryEnd = endNodes[0];
+    if (endNodes.length > 1) {
+      const extraEndIds = new Set(endNodes.slice(1).map((n) => n.id));
+
+      connections = connections.map((conn) => {
+        let from = conn.from;
+        let to = conn.to;
+        if (extraEndIds.has(to)) to = primaryEnd.id;
+        if (extraEndIds.has(from)) from = primaryEnd.id;
+        return { ...conn, from, to };
+      });
+
+      nodes = nodes.filter((n) => !extraEndIds.has(n.id));
+    }
+  }
+
+  // End node must not have outgoing edges
+  connections = connections.filter((c) => c.from !== primaryEnd.id);
+
+  // 3. Connect any dangling leaf/sink nodes (except primaryEnd itself) to primaryEnd
+  const outgoingCounts = new Map<string, number>();
+  for (const n of nodes) outgoingCounts.set(n.id, 0);
+  for (const c of connections) {
+    outgoingCounts.set(c.from, (outgoingCounts.get(c.from) ?? 0) + 1);
+  }
+
+  for (const node of nodes) {
+    if (node.id === primaryEnd.id) continue;
+    if ((outgoingCounts.get(node.id) ?? 0) === 0) {
+      connections.push({ from: node.id, to: primaryEnd.id, label: '' });
+      outgoingCounts.set(node.id, 1);
+    }
+  }
+
+  // 4. Remove self-loops and duplicate edges
+  const validIds = new Set(nodes.map((n) => n.id));
+  const seen = new Set<string>();
+  connections = connections.filter((c) => {
+    if (c.from === c.to) return false;
+    if (!validIds.has(c.from) || !validIds.has(c.to)) return false;
+    const key = `${c.from}->${c.to}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  return { nodes, connections };
 }
 
 // ---------------------------------------------------------------------------

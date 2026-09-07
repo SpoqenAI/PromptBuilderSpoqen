@@ -19,8 +19,17 @@ export async function consumeCredits(orgId: string, amount: number): Promise<Con
   const admin = createAdminClient();
 
   try {
-    // Use RPC for atomic read-check-update via a Postgres function.
-    // If the RPC doesn't exist yet, fall back to a two-step approach.
+    // Use RPC for atomic read-check-update via a Postgres function with FOR UPDATE row lock.
+    const { data: rpcResult, error: rpcErr } = await admin.rpc('consume_org_credits', {
+      p_org_id: orgId,
+      p_amount: amount,
+    });
+
+    if (!rpcErr && (rpcResult === 'ok' || rpcResult === 'insufficient')) {
+      return rpcResult as ConsumeResult;
+    }
+
+    // Fallback if RPC is not yet available in the environment
     const { data: org, error: readErr } = await admin
       .from('organizations')
       .select('monthly_credits, top_up_credits')

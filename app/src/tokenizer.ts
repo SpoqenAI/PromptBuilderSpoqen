@@ -81,17 +81,59 @@ export function tokenize(text: string): Token[] {
   }));
 }
 
-/**
- * Count tokens in text.
- */
-export function countTokens(text: string): number {
-  if (!text) return 0;
-  if (encoder) {
-    return encoder.encode(text).length;
-  }
-  const matches = text.match(GPT2_PATTERN);
-  return matches ? matches.length : 0;
+export type ModelTokenFamily = 'cl100k' | 'o200k' | 'gemini' | 'llama' | 'claude';
+
+export function detectModelFamily(model?: string): ModelTokenFamily {
+  if (!model) return 'cl100k';
+  const m = model.toLowerCase();
+  if (m.includes('gpt-4o') || m.includes('o1') || m.includes('o3') || m.includes('o200k')) return 'o200k';
+  if (m.includes('gemini')) return 'gemini';
+  if (m.includes('llama') || m.includes('groq')) return 'llama';
+  if (m.includes('claude') || m.includes('anthropic')) return 'claude';
+  return 'cl100k';
 }
+
+/**
+ * Relative token efficiency ratio compared to cl100k_base baseline.
+ * Values < 1.0 mean fewer tokens are generated for the same text (denser vocabulary).
+ */
+export function getModelTokenRatio(model?: string): number {
+  const family = detectModelFamily(model);
+  switch (family) {
+    case 'o200k':
+      return 0.88; // o200k vocab produces ~12% fewer tokens on average
+    case 'gemini':
+      return 0.95; // 256k vocab is slightly more compact
+    case 'llama':
+      return 0.96; // 128k vocab
+    case 'claude':
+      return 1.02;
+    case 'cl100k':
+    default:
+      return 1.0;
+  }
+}
+
+/**
+ * Count tokens in text, optionally scaled for specific model tokenizers.
+ */
+export function countTokens(text: string, model?: string): number {
+  if (!text) return 0;
+  let baseCount = 0;
+  if (encoder) {
+    baseCount = encoder.encode(text).length;
+  } else {
+    const matches = text.match(GPT2_PATTERN);
+    baseCount = matches ? matches.length : 0;
+  }
+
+  if (model) {
+    const ratio = getModelTokenRatio(model);
+    return Math.max(1, Math.round(baseCount * ratio));
+  }
+  return baseCount;
+}
+
 
 /** Whether real tiktoken is active (WASM loaded). */
 export function isRealTokenizer(): boolean {

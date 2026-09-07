@@ -60,12 +60,12 @@ The backend consists entirely of Supabase services. Business logic that requires
 
 Key Edge Functions:
 - **`github-app-callback` & `github-connect-url`**: Implements standard GitHub App OAuth flow without requiring Personal Access Tokens in the UI. Mints tokens server-side.
-- **`github-prompt-sync`**: Syncs generated prompt templates back to linked repositories.
-- **`transcript-flow-map`**: Uses Groq (`GROQ_API_KEY`) or OpenAI (`OPENAI_API_KEY`) to parse unstructured conversation transcripts into deterministic node flow maps (nodes and connections).
-- **`prompt-repair-run` & `apply-prompt-repair`**: Handles AI-driven modifications to prompt flows.
+- **`transcript-flow-map`**: Uses Gemini 2.5 Flash Lite (`GEMINI_API_KEY`, fallback to `gemini-2.0-flash`) with function/tool calling (`add_node`, `connect_nodes`, etc.) to parse unstructured conversation transcripts into deterministic node flow maps, strictly enforcing single start and end node invariants.
+- **`flow-to-prompt`**: Uses Groq (`GROQ_API_KEY`, `llama-3.3-70b-versatile`) or OpenAI (`OPENAI_API_KEY`) to compile canvas node diagrams into production-ready prompts, with a deterministic rule-based fallback when no LLM key is configured.
+- **`prompt-repair-run` & `apply-prompt-repair`**: Handles AI-driven modifications and patch generation for prompt flows using Groq/OpenAI.
 
 ### Deployment of Functions
-Functions are strictly deployed using PowerShell scripts (e.g., `deploy-all-functions.ps1`, `deploy-transcript-flow-map.ps1`). Notably, `transcript-flow-map` must be deployed with `--no-verify-jwt` as it manages token verification internally rather than at the Supabase API Gateway.
+Functions are strictly deployed using PowerShell scripts (e.g., `deploy-all-functions.ps1`, `deploy-transcript-flow-map.ps1`). Notably, `transcript-flow-map` and other handler-auth functions must be deployed with `--no-verify-jwt` as they manage token verification internally rather than at the Supabase API Gateway.
 
 ## 6. Data Model (PostgreSQL)
 
@@ -82,20 +82,23 @@ The primary tables defined in Supabase migrations include:
   - Canonical nodes and alignments for comparing structured flows to loose chat text.
 - **Optimization Domain**:
   - `optimization_runs`, `optimization_run_patches`
-- **Integrations**:
+- **Integrations & Settings**:
   - `github_installations`, `github_app_oauth_states`
+  - `project_github_sync`: Per-project GitHub sync repository, branch, and target prompt path settings with row-level security.
+  - `user_credits`, `organizations`: Credit ledger backed by `consume_org_credits` atomic stored procedure with row-level locks and `get_or_init_user_credits` provisioning RPC.
 
-Data schema types are automatically generated and exist in `app/src/database.types.ts`.
+Data schema types are automatically generated and exist in `app/src/database.types.ts`. Sequential migrations in `supabase/migrations/` are the canonical source of truth for all schemas.
 
 ## 7. Model Context Protocol (MCP) Integration
 
 The application natively supports local AI agents editing the canvas via the Model Context Protocol.
 
 **How it works:**
-1. A Vite plugin (`app/vite.plugin.mcp-relay.ts`) acts as a WebSocket message broker. It opens two routes:
+1. A Vite plugin (`app/vite.plugin.mcp-relay.ts`) acts as a WebSocket message broker. It generates an ephemeral local session token (or respects `MCP_RELAY_SESSION_TOKEN`) and opens two routes:
    - `/canvas-sync`: Used by the browser frontend to push the current canvas state up and listen for changes.
-   - `/agent-relay`: Used by local CLI tools/agents to request canvas state and send mutation commands.
-2. The `spoqen-mcp-connector` node application (in `app/mcp-connector`) runs locally on the user's machine, opening a secure connection over the MCP standard. It connects to the `/agent-relay` websocket, broadcasting the canvas state to the user's AI client, and acting on instructions to mutate the canvas layout or node properties in real-time.
+   - `/agent-relay`: Used by local CLI tools/agents to request canvas state and send mutation commands, authenticating with the session token via `?token=...` or `x-mcp-relay-token`.
+2. The `spoqen-mcp-connector` node application (in `app/mcp-connector`) runs locally on the user's machine, opening a secure connection over the MCP standard. It connects to the `/agent-relay` websocket using the session token, broadcasting the canvas state to the user's AI client, and acting on instructions to mutate the canvas layout or node properties in real-time.
+
 
 ## 8. General Coding Rules for AI Agents
 - DO NOT use React, React hooks, or JSX. This is a Vanilla TS application. Use standard DOM (`document.createElement`, `.innerHTML`, `addEventListener`).

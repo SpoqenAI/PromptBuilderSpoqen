@@ -1,6 +1,8 @@
 import type { Plugin } from 'vite';
 import type { WebSocketServer as WebSocketServerType, WebSocket as WebSocketType } from 'ws';
 
+import { randomUUID } from 'crypto';
+
 // Global state for canvas connected from frontend
 let currentCanvasState: any = { nodes: [], connections: [] };
 
@@ -10,10 +12,16 @@ const canvasClients = new Set<WebSocketType>();
 // Agent/connector clients (the local MCP CLI connector connecting to the cloud)
 const agentClients = new Set<WebSocketType>();
 
+// Local session token (generated on startup or configured via env)
+export const relaySessionToken = process.env.MCP_RELAY_SESSION_TOKEN || randomUUID();
+
 export function mcpRelayPlugin(): Plugin {
     return {
         name: 'vite-plugin-mcp-relay',
         async configureServer(server) {
+            console.log(`[mcp-relay] Session token: ${relaySessionToken}`);
+            console.log(`[mcp-relay] Connector CLI: node mcp-connector/index.js --url ws://localhost:5173/agent-relay --token ${relaySessionToken}`);
+
             if (!server.httpServer) return;
 
             const { WebSocketServer } = await import('ws');
@@ -22,8 +30,20 @@ export function mcpRelayPlugin(): Plugin {
             server.httpServer.on('upgrade', (request, socket, head) => {
                 if (request.url?.includes('/vite-hmr')) return;
 
-                const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+                const urlObj = new URL(request.url || '', `http://${request.headers.host}`);
+                const pathname = urlObj.pathname;
                 if (pathname === '/canvas-sync' || pathname === '/agent-relay') {
+                    const queryToken = urlObj.searchParams.get('token');
+                    const authHeader = request.headers['x-mcp-relay-token'] as string | undefined;
+                    const clientToken = queryToken || authHeader;
+
+                    // If a token is provided and does not match the active session token, reject
+                    if (clientToken && clientToken !== relaySessionToken) {
+                        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+                        socket.destroy();
+                        return;
+                    }
+
                     wss.handleUpgrade(request, socket, head, (ws) => {
                         wss.emit('connection', ws, request);
                     });
@@ -32,6 +52,7 @@ export function mcpRelayPlugin(): Plugin {
 
             wss.on('connection', (ws, request) => {
                 const pathname = new URL(request.url || '', `http://${request.headers.host}`).pathname;
+
 
                 if (pathname === '/canvas-sync') {
                     // --- Web Browser Canvas Connection ---

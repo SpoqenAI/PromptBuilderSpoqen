@@ -8,17 +8,18 @@ It combines a Vanilla TypeScript frontend, Supabase backend services, edge-funct
 - A node-based prompt canvas editor and transcript-import workspace.
 - Supabase-backed persistence, auth, and row-level security policies.
 - Edge functions for:
-  - transcript-to-flow mapping,
-  - flow-to-prompt generation,
+  - transcript-to-flow mapping (strictly enforcing exactly one start and one end node every time),
+  - flow-to-prompt generation (using Groq / OpenAI),
   - prompt repair workflows,
-  - GitHub App installation + prompt sync.
-- Local MCP relay + connector support for agent-driven canvas edits.
+  - GitHub App installation + database-backed prompt sync.
+- Local MCP relay + connector support with session token authentication for agent-driven canvas edits.
+
 
 ## Tech Stack
 
 - Frontend: Vite, Vanilla TypeScript, Tailwind CSS v4, Vitest
 - Backend: Supabase (Postgres, Auth, Edge Functions)
-- Integrations: GitHub App, OpenAI/Groq, MCP (`@modelcontextprotocol/sdk`)
+- Integrations: GitHub App, Gemini / Groq / OpenAI, Stripe, MCP (`@modelcontextprotocol/sdk`)
 
 ## Repository Layout
 
@@ -140,10 +141,10 @@ To enable canvas relay in local development:
 3. Start the connector (from `app/`):
 
 ```powershell
-node mcp-connector/index.js --url ws://localhost:5173/agent-relay
+node mcp-connector/index.js --url ws://localhost:5173/agent-relay --token <session-token>
 ```
 
-The canvas UI also shows a copy-ready connector command in-app.
+The Vite dev server prints the exact active session token on startup, and the canvas UI also displays the full copy-ready connector command.
 
 ## Contribution and Agent Guides
 
@@ -178,5 +179,5 @@ Recommended Supabase deploy repository variables:
 ## Security Notes
 
 - Never commit real credentials to `.env` files.
-- Use Supabase secrets for function credentials (`GITHUB_*`, `OPENAI_*`, `GROQ_*`, etc.).
+- Use Supabase secrets for function credentials (`GITHUB_*`, `GEMINI_*`, `GROQ_*`, `OPENAI_*`, `STRIPE_*`, `RESEND_*`).
 - Keep captcha enabled in production (`NEXT_PUBLIC_AUTH_CAPTCHA_ENABLED=true`) unless you intentionally disable it for controlled environments.

@@ -37,13 +37,16 @@ export async function getUserCredits(): Promise<UserCredits> {
   const tier: SubscriptionTier | 'free' = subscription?.tier ?? 'free';
   const allowance = getAllowanceForTier(tier);
 
-  const { data: { user } } = await supabase.auth.getUser();
-  if (user) {
-    await supabase.from('user_credits').upsert({
-      user_id: user.id,
-      credits_remaining: allowance,
-      credits_allowance: allowance,
-    }, { onConflict: 'user_id' });
+  const { data: initData, error: rpcError } = await supabase.rpc('get_or_init_user_credits', {
+    p_tier: tier,
+  });
+
+  if (!rpcError && initData) {
+    return {
+      creditsRemaining: initData.credits_remaining,
+      creditsAllowance: initData.credits_allowance,
+      periodEnd: initData.period_end,
+    };
   }
 
   return {

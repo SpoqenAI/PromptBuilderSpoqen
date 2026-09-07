@@ -6,6 +6,7 @@
  */
 
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
+import { corsHeaders } from '../_shared/cors.ts';
 import { createAdminClient } from '../_shared/supabase.ts';
 import { stripeRequest } from '../_shared/stripe.ts';
 import { getRequiredCapacity } from '../_shared/seats.ts';
@@ -53,7 +54,11 @@ async function sendResendEmail(to: string, subject: string, html: string): Promi
   }
 }
 
-serve(async (_req: Request) => {
+serve(async (req: Request) => {
+  if (req.method === 'OPTIONS') {
+    return new Response('ok', { headers: corsHeaders(req) });
+  }
+
   const admin = createAdminClient();
   const results = { processed: 0, invitesCleaned: 0, alertsSent: 0, errors: 0 };
 
